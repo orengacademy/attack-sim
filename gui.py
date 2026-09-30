@@ -556,7 +556,17 @@ class HarnessGUI:
 
 
 def main():
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        import sys
+        sys.stderr.write(
+            f"\n[GUI] no display available ({e}).\n"
+            "This is a headless machine (e.g. a server over SSH). Use the CLI instead:\n"
+            "    python3 cli.py --list\n"
+            "    python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe\n"
+            "Or forward X over SSH:  ssh -X user@host   then  python3 gui.py\n")
+        sys.exit(1)
     HarnessGUI(root)
     root.mainloop()
 
