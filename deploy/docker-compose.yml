@@ -1,0 +1,37 @@
+# Vulnerable web + directory services for the BAS target.  LAB ONLY — isolate it.
+#   apache  : CVE-2021-41773 path traversal / RCE  -> :80   (apache_41773)
+#   log4shell: CVE-2021-44228 vulnerable app        -> :8080 (log4shell)
+#   openldap: anonymous bind exposes namingContexts -> :389  (ldap_null_bind)
+#
+#   cd deploy && docker compose up -d      # start
+#            docker compose down -v        # stop + remove
+services:
+  apache:
+    # 2.4.49 is the version vulnerable to CVE-2021-41773 (path traversal, and RCE
+    # when mod_cgi is enabled). The mounted conf enables cgi-bin + "Require all
+    # granted" so the traversal is reachable.
+    image: httpd:2.4.49
+    container_name: bas-apache-41773
+    ports: ["80:80"]
+    volumes:
+      - ./apache/httpd-vuln.conf:/usr/local/apache2/conf/httpd.conf:ro
+    restart: unless-stopped
+
+  log4shell:
+    # Well-known deliberately-vulnerable Log4Shell app (JNDI in a header/param).
+    image: ghcr.io/christophetd/log4shell-vulnerable-app:latest
+    container_name: bas-log4shell
+    ports: ["8080:8080"]
+    restart: unless-stopped
+
+  openldap:
+    # Anonymous bind enabled so ldap_null_bind can read namingContexts.
+    image: bitnami/openldap:latest
+    container_name: bas-openldap
+    environment:
+      LDAP_ROOT: "dc=mygov,dc=local"
+      LDAP_ADMIN_USERNAME: "admin"
+      LDAP_ADMIN_PASSWORD: "adminpass"
+      LDAP_ALLOW_ANON_BINDING: "yes"
+    ports: ["389:1389"]
+    restart: unless-stopped

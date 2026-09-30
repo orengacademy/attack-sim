@@ -61,6 +61,18 @@ These last five target what an **SD-WAN itself** enforces (segmentation, App-ID,
 covert-channel/egress, DoS, and Kerberos exposure to the DC) — i.e. the A→B path
 through the SD-WAN — rather than app-layer/WAF controls that sit at the agency.
 
+## Deploying the vulnerable target(s)
+
+`deploy/` provisions the lab you test against (⚠ **lab only** — isolate it):
+- **Linux services + web CVEs**: `sudo deploy/setup_target.sh` (SSH lab user, FTP
+  anon, SNMP public) then `cd deploy && docker compose up -d` (Apache CVE-2021-41773,
+  Log4Shell, anonymous OpenLDAP).
+- **Windows AD DC** (for kerberoast/asrep/dcsync/psexec/petitpotam — these need a
+  real Windows DC): `cd deploy/windows && vagrant up` provisions a DC with a
+  Kerberoastable SPN, an AS-REP-roastable account, and weak admin creds.
+
+Full steps + teardown: **[deploy/DEPLOY.md](deploy/DEPLOY.md)**.
+
 ## Install (Kali)
 
 ```bash
