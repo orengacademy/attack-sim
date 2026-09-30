@@ -85,6 +85,11 @@ hidden prompt). Pick whichever fits your setup:
   youruser ALL=(root) NOPASSWD: /usr/bin/hping3, /usr/sbin/responder
   ```
   then just `python3 gui.py` — the tools elevate themselves, no prompt.
+- **Sudoer but NO NOPASSWD (you have sudo, but it asks for a password)** — cache
+  your sudo credentials once and `sudo -n` works for ~15 min:
+  - in the GUI click **Unlock sudo** (prompts for the password, not stored), or
+  - run `sudo -v` in the *same terminal* before `python3 gui.py`.
+  Run root-needing modules within the ~15-min window; re-unlock to extend.
 - **Or grant `hping3` the capability once** (no sudo needed for the floods):
   ```bash
   sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)

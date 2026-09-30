@@ -142,6 +142,28 @@ class TestSudoPrefix(unittest.TestCase):
         self.assertEqual(core.sudo_prefix(), [])
 
 
+class TestSudoUnlock(unittest.TestCase):
+    def tearDown(self):
+        if hasattr(self, "_op"):
+            core.is_privileged = self._op
+        if hasattr(self, "_ow"):
+            core.shutil.which = self._ow
+
+    def test_root_needs_no_unlock(self):
+        self._op = core.is_privileged
+        core.is_privileged = lambda: True
+        ok, _ = core.sudo_unlock("x")
+        self.assertTrue(ok)
+
+    def test_no_sudo(self):
+        self._op = core.is_privileged; self._ow = core.shutil.which
+        core.is_privileged = lambda: False
+        core.shutil.which = lambda n: None
+        ok, msg = core.sudo_unlock("x")
+        self.assertFalse(ok)
+        self.assertIn("sudo", msg)
+
+
 class TestProbes(unittest.TestCase):
     def test_tcp_open_then_closed(self):
         srv = socket.socket()
