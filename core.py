@@ -598,24 +598,48 @@ def sudo_nopasswd_works(timeout=4):
         return False
 
 
+def sudo_unlock(password, timeout=10):
+    """Cache the sudo timestamp with the given password (`sudo -S -v`) so later
+    `sudo -n` calls succeed WITHOUT a NOPASSWD rule and WITHOUT running the whole
+    harness as root. The password is used only for this one call and never stored
+    or logged. Returns (ok, message). Cache lasts ~15 min (sudo's timestamp).
+    Run from the same terminal/session that launched the harness so the cached
+    ticket applies to the modules' `sudo -n` calls."""
+    if is_privileged():
+        return True, "already root"
+    if not shutil.which("sudo"):
+        return False, "sudo not found"
+    try:
+        p = subprocess.run(["sudo", "-S", "-v"], input=(password or "") + "\n",
+                           capture_output=True, text=True, timeout=timeout)
+        if p.returncode == 0:
+            return True, "sudo credentials cached (~15 min) — root modules can now run"
+        last = (p.stderr or "").strip().splitlines()
+        return False, (last[-1] if last else "authentication failed")
+    except subprocess.TimeoutExpired:
+        return False, "sudo timed out"
+    except Exception as e:
+        return False, str(e)
+
+
 def privilege_status(modules=None):
     """Summarise how root-needing modules will get their privileges, so a run
     can be started informed. Returns a dict the GUI/CLI can render."""
     root = is_privileged()
     sudo = shutil.which("sudo") is not None
+    cached = sudo and sudo_nopasswd_works()   # NOPASSWD or a live cached ticket
     needs = [m.META["name"] for m in (modules or [])
              if getattr(m, "META", {}).get("needs_root")]
     if root:
         how = "running as root/admin"
-    elif sudo and sudo_nopasswd_works():
-        how = "passwordless sudo available — tools self-elevate via `sudo -n`"
+    elif cached:
+        how = "passwordless/cached sudo available — tools self-elevate via `sudo -n`"
     elif sudo:
-        how = ("sudo present but passwordless sudo not detected — add a NOPASSWD "
-               "rule for hping3/responder, or run as root")
+        how = "sudo needs a password — click 'Unlock sudo' to cache it (~15 min)"
     else:
         how = "NOT elevated and no sudo — root-needing modules will be skipped"
-    return {"root": root, "sudo_present": sudo,
-            "sudo_nopasswd": sudo and sudo_nopasswd_works(),
+    return {"root": root, "sudo_present": sudo, "sudo_nopasswd": cached,
+            "can_unlock": sudo and not root and not cached,
             "needs_root_modules": needs, "how": how}
 
 

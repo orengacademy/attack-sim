@@ -161,16 +161,37 @@ class HarnessGUI:
                   style="Muted.TLabel").grid(row=2, column=0, columnspan=7, sticky="w",
                                              padx=6, pady=(0, 2))
 
+        self._priv_frame = f
+        self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
+        self._priv_label.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
+        self._refresh_privilege()
+
+    def _refresh_privilege(self):
         ps = core.privilege_status(self.modules)
-        if ps["needs_root_modules"]:
-            if ps["root"] or ps["sudo_nopasswd"]:
-                icon, style = "✓", "Muted.TLabel"
-            elif not ps["sudo_present"]:
-                icon, style = "⚠", "Err.TLabel"
-            else:
-                icon, style = "ℹ", "Warn.TLabel"
-            ttk.Label(f, text=f"{icon} Privilege: {ps['how']}", style=style).grid(
-                row=3, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 6))
+        if not ps["needs_root_modules"]:
+            self._priv_label.grid_remove(); self._unlock_btn.grid_remove(); return
+        icon = "✓" if (ps["root"] or ps["sudo_nopasswd"]) else ("⚠" if not ps["sudo_present"] else "ℹ")
+        style = ("Muted.TLabel" if (ps["root"] or ps["sudo_nopasswd"])
+                 else "Err.TLabel" if not ps["sudo_present"] else "Warn.TLabel")
+        self._priv_label.configure(text=f"{icon} Privilege: {ps['how']}", style=style)
+        self._priv_label.grid()
+        if ps["can_unlock"]:
+            self._unlock_btn.grid(row=3, column=6, sticky="e", padx=6, pady=(0, 6))
+        else:
+            self._unlock_btn.grid_remove()
+
+    def _unlock_sudo(self):
+        from tkinter import simpledialog
+        pw = simpledialog.askstring("Unlock sudo",
+                                    "Enter your sudo password (cached ~15 min, not stored):",
+                                    show="*", parent=self.root)
+        if pw is None:
+            return
+        ok, msg = core.sudo_unlock(pw)
+        del pw
+        (messagebox.showinfo if ok else messagebox.showerror)("Unlock sudo", msg)
+        self._refresh_privilege()
 
     # ----- attacks (aligned grid table) --------------------------------
     def _build_attacks(self):
