@@ -14,6 +14,7 @@ META = {
     "tactic": 'Initial Access',
     "requires": ["curl"],
     "ports": [("tcp", 8080)],
+    "port_customizable": True,
     "success_regex": r"HTTP_CODE:200",
     "blocked_regex": r"timed out|Connection refused|HTTP_CODE:000",
 }

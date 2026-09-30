@@ -147,12 +147,34 @@ exploits. The plain `preflight.py` (no `--target`) contacts nothing.
   Parallelism helps most when many modules are reachable and network latency
   dominates; a single slow module is still the long pole.
 
+### Custom ports (per-attack)
+
+Modules with `"port_customizable": True` (Apache, Log4Shell, FTP, SSH, SNMP,
+LDAP, SYN-flood) read their target port from the context, so you can point them
+at a non-standard port three ways:
+- **GUI** — edit the port box on the attack's row;
+- **env** — `HARNESS_PORT_<ID>=8983` (e.g. `HARNESS_PORT_LOG4SHELL=8983`);
+- **headless** — `Runner(...).ctx.port_overrides = {"log4shell": 8983}`.
+
+### Standalone egress probe
+
+`additional/mygovnet_egress_probe.py` is a self-contained, **non-destructive**
+egress/segmentation probe (TCP port sweep, TLS carrier, L4-vs-L7 on 443, direct
+external DNS, DoH, ICMP), with source-IP binding (`-s`), `--dry-run`, `--json`,
+and MITRE ids. It complements the module harness for boundary/egress testing:
+```bash
+python3 additional/mygovnet_egress_probe.py -d <dest> -s <source-ip> --tests ports,dns,doh
+```
+
 ## Run
 
 ```bash
 cd harness
-python3 gui.py       # or: sudo python3 gui.py (needed for PetitPotam)
+python3 gui.py       # run as your user; root-needing tools self-elevate via sudo -n
 ```
+
+The GUI's **Preflight + recon** button checks tools/privileges AND (when a target
+is entered) probes the target's ports/services, colour-coded.
 
 In the GUI: type the **Target IP**, set iterations (default 3), tick the
 attacks you want, tick **Rules-of-engagement confirmed**, click **RUN**.

@@ -11,6 +11,7 @@ META = {
     "tactic": 'Credential Access',
     "requires": ["snmpwalk"],
     "ports": [("udp", 161)],
+    "port_customizable": True,
     "success_regex": r"STRING|INTEGER|OID",
     "blocked_regex": r"Timeout|No Response|timed out",
 }
@@ -19,4 +20,6 @@ META = {
 def run(target, ctx):
     # -r1 (1 retry) so a filtered/closed UDP 161 resolves in ~6s instead of the
     # default ~30s (5 retries x timeout) — snmpwalk is otherwise the long pole.
-    return ctx.run_cmd("snmpwalk -v2c -c public -t3 -r1 {target}", target)
+    port = ctx.get_port("snmp_brute", 161)   # overridable per-attack (GUI/env)
+    agent = "{target}" if port == 161 else f"{{target}}:{port}"
+    return ctx.run_cmd(f"snmpwalk -v2c -c public -t3 -r1 {agent}", target)

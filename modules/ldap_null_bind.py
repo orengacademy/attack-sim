@@ -11,6 +11,7 @@ META = {
     "tactic": 'Discovery',
     "requires": ["ldapsearch"],
     "ports": [("tcp", 389)],
+    "port_customizable": True,
     # Anchor to the RESPONSE attribute line (LDIF: "namingContexts: DC=..."),
     # not the bare word — core prepends a "# command: ldapsearch ... namingContexts"
     # header to every log, and an unanchored /namingContexts/ matched THAT,
@@ -22,5 +23,6 @@ META = {
 
 
 def run(target, ctx):
+    port = ctx.get_port("ldap_null_bind", 389)   # overridable per-attack (GUI/env)
     return ctx.run_cmd(
-        'ldapsearch -x -H ldap://{target} -b "" -s base namingContexts', target)
+        f'ldapsearch -x -H ldap://{{target}}:{port} -b "" -s base namingContexts', target)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 gui.py — Tkinter front-end (modern dark theme). Auto-discovers attack modules
-from modules/ and builds the checkbox list from them. GUI never freezes (worker
-thread + queue). Full raw logs + JSON/TXT/CSV go to evidence/run_<ts>/.
+from modules/ and builds the list from them. GUI never freezes (worker thread +
+queue). Full raw logs + JSON/TXT/CSV go to evidence/run_<ts>/.
 
-Run:  python3 gui.py   (from inside the harness/ folder)
+Run:  python3 gui.py
 """
 
 import queue
@@ -16,21 +16,25 @@ import core
 import loader
 
 # ---- palette (modern dark) ------------------------------------------------
-BG      = "#1e1f2b"   # window background
-SURF    = "#282a3a"   # inputs / panels
-SURF2   = "#31344a"   # hover / alt rows
-FG      = "#e6e6ef"   # primary text
-MUTED   = "#9aa0b4"   # secondary text
-ACCENT  = "#7c6cf0"   # brand / headings
-OKC     = "#3fb950"   # success
-BLUEC   = "#4aa3ff"   # blocked
-WARNC   = "#e3a008"   # prereq / auth-failed
-ERRC    = "#f85149"   # no-result / error
-INFOC   = "#39c5cf"   # headers / info
+BG     = "#181a24"   # window
+PANEL  = "#20222f"   # cards / panels
+SURF   = "#2a2d3d"   # inputs
+SURF2  = "#343850"   # hover / borders
+FG     = "#e8e9f0"   # primary text
+MUTED  = "#8b90a6"   # secondary text
+ACCENT = "#7c6cf0"   # brand
+OKC    = "#3fb950"   # success
+BLUEC  = "#4aa3ff"   # blocked
+WARNC  = "#e3a008"   # prereq / auth-failed
+ERRC   = "#f85149"   # error / no-result
+INFOC  = "#39c5cf"   # headers / info
+NEWC   = "#c86bff"   # "NEW" badge
+
+MONO = ("TkFixedFont", 10)
 
 
 def _apply_theme(root):
-    """Best-effort modern dark theme; degrades gracefully if unavailable."""
+    """Best-effort modern dark theme; never breaks the app if unavailable."""
     try:
         root.configure(bg=BG)
         st = ttk.Style(root)
@@ -39,112 +43,121 @@ def _apply_theme(root):
         except tk.TclError:
             pass
         st.configure(".", background=BG, foreground=FG, fieldbackground=SURF,
-                     bordercolor=SURF2, focuscolor=ACCENT)
+                     bordercolor=SURF2, lightcolor=SURF2, darkcolor=BG,
+                     focuscolor=ACCENT, insertcolor=FG)
         st.configure("TFrame", background=BG)
+        st.configure("Card.TFrame", background=PANEL)
         st.configure("TLabel", background=BG, foreground=FG)
+        st.configure("Card.TLabel", background=PANEL, foreground=FG)
         st.configure("Muted.TLabel", background=BG, foreground=MUTED)
+        st.configure("CardMuted.TLabel", background=PANEL, foreground=MUTED)
         st.configure("Warn.TLabel", background=BG, foreground=WARNC)
         st.configure("Err.TLabel", background=BG, foreground=ERRC)
-        st.configure("Head.TLabel", background=BG, foreground=ACCENT,
-                     font=("TkDefaultFont", 13, "bold"))
+        st.configure("H1.TLabel", background=BG, foreground=FG,
+                     font=("TkDefaultFont", 15, "bold"))
+        st.configure("Sub.TLabel", background=BG, foreground=MUTED,
+                     font=("TkDefaultFont", 9))
+        st.configure("Cat.TLabel", background=PANEL, foreground=INFOC,
+                     font=("TkDefaultFont", 9, "bold"))
         st.configure("TLabelframe", background=BG, bordercolor=SURF2)
         st.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
                      font=("TkDefaultFont", 10, "bold"))
-        st.configure("TCheckbutton", background=BG, foreground=FG)
-        st.map("TCheckbutton", background=[("active", BG)], foreground=[("active", FG)])
-        st.configure("TButton", background=SURF, foreground=FG, borderwidth=0, padding=6)
+        st.configure("TButton", background=SURF, foreground=FG, borderwidth=0, padding=7)
         st.map("TButton", background=[("active", SURF2), ("pressed", ACCENT)])
         st.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
-                     font=("TkDefaultFont", 10, "bold"))
+                     font=("TkDefaultFont", 10, "bold"), padding=8)
         st.map("Accent.TButton", background=[("active", "#9385f4"), ("pressed", "#6a5be0")])
-        st.configure("Stop.TButton", background="#5a2a2a", foreground=FG)
+        st.configure("Stop.TButton", background="#4a2532", foreground=FG, padding=8)
         st.map("Stop.TButton", background=[("active", ERRC)])
-        st.configure("TEntry", fieldbackground=SURF, foreground=FG, insertcolor=FG)
-        st.configure("TSpinbox", fieldbackground=SURF, foreground=FG, arrowcolor=FG)
-        st.configure("Treeview", background=SURF, fieldbackground=SURF, foreground=FG,
-                     rowheight=22, borderwidth=0)
+        st.configure("TEntry", fieldbackground=SURF, foreground=FG, insertcolor=FG,
+                     bordercolor=SURF2, padding=3)
+        st.configure("TSpinbox", fieldbackground=SURF, foreground=FG, arrowcolor=FG, padding=3)
+        st.configure("Card.TCheckbutton", background=PANEL, foreground=FG)
+        st.map("Card.TCheckbutton", background=[("active", PANEL)])
+        st.configure("TCheckbutton", background=BG, foreground=FG)
+        st.map("TCheckbutton", background=[("active", BG)])
+        st.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=FG,
+                     rowheight=24, borderwidth=0)
         st.configure("Treeview.Heading", background=BG, foreground=ACCENT,
                      font=("TkDefaultFont", 9, "bold"))
-        st.map("Treeview", background=[("selected", ACCENT)])
-        st.configure("TProgressbar", background=ACCENT, troughcolor=SURF)
+        st.map("Treeview", background=[("selected", SURF2)])
+        st.configure("TProgressbar", background=ACCENT, troughcolor=SURF, borderwidth=0)
     except Exception:
-        pass  # theming is cosmetic — never let it break the app
+        pass
 
 
 class HarnessGUI:
     def __init__(self, root):
         self.root = root
         root.title("Control Validation Harness")
-        root.geometry("1200x820")
+        root.geometry("1240x860")
+        root.minsize(980, 680)
         _apply_theme(root)
 
-        self.modules = loader.discover()            # auto-discovered
+        self.modules = loader.discover()
         self.q = queue.Queue()
         self.runner = None
-        self.vars = {}                              # id -> (BooleanVar, module)
+        self.vars = {}          # id -> (BooleanVar, module)
+        self.port_vars = {}     # id -> StringVar (port_customizable modules)
 
-        self._build_top()
+        self._build_header()
+        self._build_config()
         self._build_attacks()
         self._build_controls()
         self._build_log()
         self.root.after(100, self._drain)
 
-    # ----- top ---------------------------------------------------------
-    def _build_top(self):
-        ttk.Label(self.root, text="Control Validation Harness",
-                  style="Head.TLabel").pack(anchor="w", padx=10, pady=(8, 0))
+    # ----- header ------------------------------------------------------
+    def _build_header(self):
+        h = ttk.Frame(self.root); h.pack(fill="x", padx=14, pady=(12, 2))
+        ttk.Label(h, text="Control Validation Harness", style="H1.TLabel").pack(anchor="w")
+        ttk.Label(h, text="Breach & Attack Simulation · MITRE ATT&CK-mapped · "
+                          f"{len(self.modules)} modules discovered",
+                  style="Sub.TLabel").pack(anchor="w")
 
+    # ----- config ------------------------------------------------------
+    def _build_config(self):
         f = ttk.LabelFrame(self.root, text="Target & run")
-        f.pack(fill="x", padx=8, pady=6)
+        f.pack(fill="x", padx=12, pady=8)
+        pad = dict(padx=6, pady=6)
 
-        ttk.Label(f, text="Target IP/host:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
-        self.target = ttk.Entry(f, width=18)
-        self.target.grid(row=0, column=1, padx=4)
+        ttk.Label(f, text="Target IP / host").grid(row=0, column=0, sticky="w", **pad)
+        self.target = ttk.Entry(f, width=20)
+        self.target.grid(row=0, column=1, sticky="w", **pad)
 
-        ttk.Label(f, text="Iterations:").grid(row=0, column=2, sticky="w", padx=4)
+        ttk.Label(f, text="Iterations").grid(row=0, column=2, sticky="e", **pad)
         self.iterations = ttk.Spinbox(f, from_=1, to=20, width=5)
-        self.iterations.set(1)                       # default 1
-        self.iterations.grid(row=0, column=3, padx=4)
+        self.iterations.set(1)
+        self.iterations.grid(row=0, column=3, sticky="w", **pad)
 
-        ttk.Label(f, text="Workers:").grid(row=0, column=4, sticky="w", padx=4)
+        ttk.Label(f, text="Workers").grid(row=0, column=4, sticky="e", **pad)
         self.workers = ttk.Spinbox(f, from_=1, to=16, width=5)
-        self.workers.set(core.RECOMMENDED_WORKERS)   # safe default (4)
-        self.workers.grid(row=0, column=5, padx=4)
+        self.workers.set(core.RECOMMENDED_WORKERS)
+        self.workers.grid(row=0, column=5, sticky="w", **pad)
+        ttk.Label(f, text=f"(recommended {core.RECOMMENDED_WORKERS}; DoS/brute always serial)",
+                  style="Muted.TLabel").grid(row=0, column=6, sticky="w", **pad)
 
-        ttk.Label(f, text="Custom ports:").grid(row=1, column=0, sticky="w", padx=4, pady=(0, 4))
-        self.ports = ttk.Entry(f, width=40)
-        self.ports.grid(row=1, column=1, columnspan=3, sticky="w", padx=4, pady=(0, 4))
-        ttk.Label(f, text="e.g. log4shell=8983, syn=443", style="Muted.TLabel").grid(
-            row=1, column=4, columnspan=2, sticky="w", padx=4)
-
-        ttk.Label(f, text=f"{len(self.modules)} modules discovered · Workers>1 runs "
-                          f"parallel-safe modules concurrently (DoS/brute stay serial). "
-                          f"Recommended workers: {core.RECOMMENDED_WORKERS}.",
-                  style="Muted.TLabel").grid(row=2, column=0, columnspan=6, sticky="w",
-                                             padx=4, pady=2)
-
-        # privilege banner
         ps = core.privilege_status(self.modules)
         if ps["needs_root_modules"]:
-            style = "Warn.TLabel"
             if ps["root"] or ps["sudo_nopasswd"]:
-                icon = "✓"
+                icon, style = "✓", "Muted.TLabel"
             elif not ps["sudo_present"]:
                 icon, style = "⚠", "Err.TLabel"
             else:
-                icon = "ℹ"
+                icon, style = "ℹ", "Warn.TLabel"
             ttk.Label(f, text=f"{icon} Privilege: {ps['how']}", style=style).grid(
-                row=3, column=0, columnspan=6, sticky="w", padx=4, pady=(2, 4))
+                row=1, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 6))
 
-    # ----- attacks (from discovered modules, grouped) ------------------
+    # ----- attacks -----------------------------------------------------
     def _build_attacks(self):
-        outer = ttk.LabelFrame(self.root, text="Attacks (auto-discovered)")
-        outer.pack(fill="both", expand=False, padx=8, pady=6)
-        canvas = tk.Canvas(outer, height=260, bg=BG, highlightthickness=0)
+        outer = ttk.LabelFrame(self.root, text="Attacks — tick to include; edit port where shown")
+        outer.pack(fill="both", expand=False, padx=12, pady=8)
+        canvas = tk.Canvas(outer, height=250, bg=PANEL, highlightthickness=0)
         sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
+        inner = ttk.Frame(canvas, style="Card.TFrame")
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
         canvas.configure(yscrollcommand=sb.set)
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -154,69 +167,75 @@ class HarnessGUI:
             meta = m.META
             if meta["category"] != current_cat:
                 current_cat = meta["category"]
-                ttk.Label(inner, text=f"— {current_cat} —",
-                          foreground=INFOC, background=BG,
-                          font=("TkDefaultFont", 9, "bold")).pack(anchor="w", pady=(8, 2))
+                ttk.Label(inner, text=f"  {current_cat}", style="Cat.TLabel").pack(
+                    anchor="w", pady=(10, 3), fill="x")
+            row = ttk.Frame(inner, style="Card.TFrame"); row.pack(anchor="w", fill="x", padx=6)
             var = tk.BooleanVar(value=True)
             self.vars[meta["id"]] = (var, m)
-            row = ttk.Frame(inner); row.pack(anchor="w", fill="x")
-            ttk.Checkbutton(row, text=meta["name"], variable=var).pack(side="left")
+            ttk.Checkbutton(row, text=meta["name"], variable=var,
+                            style="Card.TCheckbutton", width=34).pack(side="left")
             if meta.get("added"):
-                tk.Label(row, text="NEW", bg=ACCENT, fg="#fff",
-                         font=("TkDefaultFont", 7, "bold"), padx=4).pack(side="left", padx=6)
-            tag = f"[{meta.get('control','')} · fix:{meta.get('fix','')}]"
-            ttk.Label(row, text=tag, style="Muted.TLabel").pack(side="left", padx=8)
+                tk.Label(row, text="NEW", bg=NEWC, fg="#fff",
+                         font=("TkDefaultFont", 7, "bold"), padx=4).pack(side="left", padx=(0, 6))
+            # MITRE + tactic chip
+            mitre = ", ".join(meta.get("mitre", []))
+            tk.Label(row, text=f"{mitre}", bg=PANEL, fg=INFOC,
+                     font=("TkDefaultFont", 8)).pack(side="left", padx=4)
+            # per-attack port entry (only where honoured)
+            if meta.get("port_customizable"):
+                default = next((p for pr, p in
+                                ((s if isinstance(s, (list, tuple)) else ("tcp", s))
+                                 for s in meta.get("ports", [])) if pr in ("tcp", "udp")), "")
+                pv = tk.StringVar(value=str(default))
+                self.port_vars[meta["id"]] = pv
+                tk.Label(row, text="port", bg=PANEL, fg=MUTED,
+                         font=("TkDefaultFont", 8)).pack(side="right", padx=(0, 2))
+                ttk.Entry(row, textvariable=pv, width=6).pack(side="right", padx=2)
+            tk.Label(row, text=f"fix:{meta.get('fix','')}", bg=PANEL, fg=MUTED,
+                     font=("TkDefaultFont", 8)).pack(side="right", padx=8)
 
     # ----- controls ----------------------------------------------------
     def _build_controls(self):
-        f = ttk.Frame(self.root); f.pack(fill="x", padx=8, pady=4)
-        ttk.Button(f, text="Select all", command=lambda: self._all(True)).pack(side="left")
-        ttk.Button(f, text="Clear", command=lambda: self._all(False)).pack(side="left", padx=4)
-        ttk.Button(f, text="Original set", command=lambda: self._select_group(added=False)
-                   ).pack(side="left", padx=4)
-        ttk.Button(f, text="Added set", command=lambda: self._select_group(added=True)
-                   ).pack(side="left", padx=4)
-        ttk.Button(f, text="Preflight", command=self._preflight).pack(side="left", padx=4)
+        f = ttk.Frame(self.root); f.pack(fill="x", padx=12, pady=4)
+        for txt, cmd in (("Select all", lambda: self._all(True)),
+                         ("Clear", lambda: self._all(False)),
+                         ("Original set", lambda: self._select_group(False)),
+                         ("Added set", lambda: self._select_group(True)),
+                         ("Preflight + recon", self._preflight)):
+            ttk.Button(f, text=txt, command=cmd).pack(side="left", padx=(0, 6))
         self.roe = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="Rules-of-engagement confirmed (written authorisation on file)",
                         variable=self.roe).pack(side="left", padx=16)
-        self.run_btn = ttk.Button(f, text="RUN", style="Accent.TButton", command=self._start)
+        self.run_btn = ttk.Button(f, text="▶ RUN", style="Accent.TButton", command=self._start)
         self.run_btn.pack(side="right")
-        self.stop_btn = ttk.Button(f, text="STOP", style="Stop.TButton",
+        self.stop_btn = ttk.Button(f, text="■ STOP", style="Stop.TButton",
                                    command=self._stop, state="disabled")
-        self.stop_btn.pack(side="right", padx=4)
+        self.stop_btn.pack(side="right", padx=6)
         self.progress = ttk.Progressbar(self.root, mode="determinate")
-        self.progress.pack(fill="x", padx=8, pady=2)
+        self.progress.pack(fill="x", padx=12, pady=(2, 6))
 
     def _build_log(self):
-        outer = ttk.Frame(self.root)
-        outer.pack(fill="both", expand=True, padx=8, pady=6)
+        outer = ttk.Frame(self.root); outer.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         left = ttk.LabelFrame(outer, text="Status")
-        left.pack(side="left", fill="y", padx=(0, 4))
-        left.pack_propagate(False)
-        left.configure(width=320)
-
-        cols = ("attack", "iter", "result")
-        self.status_tree = ttk.Treeview(left, columns=cols, show="headings", height=20)
-        for c, t, w, a in (("attack", "Attack", 185, "w"), ("iter", "#", 30, "center"),
-                           ("result", "Result", 95, "center")):
-            self.status_tree.heading(c, text=t)
-            self.status_tree.column(c, width=w, anchor=a)
+        left.pack(side="left", fill="y", padx=(0, 6))
+        left.pack_propagate(False); left.configure(width=340)
+        self.status_tree = ttk.Treeview(left, columns=("attack", "iter", "result"),
+                                        show="headings", height=20)
+        for c, t, w, a in (("attack", "Attack", 195, "w"), ("iter", "#", 30, "center"),
+                           ("result", "Result", 100, "center")):
+            self.status_tree.heading(c, text=t); self.status_tree.column(c, width=w, anchor=a)
         self.status_tree.pack(side="left", fill="both", expand=True)
         sb1 = ttk.Scrollbar(left, command=self.status_tree.yview); sb1.pack(side="right", fill="y")
         self.status_tree.configure(yscrollcommand=sb1.set)
-        self.status_tree.tag_configure("SUCCESS", foreground=OKC)
-        self.status_tree.tag_configure("BLOCKED", foreground=BLUEC)
-        self.status_tree.tag_configure("AUTH-FAILED", foreground=WARNC)
-        self.status_tree.tag_configure("NO-RESULT", foreground=ERRC)
-        self.status_tree.tag_configure("PREREQ-MISSING", foreground=WARNC)
+        for tag, col in (("SUCCESS", OKC), ("BLOCKED", BLUEC), ("AUTH-FAILED", WARNC),
+                         ("NO-RESULT", ERRC), ("PREREQ-MISSING", WARNC)):
+            self.status_tree.tag_configure(tag, foreground=col)
 
         right = ttk.LabelFrame(outer, text="Live output")
         right.pack(side="left", fill="both", expand=True)
-        self.log = tk.Text(right, height=14, wrap="word", bg="#14151f", fg=FG,
-                           insertbackground=FG, borderwidth=0,
-                           font=("TkFixedFont", 10))
+        self.log = tk.Text(right, height=14, wrap="word", bg="#12131b", fg=FG,
+                           insertbackground=FG, borderwidth=0, font=MONO, padx=8, pady=6)
         self.log.pack(side="left", fill="both", expand=True)
         sb2 = ttk.Scrollbar(right, command=self.log.yview); sb2.pack(side="right", fill="y")
         self.log.configure(yscrollcommand=sb2.set)
@@ -230,52 +249,61 @@ class HarnessGUI:
             var.set(v)
 
     def _select_group(self, added):
-        """Tick only the original set (added=False) or only the newly-added
-        modules (added=True); untick the rest."""
         for _id, (var, m) in self.vars.items():
             var.set(bool(m.META.get("added")) == added)
 
-    def _parse_ports(self):
-        """Parse the Custom ports entry ('name=port, name=port') into a dict."""
+    def _collect_port_overrides(self):
         out = {}
-        raw = self.ports.get().strip()
-        for part in raw.replace(";", ",").split(","):
-            part = part.strip()
-            if not part or "=" not in part:
-                continue
-            k, v = part.split("=", 1)
-            k, v = k.strip(), v.strip()
-            if k and v.isdigit():
-                out[k] = int(v)
+        for mid, pv in self.port_vars.items():
+            v = pv.get().strip()
+            if v.isdigit():
+                out[mid] = int(v)
         return out
 
     def _preflight(self):
         selected = [m for (var, m) in self.vars.values() if var.get()] or self.modules
         try:
-            pf = core.preflight(selected)
-            report = core.format_preflight_report(pf)
+            report = core.format_preflight_report(core.preflight(selected))
         except Exception as e:
-            messagebox.showerror("Preflight failed", str(e))
-            return
+            messagebox.showerror("Preflight failed", str(e)); return
+        # also probe the target's ports/services if a valid target is entered
+        tgt = self.target.get().strip()
+        recon = ""
+        if tgt:
+            ok, why = core.validate_target(tgt)
+            if ok:
+                try:
+                    recon = "\n\n" + core.format_reachability_report(
+                        core.reachability(tgt, selected))
+                except Exception as e:
+                    recon = f"\n\n[recon error: {e}]"
+            else:
+                recon = f"\n\n[recon skipped: invalid target — {why}]"
+        else:
+            recon = "\n\n[recon skipped: enter a Target to also probe its ports/services]"
+
         win = tk.Toplevel(self.root)
-        win.title("Preflight — tool & privilege check")
-        win.geometry("820x560")
-        win.configure(bg=BG)
-        txt = tk.Text(win, wrap="none", bg="#14151f", fg=FG, borderwidth=0,
-                      font=("TkFixedFont", 10))
-        for tag, col in (("ok", OKC), ("bad", ERRC), ("hdr", ACCENT), ("muted", MUTED)):
+        win.title("Preflight + recon")
+        win.geometry("860x600"); win.configure(bg=BG)
+        txt = tk.Text(win, wrap="none", bg="#12131b", fg=FG, borderwidth=0,
+                      font=MONO, padx=8, pady=6)
+        for tag, col in (("ok", OKC), ("bad", ERRC), ("hdr", ACCENT), ("blue", BLUEC),
+                         ("muted", MUTED)):
             txt.tag_configure(tag, foreground=col)
-        for line in report.splitlines():
-            tag = ""
+        for line in (report + recon).splitlines():
             s = line.strip()
-            if s.startswith("[OK]"):
+            tag = ""
+            if s.startswith("[OK]") or s.startswith("Suggested"):
                 tag = "ok"
-            elif s.startswith("[XX]"):
+            elif s.startswith("[XX]") or "MISSING" in line or s.startswith("Not reachable"):
                 tag = "bad"
-            elif set(s) == {"="} or s.startswith("PREFLIGHT") or s.startswith("Modules ready"):
+            elif set(s) == {"="} or s.startswith("PREFLIGHT") or s.startswith("RECON") \
+                    or s.startswith("Modules ready") or s.startswith("Probes"):
                 tag = "hdr"
-            elif s.startswith("#") or line.startswith("  #") or "MISSING" in line:
-                tag = "muted" if not s.startswith("[XX]") else "bad"
+            elif "open" in s or s.startswith("Indeterminate"):
+                tag = "blue"
+            elif line.startswith("  #") or s.startswith("#"):
+                tag = "muted"
             txt.insert("end", line + "\n", tag)
         txt.configure(state="disabled")
         txt.pack(side="left", fill="both", expand=True)
@@ -283,19 +311,19 @@ class HarnessGUI:
         txt.configure(yscrollcommand=sb.set)
 
     def _log(self, m):
-        # colorize per line by keyword
         for line in str(m).split("\n"):
-            tag = ""
             low = line.lower()
-            if "[success]" in low or "-> success" in low or " [success]" in low or "SUCCESS" in line:
+            tag = ""
+            if "success" in low or "-> gap" in low:
                 tag = "ok"
-            elif "blocked" in low:
+            elif "blocked" in low or "-> ok" in low:
                 tag = "blocked"
-            elif "prereq-missing" in low or "auth-failed" in low or "[warn]" in low or "not reachable" in low:
+            elif "prereq-missing" in low or "auth-failed" in low or "[warn]" in low \
+                    or "not reachable" in low:
                 tag = "warn"
             elif "[error]" in low or "no-result" in low:
                 tag = "err"
-            elif line.startswith("===") or line.startswith("────") or line.startswith("Recon") or line.startswith("Platform") or line.startswith("Preflight"):
+            elif line.startswith(("===", "────", "Recon", "Platform", "Preflight", "Target")):
                 tag = "hdr"
             self.log.insert("end", line + "\n", tag)
         self.log.see("end")
@@ -314,9 +342,9 @@ class HarnessGUI:
 
     def _add_status(self, name, it, result):
         self.status_tree.insert("", "end", values=(name, it, result), tags=(result,))
-        children = self.status_tree.get_children()
-        if children:
-            self.status_tree.see(children[-1])
+        kids = self.status_tree.get_children()
+        if kids:
+            self.status_tree.see(kids[-1])
 
     def _drain(self):
         try:
@@ -325,11 +353,9 @@ class HarnessGUI:
                 if kind == "log":
                     self._log(p)
                 elif kind == "output":
-                    _aid, name, raw = p
-                    self._show_output(name, raw)
+                    _aid, name, raw = p; self._show_output(name, raw)
                 elif kind == "status":
-                    _aid, name, it, result, _verdict = p
-                    self._add_status(name, it, result)
+                    _aid, name, it, result, _v = p; self._add_status(name, it, result)
                 elif kind == "progress":
                     self.progress["maximum"] = p[1]; self.progress["value"] = p[0]
                 elif kind == "done":
@@ -343,34 +369,28 @@ class HarnessGUI:
     # ----- run ---------------------------------------------------------
     def _start(self):
         if not self.roe.get():
-            messagebox.showwarning("Blocked", "Tick 'Rules-of-engagement confirmed' first.")
-            return
+            messagebox.showwarning("Blocked", "Tick 'Rules-of-engagement confirmed' first."); return
         selected = [m for (var, m) in self.vars.values() if var.get()]
         if not selected:
-            messagebox.showwarning("Nothing selected", "Select at least one attack.")
-            return
+            messagebox.showwarning("Nothing selected", "Select at least one attack."); return
         target_ip = self.target.get().strip()
         if not target_ip:
-            messagebox.showwarning("No target", "Enter the target IP.")
-            return
+            messagebox.showwarning("No target", "Enter the target IP."); return
         ok, why = core.validate_target(target_ip)
         if not ok:
-            messagebox.showwarning("Invalid target", f"{target_ip}: {why}")
-            return
+            messagebox.showwarning("Invalid target", f"{target_ip}: {why}"); return
         allowed, areason = core.target_allowed(target_ip)
         if not allowed:
-            messagebox.showerror("Target not allowed", areason)
-            return
+            messagebox.showerror("Target not allowed", areason); return
         try:
             iters = max(1, int(self.iterations.get()))
         except (ValueError, TypeError):
-            messagebox.showwarning("Bad iterations", "Iterations must be a whole number.")
-            return
+            messagebox.showwarning("Bad iterations", "Iterations must be a whole number."); return
         try:
             workers = max(1, int(self.workers.get()))
         except (ValueError, TypeError):
             workers = 1
-        port_overrides = self._parse_ports()
+        port_overrides = self._collect_port_overrides()
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
         self.progress["value"] = 0
@@ -380,7 +400,7 @@ class HarnessGUI:
         self._log("Starting run...")
 
         self.runner = core.Runner(
-            target_ip, None,          # single-target mode
+            target_ip, None,
             on_log=lambda m: self.q.put(("log", m)),
             on_progress=lambda c, t: self.q.put(("progress", (c, t))),
             on_output=lambda aid, name, raw: self.q.put(("output", (aid, name, raw))),
@@ -407,7 +427,8 @@ class HarnessGUI:
         self.run_btn["state"] = "normal"; self.stop_btn["state"] = "disabled"
         if root:
             self._log(f"\nDONE. Evidence: {root}")
-            self._log("  summary.json / summary.csv / report.txt + per-attack raw logs")
+            self._log("  summary.json / summary.csv / report.txt (+ ATT&CK coverage) "
+                      "+ per-attack raw logs")
             messagebox.showinfo("Complete", f"Evidence saved to:\n{root}")
 
 

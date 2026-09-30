@@ -12,6 +12,7 @@ META = {
     "tactic": 'Initial Access',
     "requires": ["curl"],
     "ports": [("tcp", 80)],
+    "port_customizable": True,
     "success_regex": r"fonts|extensions",
     "blocked_regex": r"timed out|Connection refused|403 Forbidden|could not resolve",
 }
@@ -24,5 +25,6 @@ def run(target, ctx):
     # diagnostics curl otherwise swallows, so a closed/refused port surfaces
     # "Connection refused" (caught by blocked_regex) instead of empty output
     # that classifies as NO-RESULT. Same fix pattern as ftp_anonymous.
+    port = ctx.get_port("apache_41773", 80)   # overridable per-attack (GUI/env)
     return ctx.run_cmd(
-        f'curl -s -v --path-as-is -m10 "http://{{target}}{PATH}"', target)
+        f'curl -s -v --path-as-is -m10 "http://{{target}}:{port}{PATH}"', target)
