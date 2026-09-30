@@ -52,14 +52,16 @@ def install_apt():
 def main():
     c("=== Harness bootstrap ===", "1;32")
     install_apt()
-    c("\nDone. hping3 and responder both need root at run time:", "1;32")
-    print("  - hping3 (ICMP Flood): grant it once with")
-    print("      sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)")
-    print("  - responder (PetitPotam): run the harness itself with sudo")
+    c("\nDone. Run the harness as your NORMAL user (do NOT use sudo python3 gui.py —", "1;32")
+    print("  that makes sudo prompt for 'python3'). The root-needing modules")
+    print("  (ICMP/SYN flood, PetitPotam) self-elevate their tool via `sudo -n`.")
+    print("  Enable that without prompts via ONE of:")
+    print("   - setcap (hping3 floods): sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)")
+    print("   - NOPASSWD sudoers:       <user> ALL=(root) NOPASSWD: $(command -v hping3), $(command -v responder)")
     c("\nCredentials: set HARNESS_DC_PASS (and HARNESS_DOMAIN/HARNESS_DC_USER),", "1;32")
     print("  or copy credentials.env.example -> credentials.env and fill it in.")
     print("  Check readiness first:  python3 preflight.py")
-    c("\nNow run:  python3 gui.py  (or: sudo python3 gui.py for PetitPotam)", "1;32")
+    c("\nNow run:  python3 gui.py", "1;32")
 
 
 if __name__ == "__main__":

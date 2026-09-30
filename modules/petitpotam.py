@@ -1,8 +1,10 @@
 """PetitPotam (MS-EFSRPC) NTLM coercion. Coerces the DC's machine account to
 authenticate back to this Kali host over SMB, captured by Responder — the
 same two-process chain as the manual test (Responder listening, PetitPotam
-triggering the callback). Requires root (Responder binds privileged ports
-and does raw poisoning) — run the harness itself with sudo for this one.
+triggering the callback). Responder needs root (privileged port binds + raw
+poisoning); this module self-elevates it via `sudo -n responder` when you're not
+root — so run the harness as your normal user (NOT `sudo python3 gui.py`) and
+give responder a NOPASSWD sudoers rule.
 
 PetitPotam.py is vendored under modules/_vendor/ (source:
 https://github.com/topotam/PetitPotam, PoC by @topotam77) so this module
