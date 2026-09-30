@@ -11,12 +11,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # (port, label) — sensitive services that generally should NOT be reachable
 # straight from an agency network to a data-centre / cloud target.
 SENSITIVE = [
+    # remote access / management
+    (22, "SSH"), (23, "Telnet"), (830, "NETCONF"),
     (135, "MSRPC"), (139, "NetBIOS-SSN"), (445, "SMB"),
     (3389, "RDP"), (5985, "WinRM-HTTP"), (5986, "WinRM-HTTPS"),
+    (5900, "VNC"), (2375, "Docker-API"),
+    # directory / auth
+    (88, "Kerberos"), (389, "LDAP"), (636, "LDAPS"),
+    (3268, "GlobalCatalog"), (3269, "GlobalCatalog-SSL"),
+    # databases
     (1433, "MSSQL"), (3306, "MySQL"), (5432, "PostgreSQL"), (1521, "Oracle"),
-    (636, "LDAPS"), (3268, "GlobalCatalog"), (3269, "GlobalCatalog-SSL"),
-    (5900, "VNC"), (6379, "Redis"), (27017, "MongoDB"),
-    (9200, "Elasticsearch"), (11211, "memcached"), (2375, "Docker-API"),
+    (6379, "Redis"), (27017, "MongoDB"), (9200, "Elasticsearch"),
+    (11211, "memcached"),
+    # file / rpc / misc
+    (111, "rpcbind"), (2049, "NFS"), (8080, "HTTP-alt"),
 ]
 TIMEOUT = 1.5
 

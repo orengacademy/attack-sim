@@ -583,13 +583,17 @@ def _match(raw, pat):
 # run with no clue why. Grep the raw log yourself for anything this misses.
 _ERROR_MARKER = re.compile(r"^(?:\[ERROR\].*|\S*ERROR\S*:.*)$", re.MULTILINE)
 _WARN_MARKER = re.compile(r"^\[WARN\].*$", re.MULTILINE)
+# [SKIP] = a module deliberately did nothing (e.g. an active-establishment
+# module with no infra configured, or --active not set) — surface WHY so the
+# NO-RESULT verdict isn't a mystery.
+_SKIP_MARKER = re.compile(r"^\[SKIP\].*$", re.MULTILINE)
 
 
 def _error_hint(raw):
     # prefer an actual ERROR line (the definitive reason) over a WARN (a
     # secondary side-note) — e.g. petitpotam prints both when not root, and
     # the "RESPONDER-PRIV-ERROR: needs root" line is the one worth surfacing.
-    m = _ERROR_MARKER.search(raw) or _WARN_MARKER.search(raw)
+    m = _ERROR_MARKER.search(raw) or _WARN_MARKER.search(raw) or _SKIP_MARKER.search(raw)
     return m.group(0).strip() if m else None
 
 
