@@ -1327,6 +1327,8 @@ class Runner:
             "control_tested": meta.get("control", meta["category"]),
             "fix_location": meta.get("fix", ""),
             # BAS mappings — carried into evidence so results are standards-aligned
+            "test_type": meta.get("test_type", ""),
+            "family": meta.get("family", ""),
             "mitre": meta.get("mitre", []),
             "cwe": meta.get("cwe", []),
             "cve": meta.get("cve", ""),

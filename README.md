@@ -303,6 +303,30 @@ Automated verdicts are best-effort (regex against the raw output). **The raw
 `.log` files are the authoritative evidence** — every classifier bug found
 in this project so far was caught by reading them, not by trusting the verdict.
 
+## Attack-simulation scope (USS families A–G)
+
+The engagement's **Attack Simulation (USS)** scope — per `additional/mygovnet-attack-sim-plan.html`
+— is **boundary egress/segmentation control validation** across 7 ATT&CK families.
+Each module is tagged with a `test_type` so a USS run reflects that scope and isn't
+mixed with other NPSA test types. Filter with `--attack-sim` or `--family`:
+
+| test_type | modules | in USS scope? |
+|-----------|---------|---------------|
+| **attack_sim** | egress_tunnel_brokers (A), tls_carrier (A), l7_enforce_443 (A), doh_bypass (B), covert_channel (E), segmentation_sweep (D), appid_port_mismatch (D), psexec (D) | ✅ yes |
+| pentest | apache_41773, log4shell, dcsync, kerberoast, petitpotam, kerberos_asrep | ✗ (UPT) |
+| va | snmp_brute, ssh_brute, ftp_anonymous, ldap_null_bind | ✗ (VA/ConfigA) |
+| dos | icmp_flood, syn_flood | ✗ (plan says **no DoS**) |
+
+Family coverage: **A** (443 tunnelling — client-named) ✔ egress-broker + TLS-carrier
++ L7-enforcement; **B** (DNS covert) ✔ DoH + DNS tunnel; **D** (segmentation/lateral)
+✔ sweep + App-ID + PsExec; **E** (exfil) ✔ ICMP/DNS. **C** (TLS/JA3 evasion), **F**
+(WAF — agency-owned), **G** (beacon realism) are not yet modularised. Run the scoped
+set headless:
+```bash
+python3 cli.py --target <IP> --attack-sim --confirm-roe        # all USS families
+python3 cli.py --target <IP> --family A,B --confirm-roe        # the two client-named
+```
+
 ## BAS mappings (MITRE ATT&CK / CWE)
 
 Every module declares its **MITRE ATT&CK** technique(s) (`mitre`), **tactic**

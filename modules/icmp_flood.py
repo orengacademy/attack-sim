@@ -18,6 +18,7 @@ META = {
     "id": "icmp_flood",
     "name": "ICMP Flood (DoS)",
     "category": "Network Exploitation",
+    "test_type": "dos",
     "control": "Rate-limit / DoS protection",
     "fix": "SD-WAN",
     "mitre": ['T1498.001'],

@@ -3,6 +3,7 @@ META = {
     "id": "dcsync",
     "name": "DCSync",
     "category": "AD Exploitation",
+    "test_type": "pentest",
     "control": "Segmentation (RPC replication)",
     "fix": "SD-WAN",
     "mitre": ['T1003.006'],

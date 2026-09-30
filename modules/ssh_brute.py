@@ -6,6 +6,7 @@ META = {
     "id": "ssh_brute",
     "name": "SSH Brute Force",
     "category": "Network Exploitation",
+    "test_type": "va",
     "control": "Brute-force protection / rate-limit",
     "fix": "SD-WAN",
     "mitre": ['T1110.001'],

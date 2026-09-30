@@ -5,6 +5,8 @@ META = {
     "id": "psexec",
     "name": "PsExec Lateral Movement",
     "category": "AD Exploitation",
+    "test_type": "attack_sim",
+    "family": "D",
     "control": "Segmentation (SMB/RPC) + IPS signature",
     "fix": "SD-WAN",
     "mitre": ['T1021.002', 'T1569.002'],

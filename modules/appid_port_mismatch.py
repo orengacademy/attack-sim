@@ -23,6 +23,8 @@ META = {
     "id": "appid_port_mismatch",
     "name": "App-ID Protocol/Port Mismatch",
     "category": "Application Control",
+    "test_type": "attack_sim",
+    "family": "D",
     "added": True,   # added after the initial harness set
     "control": "Application-ID / L7 policy (not port-based)",
     "fix": "SD-WAN",

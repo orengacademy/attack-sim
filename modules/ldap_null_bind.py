@@ -4,6 +4,7 @@ META = {
     "id": "ldap_null_bind",
     "name": "LDAP Null Bind",
     "category": "AD Exploitation",
+    "test_type": "va",
     "control": "Anonymous LDAP bind hardening",
     "fix": "Server",
     "mitre": ['T1087.002'],

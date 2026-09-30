@@ -14,6 +14,7 @@ META = {
     "id": "log4shell",
     "name": "Log4Shell (CVE-2021-44228)",
     "category": "Server Exploitation",
+    "test_type": "pentest",
     "control": "IPS signature (JNDI pattern)",
     "fix": "SD-WAN",
     "cve": "CVE-2021-44228",
