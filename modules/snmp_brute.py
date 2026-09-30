@@ -14,4 +14,6 @@ META = {
 
 
 def run(target, ctx):
-    return ctx.run_cmd("snmpwalk -v2c -c public -t5 {target}", target)
+    # -r1 (1 retry) so a filtered/closed UDP 161 resolves in ~6s instead of the
+    # default ~30s (5 retries x timeout) — snmpwalk is otherwise the long pole.
+    return ctx.run_cmd("snmpwalk -v2c -c public -t3 -r1 {target}", target)

@@ -123,6 +123,19 @@ Recon is **advisory** — it does not skip anything, because a filtered port may
 phase of a run) contacts the target, so it needs the same authorisation as the
 exploits. The plain `preflight.py` (no `--target`) contacts nothing.
 
+## Performance / concurrency
+
+- **Recon is parallel** — all target ports are probed concurrently (a thread
+  pool), so a target with several filtered ports no longer serialises one
+  timeout after another.
+- **Concurrent module execution** — set **Workers > 1** in the GUI (or
+  `Runner.concurrency = N` headless) to run parallel-safe modules at once.
+  Modules flagged `serial` in their `META` (the DoS floods and the SSH
+  rate-limit test) always run **alone** so they can't skew each other's
+  latency/rate-limit results. Default is `1` (fully sequential, unchanged).
+  Parallelism helps most when many modules are reachable and network latency
+  dominates; a single slow module is still the long pole.
+
 ## Run
 
 ```bash
