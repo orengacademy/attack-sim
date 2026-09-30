@@ -1,0 +1,32 @@
+# Vagrant — deliberately-vulnerable Windows AD Domain Controller for the AD/Windows
+# modules (kerberoast, kerberos_asrep, dcsync, psexec, petitpotam).  LAB ONLY.
+#
+#   cd deploy/windows
+#   vagrant up
+#   vagrant reload && vagrant provision   # 2nd pass seeds AD accounts after the DC-promo reboot
+#
+# Then point the harness at the DC:
+#   export HARNESS_DOMAIN=lab.local HARNESS_DC_USER=Administrator HARNESS_DC_PASS='Passw0rd!'
+#   python3 cli.py --target 192.168.56.10 --only kerberoast,kerberos_asrep,dcsync,psexec,petitpotam --confirm-roe
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "gusztavvargadr/windows-server-2022-standard"
+  config.vm.communicator = "winrm"
+  config.winrm.username = "vagrant"
+  config.winrm.password = "vagrant"
+  config.vm.hostname = "DC01"
+
+  # Private host-only network — keep the vulnerable DC OFF any routable/public net.
+  config.vm.network "private_network", ip: "192.168.56.10"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "MyGovNet-BAS-DC01"
+    vb.memory = 4096
+    vb.cpus   = 2
+    vb.gui    = false
+  end
+
+  # provision.ps1 is idempotent: first run installs AD-DS + promotes (then reboots);
+  # run `vagrant provision` again to seed the vulnerable accounts.
+  config.vm.provision "shell", path: "provision.ps1", privileged: true
+end

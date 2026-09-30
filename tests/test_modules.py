@@ -72,5 +72,27 @@ class TestAppIdMismatch(unittest.TestCase):
             close()
 
 
+class TestEgressModules(unittest.TestCase):
+    def test_l7_not_enforced_when_peer_answers(self):
+        l7 = importlib.import_module("modules.l7_enforce_443")
+        port, close = _listener()   # accepts and sends bytes back
+        try:
+            l7.META = dict(l7.META)  # avoid mutating shared META across tests
+            out = l7.run("127.0.0.1", core.Context(port_overrides={"l7_enforce_443": port}))
+            self.assertTrue(re.search(l7.META["success_regex"], out, re.M))
+        finally:
+            close()
+
+    def test_tls_carrier_no_tls_on_plain_listener(self):
+        tls = importlib.import_module("modules.tls_carrier")
+        port, close = _listener()   # plaintext listener -> TLS handshake fails
+        try:
+            out = tls.run("127.0.0.1", core.Context(port_overrides={"tls_carrier": port}))
+            self.assertFalse(re.search(tls.META["success_regex"], out, re.M))
+            self.assertIn("no-tls", out)
+        finally:
+            close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
