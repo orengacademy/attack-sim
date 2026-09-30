@@ -99,6 +99,29 @@ class TestCredentials(unittest.TestCase):
         self.assertEqual(core.load_credentials()["dc_pass"], "")
 
 
+class TestSudoPrefix(unittest.TestCase):
+    def _patch(self, priv, has_sudo):
+        self._op, self._ow = core.is_privileged, core.shutil.which
+        core.is_privileged = lambda: priv
+        core.shutil.which = lambda x: ("/usr/bin/sudo" if x == "sudo" and has_sudo else None)
+
+    def tearDown(self):
+        if hasattr(self, "_op"):
+            core.is_privileged, core.shutil.which = self._op, self._ow
+
+    def test_root_needs_no_prefix(self):
+        self._patch(priv=True, has_sudo=True)
+        self.assertEqual(core.sudo_prefix(), [])
+
+    def test_nonroot_with_sudo_uses_noninteractive(self):
+        self._patch(priv=False, has_sudo=True)
+        self.assertEqual(core.sudo_prefix(), ["sudo", "-n"])   # -n = never prompts
+
+    def test_nonroot_without_sudo_no_prefix(self):
+        self._patch(priv=False, has_sudo=False)
+        self.assertEqual(core.sudo_prefix(), [])
+
+
 class TestProbes(unittest.TestCase):
     def test_tcp_open_then_closed(self):
         srv = socket.socket()

