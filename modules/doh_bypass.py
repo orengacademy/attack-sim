@@ -8,6 +8,7 @@ META = {
     "category": "Network Exploitation",
     "control": "DNS filtering / egress control",
     "fix": "SD-WAN",
+    "requires": ["curl"],
     "success_regex": r'"Answer"|"data"',
     "blocked_regex": r"timed out|Connection refused|could not resolve|SSL certificate problem|curl: \(\d+\)",
 }

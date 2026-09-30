@@ -6,6 +6,7 @@ META = {
     "category": "Network Exploitation",
     "control": "Default-credential / community-string hygiene",
     "fix": "SD-WAN",
+    "requires": ["snmpwalk"],
     "success_regex": r"STRING|INTEGER|OID",
     "blocked_regex": r"Timeout|No Response|timed out",
 }

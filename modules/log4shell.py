@@ -7,6 +7,7 @@ META = {
     "category": "Server Exploitation",
     "control": "IPS signature (JNDI pattern)",
     "fix": "SD-WAN",
+    "requires": ["curl"],
     "success_regex": r"HTTP_CODE:200",
     "blocked_regex": r"timed out|Connection refused|HTTP_CODE:000",
 }

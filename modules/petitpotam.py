@@ -30,6 +30,9 @@ META = {
     "category": "AD Exploitation",
     "control": "SMB signing / NTLM relay & outbound-auth protections",
     "fix": "Server",
+    "requires": ["responder", "python3"],
+    "needs_root": True,            # Responder binds privileged ports + raw poisoning
+    "requires_files": [PETITPOTAM],  # vendored PoC under modules/_vendor/
     # a captured hash is the real finding; PetitPotam's own "Attack worked!"
     # only means the RPC coercion call landed, not that anything caught it.
     # "Skipping previously captured hash" also counts — Responder dedupes

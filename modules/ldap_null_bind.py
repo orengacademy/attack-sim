@@ -6,6 +6,7 @@ META = {
     "category": "AD Exploitation",
     "control": "Anonymous LDAP bind hardening",
     "fix": "Server",
+    "requires": ["ldapsearch"],
     # Anchor to the RESPONSE attribute line (LDIF: "namingContexts: DC=..."),
     # not the bare word — core prepends a "# command: ldapsearch ... namingContexts"
     # header to every log, and an unanchored /namingContexts/ matched THAT,
