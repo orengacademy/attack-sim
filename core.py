@@ -283,7 +283,7 @@ class Evidence:
                     lambda f: json.dump({"meta": self.meta, "results": self.records},
                                         f, indent=2, default=str))
 
-        cols = ["iteration", "category", "attack", "tactic", "mitre", "cwe",
+        cols = ["iteration", "mode", "category", "attack", "tactic", "mitre", "cwe",
                 "control_tested", "fix_location", "baseline_result",
                 "appliance_result", "verdict", "timestamp"]
 
@@ -316,7 +316,8 @@ class Evidence:
             s[bucket] += 1
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
-                 f"  Run: {self.ts}", "=" * 64, ""]
+                 f"  Run: {self.ts}   Mode: {self.meta.get('mode', 'blackbox').upper()}",
+                 "=" * 64, ""]
         for a, s in agg.items():
             tag = "consistent" if (s["blocked"] == s["n"] or s["passed"] == s["n"]) else "INCONSISTENT"
             verdict = "OK (blocked)" if s["blocked"] == s["n"] else \
@@ -1039,13 +1040,18 @@ class Runner:
                     f"— check the target/tool for a hang.")
         return box.get("out", f"# module {mid}\n\n[ERROR] module produced no output")
 
-    def run(self, modules, iterations, ev, skip_unready=True, recon=True):
+    def run(self, modules, iterations, ev, skip_unready=True, recon=True,
+            mode="blackbox"):
         def log(msg):
             try:
                 self.on_log(msg)
             except Exception:
                 pass
             ev.log(msg)
+
+        # Assessment posture (recorded + announced; execution is identical — the
+        # operator sets the SD-WAN to allow-all for a white-box baseline run).
+        self._mode = "whitebox" if str(mode).lower().startswith("w") else "blackbox"
 
         # ----- Target safety: validate + enforce allowlist BEFORE anything -----
         for label, ip in ([("target", self.target_ip)] +
@@ -1059,8 +1065,15 @@ class Runner:
                 f"Target '{self.target_ip}' refused — {areason}. Add it to "
                 f"allowlist.txt or HARNESS_ALLOWLIST to proceed.")
 
-        mode = "dual-path (baseline + appliance)" if self.dual else "single-target"
-        log(f"Mode: {mode}")
+        path = "dual-path (baseline + appliance)" if self.dual else "single-target"
+        banner = ("WHITEBOX (allow-all baseline — attacks SHOULD pass; confirms "
+                  "the attack/service works)" if self._mode == "whitebox"
+                  else "BLACKBOX (through the SD-WAN as-is — what gets blocked)")
+        ev.meta["mode"] = self._mode
+        log("=" * 60)
+        log(f"MODE: {banner}")
+        log("=" * 60)
+        log(f"Path: {path}")
         log(f"Target: {self.target_ip} ({areason})")
         log(f"Evidence dir: {ev.root}")
 
@@ -1260,6 +1273,7 @@ class Runner:
     def _record(self, ev, it, meta, b, a, verdict, recon_by_id):
         ev.save_result(it, meta["id"], {
             "iteration": it,
+            "mode": getattr(self, "_mode", "blackbox"),
             "category": meta["category"],
             "attack": meta["name"],
             "attack_id": meta["id"],
