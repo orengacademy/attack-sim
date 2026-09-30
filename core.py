@@ -22,33 +22,145 @@ import csv
 import json
 import shlex
 import shutil
+import socket
 import platform
+import ipaddress
 import subprocess
 from datetime import datetime
 
 # ---------------------------------------------------------------------
-# Preconfigured, static settings — edit here if the lab domain/creds change.
+# Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
+# never hard-coded in source — it comes from the environment or a git-ignored
+# credentials file, so no secret is committed. Precedence:
+#   1. env vars  HARNESS_DOMAIN / HARNESS_DC_USER / HARNESS_DC_PASS
+#   2. a git-ignored 'credentials.env' next to this file (KEY=VALUE lines)
+#   3. the non-secret defaults below (dc_pass defaults to empty)
 # ---------------------------------------------------------------------
-DEFAULT_CREDENTIALS = {
-    "domain": "lab.local",
-    "dc_user": "Administrator",
-    "dc_pass": "NewPass123!",
-}
 DEFAULT_TIMEOUT = 300  # seconds per attack module
+_CRED_ENV = {"domain": "HARNESS_DOMAIN", "dc_user": "HARNESS_DC_USER",
+             "dc_pass": "HARNESS_DC_PASS"}
+_CRED_DEFAULTS = {"domain": "lab.local", "dc_user": "Administrator", "dc_pass": ""}
+
+
+def _read_cred_file():
+    """Parse KEY=VALUE lines from a git-ignored credentials.env, if present."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.env")
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return out
+
+
+def load_credentials():
+    """Resolve credentials from env > credentials.env > non-secret defaults."""
+    filed = _read_cred_file()
+    creds = {}
+    for key, env in _CRED_ENV.items():
+        creds[key] = (os.environ.get(env)
+                      or filed.get(env) or filed.get(key)
+                      or _CRED_DEFAULTS[key])
+    return creds
+
+
+# Resolved once at import for convenience; Context re-resolves per instance.
+DEFAULT_CREDENTIALS = load_credentials()
+
+
+# ---------------------------------------------------------------------
+# Target safety — validate the target and (optionally) enforce an allowlist so
+# the harness can't be pointed at an arbitrary host by a typo. The allowlist is
+# opt-in: env HARNESS_ALLOWLIST (comma/space separated) and/or a git-ignored
+# 'allowlist.txt' (one entry per line). With no allowlist configured, behaviour
+# is unchanged (any validated target is allowed) — but a configured allowlist
+# is enforced hard.
+# ---------------------------------------------------------------------
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$")
+
+
+def validate_target(target):
+    """(ok, reason). Accepts a valid IPv4/IPv6 address or a DNS hostname."""
+    if not target or not target.strip():
+        return False, "empty target"
+    t = target.strip()
+    try:
+        ipaddress.ip_address(t)
+        return True, "valid IP"
+    except ValueError:
+        pass
+    if _HOSTNAME_RE.match(t):
+        return True, "valid hostname"
+    return False, "not a valid IP address or hostname"
+
+
+def load_allowlist():
+    """Set of allowed targets from env HARNESS_ALLOWLIST + allowlist.txt."""
+    entries = set()
+    env = os.environ.get("HARNESS_ALLOWLIST", "")
+    entries.update(p for p in re.split(r"[,\s]+", env.strip()) if p)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "allowlist.txt")
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    entries.add(line)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return entries
+
+
+def target_allowed(target):
+    """(allowed, reason). Enforces the allowlist only if one is configured."""
+    al = load_allowlist()
+    if not al:
+        return True, "no allowlist configured (any validated target allowed)"
+    return (target in al,
+            "in allowlist" if target in al
+            else f"NOT in allowlist ({len(al)} entr{'y' if len(al) == 1 else 'ies'} configured)")
+
+
+def _redact(text, creds):
+    """Strip credential VALUES (password especially) out of any text before it
+    is echoed to a log — the command header and tool output can otherwise leak
+    the cleartext password (e.g. hydra prints it, impacket takes it on argv)."""
+    if not text:
+        return text
+    for key in ("dc_pass", "dc_user"):
+        val = creds.get(key)
+        if val and len(val) >= 3:            # don't redact trivially short values
+            text = text.replace(val, "***")
+    return text
 
 
 def _run_cmd(template, target, creds, timeout):
     cmd = template.format(target=target, **creds)
-    header = f"# command: {cmd}\n# target: {target}\n\n"
+    # header/logs use a redacted copy — never write the cleartext password out.
+    header = f"# command: {_redact(cmd, creds)}\n# target: {target}\n\n"
     try:
-        p = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=timeout)
-        return header + (p.stdout or "") + "\n[stderr]\n" + (p.stderr or "")
+        # posix=False on Windows so backslash paths/quoting aren't mangled.
+        argv = shlex.split(cmd, posix=(os.name != "nt"))
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        body = (p.stdout or "") + "\n[stderr]\n" + (p.stderr or "")
+        return header + _redact(body, creds)
     except subprocess.TimeoutExpired:
         return header + "[TIMEOUT] command exceeded time limit (likely blocked/filtered)"
     except FileNotFoundError:
-        return header + "[ERROR] tool not found — is it installed on this Kali?"
+        return header + "[ERROR] tool not found — is it installed (see preflight.py)?"
     except Exception as e:
-        return header + f"[ERROR] {e}"
+        return header + f"[ERROR] {_redact(str(e), creds)}"
 
 
 # ---------------------------------------------------------------------
@@ -56,7 +168,7 @@ def _run_cmd(template, target, creds, timeout):
 # ---------------------------------------------------------------------
 class Context:
     def __init__(self, credentials=None, timeout=DEFAULT_TIMEOUT):
-        self.creds = credentials or DEFAULT_CREDENTIALS
+        self.creds = credentials or load_credentials()
         self.timeout = timeout
 
     def run_cmd(self, template, target):
@@ -415,12 +527,15 @@ def preflight(modules, want_versions=False):
         missing = [t["binary"] for t in tools if not t["found"]]
         missing_files = [f for f in req_files if not os.path.exists(f)]
         priv_ok = (not needs_root) or priv
+        os_supported = meta.get("os_supported")   # None => runs on any OS
+        os_ok = os_supported is None or platform.system() in os_supported
         out.append({
             "id": meta["id"], "name": meta["name"], "category": meta["category"],
             "requires": reqs, "tools": tools, "missing": missing,
             "needs_root": needs_root, "priv_ok": priv_ok,
             "requires_files": req_files, "missing_files": missing_files,
-            "ready": not missing and not missing_files and priv_ok,
+            "os_supported": os_supported, "os_ok": os_ok,
+            "ready": not missing and not missing_files and priv_ok and os_ok,
         })
     return {"platform": platform_info(), "privileged": priv,
             "package_manager": pm, "modules": out}
@@ -457,12 +572,159 @@ def format_preflight_report(pf):
             L.append(f"       privilege: {'ok' if r['priv_ok'] else 'NEEDS root/admin'}")
         if r["missing_files"]:
             L.append(f"       missing files: {', '.join(r['missing_files'])}")
+        if not r.get("os_ok", True):
+            L.append(f"       OS: not supported on {p['system']} "
+                     f"(supports: {', '.join(r['os_supported'])})")
         all_missing.update(r["missing"])
     if all_missing:
         cmds, notes = install_suggestions(sorted(all_missing), pf["package_manager"])
         L += ["", "To install the missing tools:"]
         L += ["  " + c for c in cmds] or ["  (no package mapping — see notes)"]
         L += ["  # " + n for n in notes]
+    L.append("=" * 62)
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------------
+# Reachability precheck (recon) — a preliminary, cross-platform TCP-connect
+# test of the port(s) each module targets, run BEFORE the exploit so a result
+# can tell "service absent / port filtered" apart from "the exploit itself was
+# blocked". Pure-socket: no nmap, no root, identical on Linux/macOS/Windows.
+#
+# IMPORTANT: unlike the tool preflight (which only inspects THIS host), this
+# actively contacts the TARGET, so it needs the same authorisation as the
+# exploits. It does NOT gate execution — a filtered port may itself be the
+# control under test, so modules still run; recon is advisory context.
+#
+# A module declares the ports it hits in META["ports"] as (proto, port) tuples:
+#   [("tcp", 445)]   [("udp", 161)]   [("icmp", None)]   []  (egress-only/none)
+# tcp = connect(); udp = best-effort datagram probe (often ambiguous, reported
+# as open|filtered); icmp = system ping. Ambiguous results are surfaced as
+# "indeterminate" rather than guessed at.
+# ---------------------------------------------------------------------
+
+_OPEN_STATES = {"open", "up"}
+_CLOSED_STATES = {"closed", "filtered", "unreachable", "unresolved", "down/filtered"}
+
+
+def probe_tcp(host, port, timeout=2.0):
+    """open / closed / filtered / unresolved / unreachable for one TCP port.
+    Cross-platform and unprivileged (a plain connect())."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return "open"
+    except (socket.timeout, TimeoutError):
+        return "filtered"        # no response — dropped/filtered (or slow)
+    except ConnectionRefusedError:
+        return "closed"          # host reachable, nothing listening on that port
+    except socket.gaierror:
+        return "unresolved"      # name/DNS did not resolve
+    except OSError:
+        return "unreachable"     # no route / network error
+
+
+def probe_udp(host, port, timeout=2.0):
+    """Best-effort UDP check (UDP has no handshake, so results are limited):
+    open (a reply came back) / closed (ICMP port-unreachable) / open|filtered
+    (no reply — the common, ambiguous case) / unreachable / unresolved."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(b"", (host, port))
+        try:
+            s.recvfrom(1024)
+            return "open"
+        except socket.timeout:
+            return "open|filtered"
+        except ConnectionRefusedError:
+            return "closed"
+    except socket.gaierror:
+        return "unresolved"
+    except OSError:
+        return "unreachable"
+    finally:
+        s.close()
+
+
+def probe_icmp(host, timeout=3.0):
+    """Best-effort ICMP reachability via the system ping (cross-OS flag: -n on
+    Windows, -c elsewhere): up / down/filtered / no-ping / unknown."""
+    if shutil.which("ping") is None:
+        return "no-ping"
+    count_flag = "-n" if platform.system() == "Windows" else "-c"
+    try:
+        p = subprocess.run(["ping", count_flag, "1", host],
+                           capture_output=True, text=True, timeout=timeout + 2)
+        return "up" if p.returncode == 0 else "down/filtered"
+    except Exception:
+        return "unknown"
+
+
+def reachability(target, modules, timeout=2.0):
+    """Probe the port(s) each module targets (tcp connect / best-effort udp /
+    icmp ping), cached per (proto,port). Returns {target, probes:[[proto,port,
+    status]...], modules:[{id,name,probes,reachable,category,notes}]}.
+    category is suggested | unreachable | indeterminate | noport. Advisory only."""
+    cache = {}
+
+    def get(proto, port):
+        key = (proto, port)
+        if key not in cache:
+            if proto == "tcp":
+                cache[key] = probe_tcp(target, port, timeout)
+            elif proto == "udp":
+                cache[key] = probe_udp(target, port, timeout)
+            elif proto == "icmp":
+                cache[key] = probe_icmp(target, timeout)
+            else:
+                cache[key] = "unknown"
+        return cache[key]
+
+    results = []
+    for m in modules:
+        meta = m.META
+        probes = []
+        for spec in meta.get("ports", []):
+            proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
+            probes.append([proto, port, get(proto, port)])
+        reachable = any(p[2] in _OPEN_STATES for p in probes)
+        if not probes:
+            category = "noport"
+        elif reachable:
+            category = "suggested"
+        elif any(p[2] in _CLOSED_STATES for p in probes):
+            category = "unreachable"
+        else:
+            category = "indeterminate"   # e.g. UDP open|filtered — can't tell
+        results.append({"id": meta["id"], "name": meta["name"], "probes": probes,
+                        "reachable": reachable, "category": category, "notes": []})
+    flat = [[proto, port, st] for (proto, port), st in cache.items()]
+    return {"target": target, "probes": flat, "modules": results}
+
+
+def format_reachability_report(rc):
+    """Human-readable recon summary from a reachability() result."""
+    L = ["=" * 62, f"  RECON — reachability of {rc['target']}", "=" * 62]
+    if rc["probes"]:
+        L.append("Probes:")
+        for proto, port, st in sorted(rc["probes"], key=lambda x: (x[0], x[1] or 0)):
+            label = f"{port}/{proto}" if port is not None else proto
+            L.append(f"  {label:>9}  {st}")
+    else:
+        L.append("(no ports to probe among these modules)")
+
+    def names(cat):
+        return [r["name"] for r in rc["modules"] if r["category"] == cat]
+
+    L += ["", "Suggested (service reachable): " + (", ".join(names("suggested")) or "none")]
+    if names("unreachable"):
+        L.append("Not reachable (filtered/closed) — a filtered port may itself be "
+                 "the control: " + ", ".join(names("unreachable")))
+    if names("indeterminate"):
+        L.append("Indeterminate (UDP/ICMP no reply — can't tell open from filtered): "
+                 + ", ".join(names("indeterminate")))
+    if names("noport"):
+        L.append("No port to probe (egress-only): " + ", ".join(names("noport")))
     L.append("=" * 62)
     return "\n".join(L)
 
@@ -492,15 +754,28 @@ class Runner:
     def stop(self):
         self._stop = True
 
-    def run(self, modules, iterations, ev, skip_unready=True):
+    def run(self, modules, iterations, ev, skip_unready=True, recon=True):
         def log(msg):
             self.on_log(msg)
             ev.log(msg)
+
+        # ----- Target safety: validate + enforce allowlist BEFORE anything -----
+        for label, ip in ([("target", self.target_ip)] +
+                          ([("appliance", self.appliance_ip)] if self.dual else [])):
+            ok, why = validate_target(ip)
+            if not ok:
+                raise ValueError(f"Invalid {label} '{ip}': {why}")
+        allowed, areason = target_allowed(self.target_ip)
+        if not allowed:
+            raise ValueError(
+                f"Target '{self.target_ip}' refused — {areason}. Add it to "
+                f"allowlist.txt or HARNESS_ALLOWLIST to proceed.")
 
         total = iterations * len(modules)
         cur = 0
         mode = "dual-path (baseline + appliance)" if self.dual else "single-target"
         log(f"Mode: {mode}")
+        log(f"Target: {self.target_ip} ({areason})")
         log(f"Evidence dir: {ev.root}")
 
         # ----- Preflight: verify tools/privileges BEFORE executing anything ---
@@ -526,6 +801,8 @@ class Runner:
                                ", ".join(os.path.basename(f) for f in r["missing_files"]))
             if not r["priv_ok"]:
                 reasons.append("needs root/admin")
+            if not r.get("os_ok", True):
+                reasons.append(f"not supported on {pi['system']}")
             log(f"  [NOT READY] {r['name']} — " + "; ".join(reasons))
         if all_missing:
             cmds, notes = install_suggestions(sorted(all_missing), pf["package_manager"])
@@ -536,6 +813,26 @@ class Runner:
         if skip_unready and ready_ids != {m.META["id"] for m in modules}:
             log("  (unready modules will be skipped as PREREQ-MISSING — pass "
                 "skip_unready=False to force-run them instead)")
+
+        # ----- Recon: preliminary reachability of the target's ports ----------
+        # Advisory only (does not gate) — a filtered port may BE the control.
+        recon_by_id = {}
+        if recon:
+            rc = reachability(self.target_ip, modules)
+            ev.meta["recon"] = rc
+            recon_by_id = {r["id"]: r for r in rc["modules"]}
+            if rc["probes"]:
+                log("Recon (reachability of %s): " % self.target_ip
+                    + ", ".join(f"{port}/{proto}:{st}"
+                                for proto, port, st in sorted(rc["probes"],
+                                                              key=lambda x: (x[0], x[1] or 0))))
+            suggested = [r["name"] for r in rc["modules"] if r["category"] == "suggested"]
+            unreach = [r["name"] for r in rc["modules"] if r["category"] == "unreachable"]
+            if suggested:
+                log("  suggested (service reachable): " + ", ".join(suggested))
+            if unreach:
+                log("  not reachable (filtered/closed) — still running (filtered "
+                    "port may be the control): " + ", ".join(unreach))
 
         for it in range(1, iterations + 1):
             if self._stop:
@@ -559,6 +856,8 @@ class Runner:
                                     ", ".join(os.path.basename(f) for f in r["missing_files"]))
                     if not r["priv_ok"]:
                         bits.append("needs root/admin")
+                    if not r.get("os_ok", True):
+                        bits.append(f"not supported on {platform.system()}")
                     verdict = "PREREQ-MISSING — skipped (" + "; ".join(bits) + ")"
                     b, a = "PREREQ-MISSING", "-"
                     log(f"     target: [{b}]  -> {verdict}")
@@ -575,6 +874,7 @@ class Runner:
                         "verdict": verdict,
                         "target_ip": self.target_ip,
                         "appliance_ip": self.appliance_ip if self.dual else None,
+                        "reachability": recon_by_id.get(meta["id"]),
                         "timestamp": datetime.now().isoformat(),
                     })
                     cur += 1
@@ -595,12 +895,21 @@ class Runner:
                     ok = _match(target_raw, meta.get("success_regex"))
                     authfail = _match(target_raw, AUTHFAIL_REGEX)
                     blocked = _match(target_raw, meta.get("blocked_regex")) or "[TIMEOUT]" in target_raw
+                    rr = recon_by_id.get(meta["id"])
+                    port_filtered = rr is not None and rr["category"] == "unreachable"
                     if ok:
                         b, verdict = "SUCCESS", "attack succeeded against target"
                     elif authfail:
-                        b, verdict = "AUTH-FAILED", "credential error — fix core.DEFAULT_CREDENTIALS, not a control result"
+                        b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
                     elif blocked:
                         b, verdict = "BLOCKED", "attack blocked/unreachable"
+                        if port_filtered:
+                            verdict += " (recon: target port filtered/closed — segmentation or service absent)"
+                    elif port_filtered:
+                        # no success + recon says the port is filtered/closed -> a
+                        # BLOCKED result the exploit output alone didn't make explicit.
+                        b = "BLOCKED"
+                        verdict = "attack blocked — recon shows target port filtered/closed (segmentation or service absent)"
                     else:
                         hint = _error_hint(target_raw)
                         b = "NO-RESULT"
@@ -622,6 +931,7 @@ class Runner:
                     "verdict": verdict,
                     "target_ip": self.target_ip,
                     "appliance_ip": self.appliance_ip if self.dual else None,
+                    "reachability": recon_by_id.get(meta["id"]),
                     "timestamp": datetime.now().isoformat(),
                 })
                 cur += 1

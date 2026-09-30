@@ -9,6 +9,7 @@ META = {
     "control": "Anonymous access hardening",
     "fix": "Server",
     "requires": ["curl"],
+    "ports": [("tcp", 21)],
     "success_regex": r"230 Login successful|230 User logged in|230 Anonymous",
     "blocked_regex": r"530|Login incorrect|Access denied|timed out|Connection refused",
 }

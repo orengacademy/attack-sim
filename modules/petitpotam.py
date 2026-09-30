@@ -32,7 +32,9 @@ META = {
     "fix": "Server",
     "requires": ["responder", "python3"],
     "needs_root": True,            # Responder binds privileged ports + raw poisoning
+    "os_supported": ["Linux"],     # Responder + eth0 raw poisoning are Linux-only
     "requires_files": [PETITPOTAM],  # vendored PoC under modules/_vendor/
+    "ports": [("tcp", 445)],       # MS-EFSRPC coercion over SMB
     # a captured hash is the real finding; PetitPotam's own "Attack worked!"
     # only means the RPC coercion call landed, not that anything caught it.
     # "Skipping previously captured hash" also counts — Responder dedupes

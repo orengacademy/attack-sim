@@ -6,6 +6,7 @@ META = {
     "control": "AD hardening (NOT SD-WAN)",
     "fix": "Server",
     "requires": ["impacket-GetUserSPNs"],
+    "ports": [("tcp", 88), ("tcp", 389)],
     "success_regex": r"\$krb5tgs\$|ServicePrincipalName|MSSQL/",
     "blocked_regex": r"timed out|Connection refused|unreachable|Errno",
 }

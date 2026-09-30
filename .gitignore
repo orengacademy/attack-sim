@@ -8,6 +8,11 @@ venv/
 # Runtime attack evidence (created at run time; may contain captured hashes)
 evidence/
 
+# Local secrets / target scope — never commit these
+credentials.env
+allowlist.txt
+.env
+
 # OS / editor
 desktop.ini
 .DS_Store

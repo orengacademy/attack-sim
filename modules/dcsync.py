@@ -6,6 +6,7 @@ META = {
     "control": "Segmentation (RPC replication)",
     "fix": "SD-WAN",
     "requires": ["impacket-secretsdump"],
+    "ports": [("tcp", 445), ("tcp", 135)],
     "success_regex": r"aad3b435|:::|krbtgt:|Kerberos keys grabbed",
     "blocked_regex": r"timed out|Connection refused|unreachable|Errno|STATUS_",
 }

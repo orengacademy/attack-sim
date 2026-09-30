@@ -8,6 +8,7 @@ META = {
     "control": "Segmentation (SMB/RPC) + IPS signature",
     "fix": "SD-WAN",
     "requires": ["impacket-psexec"],
+    "ports": [("tcp", 445)],
     "success_regex": r"nt authority\\system|Creating service|Starting service|SVCManager|Opening SVCManager",
     "blocked_regex": r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|Errno",
 }

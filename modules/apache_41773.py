@@ -8,6 +8,7 @@ META = {
     "control": "IPS signature / path normalization",
     "fix": "SD-WAN",
     "requires": ["curl"],
+    "ports": [("tcp", 80)],
     "success_regex": r"fonts|extensions",
     "blocked_regex": r"timed out|Connection refused|403 Forbidden|could not resolve",
 }

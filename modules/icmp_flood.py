@@ -22,6 +22,8 @@ META = {
     "fix": "SD-WAN",
     "requires": ["hping3", "ping", "timeout"],
     "needs_root": True,   # hping3 needs a raw socket (root or CAP_NET_RAW)
+    "os_supported": ["Linux"],   # uses `timeout` + `ping -c` + hping3 (Linux-only)
+    "ports": [("icmp", None)],   # ICMP, not a TCP/UDP port
     # attack 'worked' = meaningful packet loss during the flood
     "success_regex": r"PASS",
     # deliberately does NOT match FLOOD-PRIV-ERROR — a privilege failure means

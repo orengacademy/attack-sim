@@ -7,6 +7,7 @@ META = {
     "control": "Default-credential / community-string hygiene",
     "fix": "SD-WAN",
     "requires": ["snmpwalk"],
+    "ports": [("udp", 161)],
     "success_regex": r"STRING|INTEGER|OID",
     "blocked_regex": r"Timeout|No Response|timed out",
 }
