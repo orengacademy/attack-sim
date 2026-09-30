@@ -1,0 +1,7 @@
+administrator
+svc_sql
+svc_web
+admin
+root
+backup
+service

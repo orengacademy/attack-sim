@@ -1,0 +1,854 @@
+<title>MyGovNet Attack Simulation — Egress & Segmentation Control Validation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ============ TOKENS — light is the base, defined on bare :root ============ */
+  :root {
+    --bg:        #f4f7f6;
+    --surface:   #ffffff;
+    --surface-2: #eaf0ef;
+    --surface-3: #e0e8e7;
+    --border:    #d3dedc;
+    --border-2:  #c0cfcc;
+    --ink:       #14211f;
+    --ink-2:     #35433f;
+    --muted:     #5d6b67;
+    --faint:     #849490;
+
+    --accent:    #0c6d77;
+    --accent-2:  #094f57;
+    --accent-bg: #dcefef;
+
+    --crit:      #b3261e;
+    --crit-bg:   #f6dedb;
+    --high:      #b5560a;
+    --high-bg:   #f7e6d6;
+    --med:       #8a6a00;
+    --med-bg:    #f2ecd2;
+    --det:       #1d5ab8;
+    --det-bg:    #dde7f7;
+
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+
+    --maxw: 1120px;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16,32,30,.05), 0 6px 20px rgba(16,32,30,.06);
+  }
+
+  /* system dark (no explicit choice) — override tokens only */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        #0a1312;
+      --surface:   #10201e;
+      --surface-2: #172a27;
+      --surface-3: #1f3733;
+      --border:    #26403c;
+      --border-2:  #315049;
+      --ink:       #e9f1ef;
+      --ink-2:     #bcccc8;
+      --muted:     #7f9691;
+      --faint:     #5f7772;
+
+      --accent:    #3ac2cd;
+      --accent-2:  #6bd6df;
+      --accent-bg: #0f2f31;
+
+      --crit:      #ff7264;
+      --crit-bg:   #34181a;
+      --high:      #ffa25a;
+      --high-bg:   #33241a;
+      --med:       #e6c559;
+      --med-bg:    #2e2a18;
+      --det:       #74a8ff;
+      --det-bg:    #16233a;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.35);
+    }
+  }
+
+  /* explicit dark choice — wins over light OS */
+  :root[data-theme="dark"] {
+    --bg:        #0a1312;
+    --surface:   #10201e;
+    --surface-2: #172a27;
+    --surface-3: #1f3733;
+    --border:    #26403c;
+    --border-2:  #315049;
+    --ink:       #e9f1ef;
+    --ink-2:     #bcccc8;
+    --muted:     #7f9691;
+    --faint:     #5f7772;
+
+    --accent:    #3ac2cd;
+    --accent-2:  #6bd6df;
+    --accent-bg: #0f2f31;
+
+    --crit:      #ff7264;
+    --crit-bg:   #34181a;
+    --high:      #ffa25a;
+    --high-bg:   #33241a;
+    --med:       #e6c559;
+    --med-bg:    #2e2a18;
+    --det:       #74a8ff;
+    --det-bg:    #16233a;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 26px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 22px; }
+
+  a { color: var(--accent); }
+
+  /* ============ top bar ============ */
+  header.top {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .top-inner { display: flex; align-items: center; gap: 14px; padding: 12px 22px; max-width: var(--maxw); margin: 0 auto; }
+  .badge {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--accent-2); background: var(--accent-bg); border: 1px solid var(--border-2);
+    padding: 4px 9px; border-radius: 6px; white-space: nowrap;
+  }
+  .top-title { font-size: 13.5px; font-weight: 600; color: var(--ink-2); letter-spacing: .01em; }
+  .spacer { flex: 1; }
+  .toggle {
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+    background: var(--surface-2); color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 11px;
+  }
+  .toggle:hover { border-color: var(--border-2); color: var(--ink); }
+  .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ============ hero ============ */
+  .hero { padding: 54px 0 30px; border-bottom: 1px solid var(--border); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 16px;
+  }
+  h1 {
+    font-size: clamp(30px, 5vw, 46px); line-height: 1.08; margin: 0 0 18px;
+    letter-spacing: -.02em; text-wrap: balance; font-weight: 700;
+  }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 68ch; margin: 0 0 26px; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 10px 26px; font-size: 13.5px; color: var(--muted); }
+  .meta-row b { color: var(--ink-2); font-weight: 600; }
+
+  /* ============ topology ============ */
+  .topo { margin: 30px 0 6px; }
+  .topo-grid {
+    display: grid; gap: 14px; align-items: stretch;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+  }
+  .zone {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 16px 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 8px;
+  }
+  .zone h3 { margin: 0; font-size: 14px; letter-spacing: .02em; }
+  .zone .sub { font-size: 12.5px; color: var(--muted); }
+  .zone ul { margin: 4px 0 0; padding-left: 16px; font-size: 12.5px; color: var(--ink-2); }
+  .zone.boundary { background: var(--accent-bg); border-color: var(--border-2); }
+  .zone.boundary h3 { color: var(--accent-2); }
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); color: var(--accent); font-size: 22px; font-weight: 700;
+    min-width: 34px;
+  }
+  .arrow span { display: block; text-align: center; line-height: 1; }
+  .arrow small { display: block; font-size: 9px; letter-spacing: .1em; color: var(--muted); margin-top: 4px; }
+
+  /* ============ sections ============ */
+  section { padding: 40px 0; border-bottom: 1px solid var(--border); }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px; flex-wrap: wrap; }
+  .sec-num { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 600; }
+  h2 { font-size: clamp(22px, 3vw, 28px); margin: 0; letter-spacing: -.015em; text-wrap: balance; }
+  .sec-desc { color: var(--ink-2); max-width: 74ch; margin: 10px 0 26px; font-size: 15.5px; }
+
+  /* ============ legend ============ */
+  .legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap: 14px; }
+  .legend-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; }
+  .legend-card h4 { margin: 0 0 9px; font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .legend-card p { margin: 6px 0 0; font-size: 13px; color: var(--ink-2); }
+
+  /* ============ chips ============ */
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .02em;
+    padding: 3px 8px; border-radius: 5px; border: 1px solid transparent; white-space: nowrap;
+  }
+  .chip.mitre { background: var(--surface-3); color: var(--ink-2); border-color: var(--border); }
+  .chip.path  { background: var(--accent-bg); color: var(--accent-2); border-color: var(--border-2); }
+  .chip.dir   { background: var(--surface-2); color: var(--ink-2); border-color: var(--border); text-transform: none; }
+  .chip.crit  { background: var(--crit-bg); color: var(--crit); }
+  .chip.high  { background: var(--high-bg); color: var(--high); }
+  .chip.med   { background: var(--med-bg); color: var(--med); }
+  .chip.det   { background: var(--det-bg); color: var(--det); }
+
+  /* ============ technique cards ============ */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px 18px 16px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .card-title { font-size: 16px; font-weight: 650; margin: 0; letter-spacing: -.01em; line-height: 1.3; }
+  .card-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .card-body { font-size: 13.5px; color: var(--ink-2); margin: 0; }
+  .card-body b { color: var(--ink); font-weight: 650; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12.5px; margin-top: 2px; }
+  .kv dt { color: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; padding-top: 2px; }
+  .kv dd { margin: 0; color: var(--ink-2); }
+  .kv dd code, .card-body code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+  .expect { border-top: 1px dashed var(--border-2); padding-top: 10px; font-size: 12.5px; }
+  .expect .lbl { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 2px; }
+  .expect .det-line { color: var(--det); }
+
+  /* ============ matrix table ============ */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 640px; background: var(--surface); }
+  thead th {
+    text-align: left; padding: 12px 14px; background: var(--surface-2);
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+  }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--ink-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { font-weight: 600; color: var(--ink); }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ============ phase / steps ============ */
+  .phases { display: grid; gap: 12px; }
+  .phase {
+    display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px;
+  }
+  .phase .n { font-family: var(--mono); font-size: 22px; font-weight: 700; color: var(--accent); line-height: 1; padding-top: 2px; }
+  .phase h4 { margin: 0 0 5px; font-size: 15px; }
+  .phase p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+
+  /* ============ callout ============ */
+  .callout {
+    background: var(--surface); border: 1px solid var(--border-2); border-left: 3px solid var(--accent);
+    border-radius: var(--radius); padding: 16px 18px; margin-top: 4px;
+  }
+  .callout.warn { border-left-color: var(--high); }
+  .callout h4 { margin: 0 0 8px; font-size: 14px; }
+  .callout ul { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--ink-2); }
+  .callout li { margin: 5px 0; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .col h3 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .tool-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .tool-list li { font-size: 13.5px; color: var(--ink-2); }
+  .tool-list code { font-family: var(--mono); font-size: 12.5px; color: var(--accent-2); background: var(--accent-bg); padding: 1px 6px; border-radius: 4px; }
+
+  footer { padding: 34px 0 60px; color: var(--muted); font-size: 12.5px; }
+  footer p { margin: 4px 0; max-width: 80ch; }
+
+  @media (max-width: 860px) {
+    .topo-grid { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); min-height: 26px; }
+    .two-col { grid-template-columns: 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<header class="top">
+  <div class="top-inner">
+    <span class="badge">Purple Team · BAS</span>
+    <span class="top-title">MyGovNet — Egress &amp; Segmentation Control Validation</span>
+    <span class="spacer"></span>
+    <button class="toggle" id="themeBtn" type="button" aria-label="Toggle color theme">◐ theme</button>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="hero">
+    <p class="eyebrow">Adversary Emulation Test Plan · Draft for Scoping</p>
+    <h1>Which attacks pass the boundary between SDWAN and the KVDC / IPDC data centres?</h1>
+    <p class="lede">
+      A structured breach-and-attack-simulation plan for the GITN MyGovNet environment. Every technique below
+      is framed as a <b>control test</b>: it names the allowed path it abuses, what security control should stop
+      or catch it, and the signal the blue team should see. A technique that gets through silently is a finding,
+      not a win.
+    </p>
+    <div class="meta-row">
+      <span><b>Scope:</b> User SDWAN &amp; Agency SDWAN ⇄ KVDC / IPDC</span>
+      <span><b>Model:</b> Assumed breach (endpoint + server foothold)</span>
+      <span><b>Framing:</b> MITRE ATT&amp;CK-mapped</span>
+      <span><b>Status:</b> Requires signed authorization before execution</span>
+    </div>
+
+    <div class="topo">
+      <div class="topo-grid">
+        <div class="zone">
+          <h3>Source Zones</h3>
+          <span class="sub">Assumed foothold #1</span>
+          <ul>
+            <li>User SDWAN sites</li>
+            <li>Agency SDWAN sites</li>
+            <li>Managed &amp; BYOD endpoints</li>
+          </ul>
+        </div>
+        <div class="arrow"><span>⇄<small>N/S</small></span></div>
+        <div class="zone boundary">
+          <h3>Boundary Controls</h3>
+          <span class="sub">The system under test</span>
+          <ul>
+            <li>Perimeter / inter-zone FW</li>
+            <li>IPS · TLS-inspect proxy</li>
+            <li>DNS resolver &amp; filtering</li>
+            <li>NDR · DLP · segmentation ACLs</li>
+          </ul>
+        </div>
+        <div class="arrow"><span>⇄<small>E/W</small></span></div>
+        <div class="zone">
+          <h3>Data Centre Zones</h3>
+          <span class="sub">Assumed foothold #2</span>
+          <ul>
+            <li>KVDC hosted services</li>
+            <li>IPDC hosted services</li>
+            <li>Published apps on 443</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ HOW TO READ ============ -->
+  <section id="legend">
+    <div class="sec-head"><span class="sec-num">00</span><h2>How to read each technique</h2></div>
+    <p class="sec-desc">
+      Cards carry four signals so the team can prioritise and so each test produces a pass/fail verdict against a
+      named control. "Bypass likelihood" is our estimate of how often this class of traffic slips through a typical
+      port-based ruleset today — start testing at the top.
+    </p>
+    <div class="legend">
+      <div class="legend-card">
+        <h4>Direction</h4>
+        <span class="chip dir">SDWAN → DC</span> <span class="chip dir">DC → SDWAN</span> <span class="chip dir">Both / E-W</span>
+        <p>Northbound is the user path; the reverse (server-initiated) path is where least-privilege egress usually fails.</p>
+      </div>
+      <div class="legend-card">
+        <h4>Bypass likelihood</h4>
+        <span class="chip crit">High</span> <span class="chip high">Medium</span> <span class="chip med">Situational</span>
+        <p>Estimated chance the traffic passes a port-based / partially-inspected boundary. Higher = test first.</p>
+      </div>
+      <div class="legend-card">
+        <h4>Path abused</h4>
+        <span class="chip path">TCP/443</span> <span class="chip path">UDP/443</span> <span class="chip path">DNS/53</span>
+        <p>The allowed protocol/port the technique hides inside — the reason it is a realistic bypass.</p>
+      </div>
+      <div class="legend-card">
+        <h4>ATT&amp;CK + Detection</h4>
+        <span class="chip mitre">T1572</span> <span class="chip det">Detect ↓</span>
+        <p>MITRE technique for reporting, and the expected detection signal for the blue team to validate.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PRIORITY MATRIX ============ -->
+  <section id="matrix">
+    <div class="sec-head"><span class="sec-num">01</span><h2>Priority matrix</h2></div>
+    <p class="sec-desc">
+      The families below, ordered by how commonly they defeat a port-based boundary. The two the requester named —
+      443 tunnelling and DNS-over-HTTPS — sit at the top for good reason, but they are two of seven families worth exercising.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Family</th><th>Primary path</th><th>Direction</th><th>Bypass likelihood</th><th>Control it validates</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>A · Encrypted C2 &amp; tunnelling</td><td class="tnum">TCP/UDP 443</td><td>SDWAN → DC · reverse</td><td><span class="chip crit">High</span></td><td>Egress domain allow-listing, TLS inspection, app-ID</td></tr>
+          <tr><td>B · DNS covert channels</td><td class="tnum">443 (DoH) · 53 · 853</td><td>Both</td><td><span class="chip crit">High</span></td><td>Forced internal resolver, DoH blocking, DNS analytics</td></tr>
+          <tr><td>C · Proxy / TLS-inspection evasion</td><td class="tnum">TCP/443</td><td>SDWAN → DC</td><td><span class="chip high">Medium</span></td><td>SNI/JA3 inspection, category &amp; reputation filtering</td></tr>
+          <tr><td>D · Segmentation &amp; lateral movement</td><td class="tnum">Many + 443 pivot</td><td>Both / E-W</td><td><span class="chip high">Medium</span></td><td>Least-privilege ACLs, micro-segmentation, EDR</td></tr>
+          <tr><td>E · Data exfiltration</td><td class="tnum">443 · 53 · ICMP</td><td>SDWAN → DC · out</td><td><span class="chip high">Medium</span></td><td>DLP, CASB / SaaS egress, volumetric analytics</td></tr>
+          <tr><td>F · Inbound / published-service abuse</td><td class="tnum">443 inbound</td><td>DC (ingress)</td><td><span class="chip med">Situational</span></td><td>WAF, reverse-proxy hardening, DMZ egress</td></tr>
+          <tr><td>G · Emulation realism &amp; evasion</td><td class="tnum">overlay</td><td>overlay</td><td><span class="chip med">Situational</span></td><td>NDR beacon analytics, UEBA, EDR/NDR gap</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ A. TUNNELLING ============ -->
+  <section id="famA">
+    <div class="sec-head"><span class="sec-num">A</span><h2>Encrypted C2 &amp; tunnelling over 443</h2></div>
+    <p class="sec-desc">
+      Since 443 is permitted inbound and outbound, the first question is whether the boundary inspects
+      <em>what</em> rides inside TLS or only that the port is 443. Each tunnel below reaches the internet with no
+      inbound firewall change, so it also validates the reverse (DC-initiated) egress path.
+    </p>
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">Cloudflare Tunnel (cloudflared)</h3>
+          <div class="card-chips"><span class="chip crit">High</span></div>
+        </div>
+        <p class="card-body">Outbound-only agent dials Cloudflare's edge over 443/QUIC and exposes an internal host — <b>no inbound rule required</b>. The classic "allowed 443 = free tunnel" test.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span> <span class="chip path">UDP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span> <span class="chip dir">DC → out</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1572</span> <span class="chip mitre">T1090.001</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Block <code>cloudflared</code> binary + egress to <code>*.argotunnel.com</code> / <code>*.cloudflareaccess.com</code>; deny UDP/443.
+          <br><span class="det-line">↓ Detect: long-lived QUIC/443 flows, SNI to argotunnel, tunnel-client process.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">ngrok / Dev Tunnels / localtunnel</h3>
+          <div class="card-chips"><span class="chip crit">High</span></div>
+        </div>
+        <p class="card-body">Hosted reverse tunnels over TLS/443. <b>Microsoft Dev Tunnels</b> (<code>*.devtunnels.ms</code>) is notable — it rides trusted Microsoft domains that reputation allow-lists often wave through.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1572</span> <span class="chip mitre">T1102</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Category-block "remote access / tunnel" domains even when the parent brand is trusted.
+          <br><span class="det-line">↓ Detect: SNI to <code>*.ngrok.io</code>, <code>*.devtunnels.ms</code>; tunnel-client JA3.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">Self-hosted reverse tunnels — chisel / gost / frp</h3>
+          <div class="card-chips"><span class="chip crit">High</span></div>
+        </div>
+        <p class="card-body">HTTP/WebSocket/TLS tunnels to an <b>attacker-controlled VPS on 443</b>, so no known-bad domain to filter. SOCKS over the tunnel then reaches otherwise-segmented services.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">Both / E-W</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1090.003</span> <span class="chip mitre">T1572</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>TLS inspection + app-ID (non-HTTP on 443 blocked); egress only to categorised destinations.
+          <br><span class="det-line">↓ Detect: WebSocket upgrade to uncategorised host, anomalous JA3/JA4, steady beacon.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">SSH-over-443 &amp; relay VPNs</h3>
+          <div class="card-chips"><span class="chip high">Medium</span></div>
+        </div>
+        <p class="card-body">SSH on 443 with dynamic SOCKS (<code>corkscrew</code>/<code>proxytunnel</code> through the proxy), plus relay-mode meshes — <b>Tailscale DERP, ZeroTier, WireGuard-over-TCP</b> (<code>wstunnel</code>) — that fall back to 443 when UDP is blocked.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">Both / E-W</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1572</span> <span class="chip mitre">T1048</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Deny SSH client egress; block mesh-VPN relay domains; app-ID on 443.
+          <br><span class="det-line">↓ Detect: SSH handshake on 443, DERP/relay SNI, unmanaged VPN client.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">Living-off-trusted-sites C2 (LOTS)</h3>
+          <div class="card-chips"><span class="chip crit">High</span></div>
+        </div>
+        <p class="card-body">C2 and staging carried over legitimate SaaS on 443 — <b>GitHub, Google Drive, Microsoft Graph/Teams, Slack, Discord/Telegram, Pastebin, Trello</b>. No "malicious" domain to block; all high-reputation.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1102</span> <span class="chip mitre">T1071.001</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>CASB / tenant-restricted SaaS; block consumer SaaS where no business need.
+          <br><span class="det-line">↓ Detect: API-shaped beacon to SaaS, non-corporate tenant, off-baseline volume.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">Domain fronting &amp; encrypted SNI / ECH</h3>
+          <div class="card-chips"><span class="chip high">Medium</span></div>
+        </div>
+        <p class="card-body">Front on a CDN so the visible <b>SNI differs from the real Host</b> (Fastly / Azure / CloudFront), or hide SNI entirely with <b>Encrypted Client Hello</b>. Defeats SNI-only filtering.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1090.004</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>TLS inspection to read the true Host; block/deny ECH where policy requires visibility.
+          <br><span class="det-line">↓ Detect: SNI≠Host mismatch, ECH ClientHello where not expected.</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ B. DNS ============ -->
+  <section id="famB">
+    <div class="sec-head"><span class="sec-num">B</span><h2>DNS covert channels &amp; resolver bypass</h2></div>
+    <p class="sec-desc">
+      DNS is the other universal egress. The tests split into two goals: (1) can an endpoint <em>bypass the internal
+      resolver</em> entirely (DoH/DoT), blinding DNS logging and sinkholing; and (2) can DNS itself carry a
+      <em>covert channel</em> for C2/exfil.
+    </p>
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">DNS-over-HTTPS to public resolvers</h3>
+          <div class="card-chips"><span class="chip crit">High</span></div>
+        </div>
+        <p class="card-body">Resolve via <b>Cloudflare 1.1.1.1, Google, Quad9, NextDNS</b> over 443 — internal DNS filtering, logging and sinkholes are bypassed because queries never touch the corporate resolver.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">Both</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1071.004</span> <span class="chip mitre">T1572</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Force internal resolver; block known DoH IPs/domains; disable browser built-in DoH via policy.
+          <br><span class="det-line">↓ Detect: 443 to known DoH endpoints, absence of matching plaintext DNS.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">DoH to attacker-controlled resolver</h3>
+          <div class="card-chips"><span class="chip crit">High</span></div>
+        </div>
+        <p class="card-body">Point DoH at a <b>custom domain you own</b> — now the covert channel is indistinguishable from ordinary HTTPS to an uncategorised site. Harder than blocking the well-known public resolvers.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/443</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1071.004</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Default-deny egress + TLS inspection; only categorised destinations permitted.
+          <br><span class="det-line">↓ Detect: DoH content-type to new domain, periodic uniform POSTs.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">Classic DNS tunnelling</h3>
+          <div class="card-chips"><span class="chip high">Medium</span></div>
+        </div>
+        <p class="card-body">Encode payload in subdomains and TXT/NULL/CNAME answers via the recursive resolver to an <b>attacker-owned authoritative NS</b> (<code>iodine</code>, <code>dnscat2</code>, DNSExfiltrator). Works even when only internal DNS is reachable.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">DNS/53</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">Both</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1071.004</span> <span class="chip mitre">T1048.001</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Restrict outbound 53 to internal resolvers only; cap query rate; block resolution of new authoritative zones.
+          <br><span class="det-line">↓ Detect: high query volume/entropy to one domain, long/base32 labels, rare record types.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-top">
+          <h3 class="card-title">DoT / DoQ on 853</h3>
+          <div class="card-chips"><span class="chip med">Situational</span></div>
+        </div>
+        <p class="card-body">DNS-over-TLS (TCP/853) and DNS-over-QUIC (UDP/853) — a quick check that a non-standard port isn't quietly open outbound.</p>
+        <dl class="kv">
+          <dt>Path</dt><dd><span class="chip path">TCP/853</span> <span class="chip path">UDP/853</span></dd>
+          <dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span></dd>
+          <dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1071.004</span></dd>
+        </dl>
+        <div class="expect">
+          <span class="lbl">Expected control</span>Default-deny egress ports; 853 not permitted outbound.
+          <br><span class="det-line">↓ Detect: any egress on 853; TLS on non-standard port.</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ C. PROXY / TLS EVASION ============ -->
+  <section id="famC">
+    <div class="sec-head"><span class="sec-num">C</span><h2>Proxy, TLS-inspection &amp; web-filter evasion</h2></div>
+    <p class="sec-desc">
+      If a TLS-inspecting proxy exists, these tests probe how well it actually inspects — and whether traffic can be
+      shaped to look benign enough to be waved through.
+    </p>
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">TLS fingerprint mimicry (JA3/JA4)</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Use <code>utls</code> to make the implant's ClientHello <b>identical to Chrome/Firefox</b>, defeating fingerprint-based tool detection.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1573</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Behavioural NDR beyond fingerprints; TLS inspection.<br><span class="det-line">↓ Detect: beacon regularity, destination reputation, cert anomalies.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Reputation &amp; category laundering</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Host C2 behind <b>AWS/Azure/GCP fronts, newly-registered domains, or redirector chains</b> categorised as benign — probes URL-category and reputation filtering.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1090.002</span> <span class="chip mitre">T1583.001</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Block newly-registered domains; deny uncategorised; inspect cloud-hosted destinations.<br><span class="det-line">↓ Detect: young domain age, cloud-front SNI with beacon pattern.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Authenticated-proxy &amp; pinning bypass</h3><div class="card-chips"><span class="chip med">Situational</span></div></div>
+        <p class="card-body">Proxy-aware beacon that honours the <b>system proxy with NTLM/Kerberos auth</b>; and testing whether TLS-intercept silently breaks pinned apps (and whether that breakage is alerted).</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1090</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Enforce authenticated proxy for all egress; no direct-to-internet bypass path.<br><span class="det-line">↓ Detect: egress not traversing proxy, unexpected direct 443.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">HTTP request smuggling / desync</h3><div class="card-chips"><span class="chip med">Situational</span></div></div>
+        <p class="card-body">CL.TE / TE.CL desync against the <b>boundary reverse proxy or load balancer</b> in front of published DC apps — tests parsing consistency across the proxy chain.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1190</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Consistent HTTP parsing; reject ambiguous Content-Length/Transfer-Encoding.<br><span class="det-line">↓ Detect: malformed framing, cross-request contamination in logs.</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ D. SEGMENTATION ============ -->
+  <section id="famD">
+    <div class="sec-head"><span class="sec-num">D</span><h2>Segmentation &amp; lateral movement across the boundary</h2></div>
+    <p class="sec-desc">
+      This is the "and vice versa" half of the brief. It validates that the firewall between SDWAN and the data
+      centres enforces least privilege in <em>both</em> directions, and that a foothold on one side can't freely pivot.
+    </p>
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Boundary port/protocol matrix sweep</h3><div class="card-chips"><span class="chip crit">High</span></div></div>
+        <p class="card-body">Enumerate what <b>actually traverses</b> SDWAN→DC and DC→SDWAN beyond 443: SMB 445, RDP 3389, WinRM 5985/6, SSH 22, LDAP(S) 389/636, Kerberos 88, RPC 135+dynamic, DB 1433/1521/3306/5432, SNMP 161, syslog 514, NTP 123, ICMP.</p>
+        <dl class="kv"><dt>Dir</dt><dd><span class="chip dir">Both / E-W</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1046</span> <span class="chip mitre">T1595</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Documented least-privilege ruleset; no "any/any" or broad management ports across zones.<br><span class="det-line">↓ Detect: scan bursts, connections to closed services, first-seen flows.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Reverse / server-initiated egress</h3><div class="card-chips"><span class="chip crit">High</span></div></div>
+        <p class="card-body">A KVDC/IPDC server should rarely initiate outbound to user zones or the internet. Test <b>reverse shells and beacons from a DC host</b> — the direction least often locked down.</p>
+        <dl class="kv"><dt>Dir</dt><dd><span class="chip dir">DC → SDWAN</span> <span class="chip dir">DC → out</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1571</span> <span class="chip mitre">T1090</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Deny server-initiated egress except explicit allow-list (updates, NTP, logging).<br><span class="det-line">↓ Detect: outbound from server VLAN, new external destinations from DC.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">443 SOCKS pivot to segmented services</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Prove the impact: open a SOCKS proxy over the 443 tunnel from Family A, then <b>reach RDP/SMB/DB hosts that block direct access</b>. Demonstrates that unrestricted 443 collapses segmentation.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span> → any</dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1572</span> <span class="chip mitre">T1021</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>App-ID on 443 (HTTP only); micro-segmentation independent of egress.<br><span class="det-line">↓ Detect: tunnel client + internal fan-out to management ports.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">East-west lateral movement in DC</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">From the DC foothold: <b>PsExec/SMB, WMI, WinRM, DCOM, RDP, scheduled task/service</b> creation to adjacent hosts — validates internal micro-segmentation and EDR, not just the perimeter.</p>
+        <dl class="kv"><dt>Dir</dt><dd><span class="chip dir">Both / E-W</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1021.002</span> <span class="chip mitre">T1047</span> <span class="chip mitre">T1021.006</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Host firewalls between servers; EDR blocking remote-exec; tiered admin.<br><span class="det-line">↓ Detect: remote service/task creation, anomalous admin auth, lateral SMB.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">L4-vs-L7 &amp; IPv6 ACL gaps</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Send a <b>non-HTTP custom protocol on 443</b> (does the boundary enforce L7 or only the port?), and repeat key tests over <b>IPv6</b> to check ACL parity on dual-stack paths.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span> · IPv6</dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1095</span> <span class="chip mitre">T1599</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Protocol-aware inspection; IPv6 ACLs mirror IPv4; deny by default.<br><span class="det-line">↓ Detect: non-TLS bytes on 443, unexpected IPv6 egress.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Stateful-inspection evasion</h3><div class="card-chips"><span class="chip med">Situational</span></div></div>
+        <p class="card-body">Fragmentation, source-port spoofing (53/443 as source), and decoy scans to probe the <b>quality of stateful inspection</b> on the inter-zone firewall.</p>
+        <dl class="kv"><dt>Dir</dt><dd><span class="chip dir">SDWAN → DC</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1205</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Reassembly-aware inspection; no trust of source port; anti-spoofing.<br><span class="det-line">↓ Detect: fragmented probes, mismatched source ports.</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ E. EXFIL ============ -->
+  <section id="famE">
+    <div class="sec-head"><span class="sec-num">E</span><h2>Data exfiltration channels</h2></div>
+    <p class="sec-desc">
+      Use <b>synthetic, clearly-marked canary data only</b> — never real government records. The goal is to measure
+      which channel and what volume the DLP / analytics stack catches.
+    </p>
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">HTTPS POST to cloud / SaaS storage</h3><div class="card-chips"><span class="chip crit">High</span></div></div>
+        <p class="card-body">Canary data to <b>S3/Azure Blob, Drive/OneDrive, GitHub, Dropbox, Discord/Telegram webhooks, Pastebin</b> over 443 — tests DLP and CASB egress control.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1567.002</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>DLP content inspection; block/allow-list SaaS destinations.<br><span class="det-line">↓ Detect: large/unusual uploads, canary token callback.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">DNS &amp; ICMP exfil</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Encode canary data in DNS labels (cross-ref B) or an <b>ICMP tunnel</b> (<code>ptunnel</code>) — tests whether 53 and ICMP egress are restricted and volumetrically monitored.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">DNS/53</span> <span class="chip path">ICMP</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1048.003</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Restrict outbound ICMP; DNS to internal resolver only.<br><span class="det-line">↓ Detect: large ICMP payloads, high-entropy DNS.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Low-and-slow &amp; encoded exfil</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Chunk canary data <b>under DLP volume thresholds</b>, off-hours, encrypted/compressed to defeat content inspection — tests thresholds and UEBA baselining rather than signatures.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">TCP/443</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1030</span> <span class="chip mitre">T1027</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Cumulative/volume-over-time DLP; UEBA on per-user egress baselines.<br><span class="det-line">↓ Detect: steady small transfers, off-hours egress, encrypted archives.</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ F. INBOUND ============ -->
+  <section id="famF">
+    <div class="sec-head"><span class="sec-num">F</span><h2>Inbound / published-service abuse (443 inbound)</h2></div>
+    <p class="sec-desc">
+      443 is also permitted <em>inbound</em> to published DC apps. These tests cover the ingress surface and, critically,
+      whether a compromised DMZ/app host can turn around and egress freely.
+    </p>
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">WAF evasion on published apps</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Encoding, case, chunked and parameter-pollution variants against government apps published on 443 — validates the WAF ruleset, not the apps themselves.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">443 inbound</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1190</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Normalising WAF; anomaly scoring; virtual patching.<br><span class="det-line">↓ Detect: WAF anomaly hits, encoding anomalies in access logs.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">DMZ / app-host reverse tunnel</h3><div class="card-chips"><span class="chip crit">High</span></div></div>
+        <p class="card-body">Simulate a foothold on a published-app host that <b>opens an outbound tunnel</b> so the operator reaches internal DC services — validates that ingress-facing hosts cannot egress at will.</p>
+        <dl class="kv"><dt>Dir</dt><dd><span class="chip dir">DC → out</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1572</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>DMZ egress default-deny; app hosts reach only defined dependencies.<br><span class="det-line">↓ Detect: outbound from DMZ host, tunnel client on server.</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Exposed management &amp; API surface</h3><div class="card-chips"><span class="chip med">Situational</span></div></div>
+        <p class="card-body">Probe for admin panels, actuator/health, swagger, and weak TLS/cipher or missing mTLS on sensitive endpoints reachable on 443 inbound.</p>
+        <dl class="kv"><dt>Path</dt><dd><span class="chip path">443 inbound</span></dd><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1133</span> <span class="chip mitre">T1596</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>No management surface published; mTLS on sensitive APIs; modern TLS.<br><span class="det-line">↓ Detect: access to admin paths, unexpected endpoint enumeration.</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ G. REALISM ============ -->
+  <section id="famG">
+    <div class="sec-head"><span class="sec-num">G</span><h2>Emulation realism &amp; detection evasion (overlay)</h2></div>
+    <p class="sec-desc">
+      Apply these as modifiers over families A–E to test the detection stack under realistic conditions, and to expose
+      the gap between network-only and endpoint-only visibility.
+    </p>
+    <div class="cards">
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Malleable C2 profiles &amp; beacon shaping</h3><div class="card-chips"><span class="chip high">Medium</span></div></div>
+        <p class="card-body">Shape C2 (Sliver/Mythic/Havoc/Cobalt Strike) to mimic <b>Windows Update / Office 365 / CDN</b> traffic with jitter and long sleeps — tests NDR beacon analytics and UEBA tuning.</p>
+        <dl class="kv"><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1071.001</span> <span class="chip mitre">T1573</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Statistical beacon detection tolerant of jitter; destination + volume correlation.<br><span class="det-line">↓ Detect: periodicity despite jitter, mismatch vs. real update endpoints.</span></div>
+      </div>
+      <div class="card">
+        <div class="card-top"><h3 class="card-title">Network-vs-endpoint visibility gap</h3><div class="card-chips"><span class="chip med">Situational</span></div></div>
+        <p class="card-body">Run in-memory / encrypted staging so <b>host telemetry is thin</b>, forcing detection onto the network layer — and vice versa — to find which layer each technique is blind to.</p>
+        <dl class="kv"><dt>ATT&amp;CK</dt><dd><span class="chip mitre">T1055</span> <span class="chip mitre">T1027</span></dd></dl>
+        <div class="expect"><span class="lbl">Expected control</span>Correlated NDR + EDR; neither layer solely relied upon.<br><span class="det-line">↓ Detect: coverage gap surfaced in the purple-team matrix.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ EXECUTION ============ -->
+  <section id="exec">
+    <div class="sec-head"><span class="sec-num">02</span><h2>Execution framework</h2></div>
+    <p class="sec-desc">Assumed-breach, run as a purple-team exercise so blue-team detection is validated live rather than after the fact.</p>
+    <div class="phases">
+      <div class="phase"><span class="n">1</span><div><h4>Boundary mapping</h4><p>Confirm the two footholds; enumerate what actually traverses SDWAN→DC and DC→SDWAN (Family D sweep). Baseline the ruleset against documentation.</p></div></div>
+      <div class="phase"><span class="n">2</span><div><h4>Egress channel discovery</h4><p>Walk Families A &amp; B — 443 tunnels, LOTS C2, DoH, DNS tunnelling. Record every channel that establishes and whether it was seen.</p></div></div>
+      <div class="phase"><span class="n">3</span><div><h4>C2 &amp; evasion</h4><p>Stand up C2 on the surviving channels; layer Family G realism (malleable profiles, jitter) to test detection under load.</p></div></div>
+      <div class="phase"><span class="n">4</span><div><h4>Segmentation &amp; lateral</h4><p>Pivot via 443 SOCKS and east-west techniques (Family D); demonstrate reach to services that should be isolated.</p></div></div>
+      <div class="phase"><span class="n">5</span><div><h4>Exfiltration</h4><p>Move marked canary data over each channel (Family E); measure DLP/analytics catch rate and volume thresholds.</p></div></div>
+      <div class="phase"><span class="n">6</span><div><h4>Detection validation &amp; report</h4><p>For every test, record verdict — <b>Blocked / Detected / Passed-undetected</b> — map to the control owner, and file each pass-through as a finding with remediation.</p></div></div>
+    </div>
+
+    <div style="height:24px"></div>
+
+    <div class="two-col">
+      <div class="col">
+        <h3>Tooling</h3>
+        <ul class="tool-list">
+          <li><b>BAS / automation:</b> <code>MITRE Caldera</code>, <code>Atomic Red Team</code>, <code>Prelude Operator</code>; commercial BAS (AttackIQ, SafeBreach, Scythe).</li>
+          <li><b>C2:</b> <code>Sliver</code>, <code>Mythic</code>, <code>Havoc</code>; Cobalt Strike where licensed.</li>
+          <li><b>Egress / tunnels:</b> <code>cloudflared</code>, <code>ngrok</code>, <code>chisel</code>, <code>gost</code>, <code>wstunnel</code>, <code>iodine</code>, <code>dnscat2</code>, egress-assess.</li>
+          <li><b>Recon:</b> <code>nmap</code>/<code>masscan</code>, <code>httpx</code>, <code>tlsx</code> across the boundary.</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3>Verdict &amp; reporting</h3>
+        <ul class="tool-list">
+          <li><b>Blocked</b> — traffic denied at the boundary. Control confirmed.</li>
+          <li><b>Detected</b> — passed but alerted. Detection confirmed; consider prevention.</li>
+          <li><b>Passed-undetected</b> — the finding. Log path, control gap, owner, fix.</li>
+          <li>Deliver as an <b>ATT&amp;CK coverage heatmap</b> plus a prioritised remediation list.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ROE ============ -->
+  <section id="roe">
+    <div class="sec-head"><span class="sec-num">03</span><h2>Rules of engagement &amp; safety</h2></div>
+    <div class="callout warn">
+      <h4>Non-negotiable before any execution</h4>
+      <ul>
+        <li><b>Written authorization</b> from GITN and each participating agency, naming in-scope zones, IPs, source hosts and the exact test window.</li>
+        <li><b>De-confliction contact</b> on standby; SOC informed it is an exercise, with a "stand-down" signal agreed.</li>
+        <li><b>Synthetic canary data only</b> — never exfiltrate real citizen or government records; use marked tokens that prove reach without disclosing data.</li>
+        <li><b>No denial-of-service:</b> rate-limit scans and tunnels; avoid actions that could degrade production services.</li>
+        <li><b>Cleanup &amp; rollback:</b> remove implants, tunnels, scheduled tasks and test accounts; document every artefact created.</li>
+        <li><b>Handle findings securely:</b> any captured credentials or tokens are treated as sensitive and rotated after the test.</li>
+      </ul>
+    </div>
+    <div style="height:16px"></div>
+    <div class="callout">
+      <h4>Why this framing</h4>
+      <ul>
+        <li>Every "bypass" is documented as a <b>control gap with a named remediation</b> — the deliverable is a stronger boundary, not a list of tricks.</li>
+        <li>Common remediations these tests drive: default-deny egress with domain allow-listing, TLS inspection with tunnel/DoH category blocking, forced internal DNS resolver, application-ID (L7) enforcement on 443, micro-segmentation independent of egress, NDR beacon analytics, and DLP with volume-over-time thresholds.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <p><b>MyGovNet Attack Simulation — Egress &amp; Segmentation Control Validation.</b> Draft test plan for scoping and authorization. Prepared for an authorized purple-team engagement.</p>
+    <p>Techniques are described at test-plan altitude and mapped to MITRE ATT&amp;CK for reporting. Execute only within a signed scope and window. Do not run against systems you are not authorized to test.</p>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var btn = document.getElementById('themeBtn');
+    var root = document.documentElement;
+    btn.addEventListener('click', function () {
+      var cur = root.getAttribute('data-theme');
+      var next;
+      if (cur === 'dark') next = 'light';
+      else if (cur === 'light') next = 'dark';
+      else {
+        var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        next = sysDark ? 'light' : 'dark';
+      }
+      root.setAttribute('data-theme', next);
+    });
+  })();
+</script>
