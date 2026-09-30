@@ -7,6 +7,7 @@ META = {
     "category": "Server Exploitation",
     "control": "IPS signature / path normalization",
     "fix": "SD-WAN",
+    "cve": "CVE-2021-41773",
     "mitre": ['T1190'],
     "cwe": ['CWE-22'],
     "tactic": 'Initial Access',

@@ -20,7 +20,7 @@ META = {
     "control": "Segmentation to DC / Kerberos exposure (88)",
     "fix": "SD-WAN",
     "mitre": ['T1558.004'],
-    "cwe": ['CWE-262'],
+    "cwe": ['CWE-522'],
     "tactic": 'Credential Access',
     "requires": ["impacket-GetNPUsers"],
     "requires_files": [USERS],

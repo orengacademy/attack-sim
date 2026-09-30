@@ -353,10 +353,34 @@ class Evidence:
                for t, e in tech.items()}
         self.meta["attack_coverage"] = cov
         self.meta["cwe_coverage"] = {c: sorted(v) for c, v in cwe.items()}
+        cves = sorted({r.get("cve") for r in self.records if r.get("cve")})
+        self.meta["cve_coverage"] = cves
         # rewrite summary.json now that meta carries the coverage
         _safe_write("summary.json",
                     lambda f: json.dump({"meta": self.meta, "results": self.records},
                                         f, indent=2, default=str))
+
+        # ATT&CK Navigator layer (import at attack-navigator to visualise coverage)
+        _COLOR = {"GAP": "#f85149", "OK": "#3fb950", "REVIEW": "#e3a008"}
+        navigator = {
+            "name": f"MyGovNet BAS {self.ts}",
+            "versions": {"attack": "14", "navigator": "4.9.1", "layer": "4.5"},
+            "domain": "enterprise-attack",
+            "description": "Control-validation coverage (GAP=passed, OK=blocked, REVIEW=mixed).",
+            "techniques": [
+                {"techniqueID": t.split(".")[0], "score": 100,
+                 "color": _COLOR.get(e["status"], "#8b90a6"),
+                 "enabled": True,
+                 "comment": f"{e['status']}: {', '.join(e['attacks'])}"}
+                for t, e in cov.items() if t.startswith("T")
+            ],
+            "gradient": {"colors": ["#3fb950", "#e3a008", "#f85149"], "minValue": 0, "maxValue": 100},
+            "legendItems": [{"label": "GAP (passed)", "color": "#f85149"},
+                            {"label": "OK (blocked)", "color": "#3fb950"},
+                            {"label": "REVIEW (mixed)", "color": "#e3a008"}],
+        }
+        _safe_write("attack_navigator_layer.json",
+                    lambda f: json.dump(navigator, f, indent=2))
 
         lines += ["", "=" * 64, "  MITRE ATT&CK COVERAGE", "=" * 64]
         for t in sorted(cov):
@@ -368,8 +392,11 @@ class Evidence:
             lines += ["", "  CWE COVERAGE"]
             for c in sorted(cwe):
                 lines.append(f"    {c}: {', '.join(sorted(cwe[c]))}")
+        if cves:
+            lines += ["", "  CVE COVERAGE", "    " + ", ".join(cves)]
 
-        lines += ["", f"Evidence: {self.root}"]
+        lines += ["", "ATT&CK Navigator layer: attack_navigator_layer.json",
+                  f"Evidence: {self.root}"]
         _safe_write("report.txt", lambda f: f.write("\n".join(lines)))
 
         if self._log_fh is not None:
@@ -1241,6 +1268,7 @@ class Runner:
             # BAS mappings — carried into evidence so results are standards-aligned
             "mitre": meta.get("mitre", []),
             "cwe": meta.get("cwe", []),
+            "cve": meta.get("cve", ""),
             "tactic": meta.get("tactic", ""),
             "baseline_result": b,
             "appliance_result": a,
