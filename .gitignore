@@ -21,3 +21,10 @@ desktop.ini
 Thumbs.db
 .idea/
 .vscode/
+
+# Terraform (cloud deploy) — state may hold secrets; tfvars holds infra IPs
+deploy/cloud/**/.terraform/
+deploy/cloud/**/*.tfstate
+deploy/cloud/**/*.tfstate.*
+deploy/cloud/**/terraform.tfvars
+deploy/cloud/**/.terraform.lock.hcl
