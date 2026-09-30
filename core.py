@@ -146,12 +146,19 @@ def _redact(text, creds):
 
 
 def _run_cmd(template, target, creds, timeout):
-    cmd = template.format(target=target, **creds)
+    try:
+        cmd = template.format(target=target, **creds)
+    except (KeyError, IndexError, ValueError) as e:
+        # a bad template placeholder / missing credential key must not crash
+        # the run — report it as an ERROR the classifier surfaces.
+        return f"# target: {target}\n\n[ERROR] bad command template ({e!r})"
     # header/logs use a redacted copy — never write the cleartext password out.
     header = f"# command: {_redact(cmd, creds)}\n# target: {target}\n\n"
     try:
         # posix=False on Windows so backslash paths/quoting aren't mangled.
         argv = shlex.split(cmd, posix=(os.name != "nt"))
+        if not argv:
+            return header + "[ERROR] empty command after parsing"
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         body = (p.stdout or "") + "\n[stderr]\n" + (p.stderr or "")
         return header + _redact(body, creds)
@@ -159,6 +166,10 @@ def _run_cmd(template, target, creds, timeout):
         return header + "[TIMEOUT] command exceeded time limit (likely blocked/filtered)"
     except FileNotFoundError:
         return header + "[ERROR] tool not found — is it installed (see preflight.py)?"
+    except ValueError as e:
+        return header + f"[ERROR] could not parse command ({e})"
+    except OSError as e:
+        return header + f"[ERROR] could not execute command ({e})"
     except Exception as e:
         return header + f"[ERROR] {_redact(str(e), creds)}"
 
@@ -185,64 +196,94 @@ class Evidence:
     def __init__(self, base="evidence"):
         self.ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.root = os.path.join(base, f"run_{self.ts}")
-        os.makedirs(self.root, exist_ok=True)
         self.records = []
         self.meta = {"run": self.ts, "started": datetime.now().isoformat()}
-        self._log_fh = open(os.path.join(self.root, "run.log"), "a")
+        self._log_fh = None
+        try:
+            os.makedirs(self.root, exist_ok=True)
+            self._log_fh = open(os.path.join(self.root, "run.log"), "a")
+        except Exception:
+            # evidence dir/log unavailable — the run still proceeds; log() and
+            # the save_* helpers all degrade gracefully to no-ops with warnings.
+            pass
 
     def log(self, msg):
-        """Persist an engine log line to run.log (the GUI's Live log panel is
-        in-memory only — this is the on-disk record of the same stream, so a
-        run can be reviewed after the fact without having watched the GUI)."""
-        ts = datetime.now().strftime("%H:%M:%S")
-        for line in str(msg).splitlines() or [""]:
-            self._log_fh.write(f"[{ts}] {line}\n")
-        self._log_fh.flush()
+        """Persist an engine log line to run.log. Never raises — logging must
+        not be able to abort a run."""
+        if self._log_fh is None:
+            return
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            for line in str(msg).splitlines() or [""]:
+                self._log_fh.write(f"[{ts}] {line}\n")
+            self._log_fh.flush()
+        except Exception:
+            pass
 
     def _dir(self, iteration, attack_id):
-        d = os.path.join(self.root, f"iteration_{iteration}", attack_id)
+        d = os.path.join(self.root, f"iteration_{iteration}", str(attack_id))
         os.makedirs(d, exist_ok=True)
         return d
 
     def save_run(self, iteration, attack_id, path_name, raw):
-        fn = os.path.join(self._dir(iteration, attack_id), f"{path_name}.log")
-        with open(fn, "w") as f:
-            f.write(raw)
-        return fn
+        try:
+            fn = os.path.join(self._dir(iteration, attack_id), f"{path_name}.log")
+            with open(fn, "w") as f:
+                f.write(raw if isinstance(raw, str) else str(raw))
+            return fn
+        except Exception as e:
+            self.log(f"[WARN] could not save {attack_id}/{path_name}.log: {e}")
+            return None
 
     def save_result(self, iteration, attack_id, result):
-        with open(os.path.join(self._dir(iteration, attack_id), "result.json"), "w") as f:
-            json.dump(result, f, indent=2)
+        # keep the record in memory regardless (finalize needs it); persisting
+        # the per-attack result.json is best-effort.
         self.records.append(result)
+        try:
+            path = os.path.join(self._dir(iteration, attack_id), "result.json")
+            with open(path, "w") as f:
+                json.dump(result, f, indent=2, default=str)
+        except Exception as e:
+            self.log(f"[WARN] could not save {attack_id}/result.json: {e}")
 
     def finalize(self):
         self.meta["finished"] = datetime.now().isoformat()
 
-        with open(os.path.join(self.root, "summary.json"), "w") as f:
-            json.dump({"meta": self.meta, "results": self.records}, f, indent=2)
+        def _safe_write(name, writer):
+            try:
+                with open(os.path.join(self.root, name), "w", newline="") as f:
+                    writer(f)
+            except Exception as e:
+                self.log(f"[WARN] could not write {name}: {e}")
+
+        _safe_write("summary.json",
+                    lambda f: json.dump({"meta": self.meta, "results": self.records},
+                                        f, indent=2, default=str))
 
         cols = ["iteration", "category", "attack", "control_tested", "fix_location",
                 "baseline_result", "appliance_result", "verdict", "timestamp"]
-        with open(os.path.join(self.root, "summary.csv"), "w", newline="") as f:
+
+        def _write_csv(f):
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
             for r in self.records:
                 w.writerow({k: r.get(k, "") for k in cols})
+        _safe_write("summary.csv", _write_csv)
 
         agg = {}
         for r in self.records:
-            a = r["attack"]
-            s = agg.setdefault(a, {"cat": r["category"], "fix": r["fix_location"],
+            a = r.get("attack", r.get("attack_id", "?"))
+            s = agg.setdefault(a, {"cat": r.get("category", ""), "fix": r.get("fix_location", ""),
                                    "blocked": 0, "passed": 0, "other": 0, "n": 0})
             s["n"] += 1
             # single-target mode never sets appliance_result (always "-"), so
             # fall back to baseline_result — otherwise every attack buckets
             # into "other" and the report always reads INCONSISTENT.
             if r.get("appliance_ip") is None:
-                v = r["baseline_result"]
+                v = r.get("baseline_result")
                 bucket = "passed" if v == "SUCCESS" else "blocked" if v == "BLOCKED" else "other"
             else:
-                v = r["appliance_result"]
+                v = r.get("appliance_result")
                 bucket = "blocked" if v == "BLOCKED" else "passed" if v == "PASSED" else "other"
             s[bucket] += 1
 
@@ -257,9 +298,13 @@ class Evidence:
                       f"other {s['other']}/{s['n']}  -> {verdict} ({tag})",
                       f"    fix: {s['fix']}", ""]
         lines.append(f"Evidence: {self.root}")
-        with open(os.path.join(self.root, "report.txt"), "w") as f:
-            f.write("\n".join(lines))
-        self._log_fh.close()
+        _safe_write("report.txt", lambda f: f.write("\n".join(lines)))
+
+        if self._log_fh is not None:
+            try:
+                self._log_fh.close()
+            except Exception:
+                pass
         return self.root
 
 
@@ -267,7 +312,14 @@ class Evidence:
 # Classification (raw logs remain the authoritative evidence)
 # ---------------------------------------------------------------------
 def _match(raw, pat):
-    return bool(pat) and re.search(pat, raw, re.IGNORECASE | re.MULTILINE) is not None
+    if not pat or raw is None:
+        return False
+    try:
+        return re.search(pat, raw, re.IGNORECASE | re.MULTILINE) is not None
+    except re.error:
+        # a malformed success_regex/blocked_regex in a module must not crash the
+        # run — treat it as "no match" (the raw log stays authoritative).
+        return False
 
 
 # Convention followed by every module in this repo: a line explaining WHY
@@ -739,24 +791,52 @@ class Runner:
         self.target_ip = target_ip
         self.appliance_ip = appliance_ip
         self.dual = appliance_ip is not None and appliance_ip != "" and appliance_ip != target_ip
-        self.on_log = on_log or (lambda m: None)
-        self.on_progress = on_progress or (lambda c, t: None)
+
+        # Wrap every UI callback so a fault in the consumer (GUI, etc.) can never
+        # abort a run. on_output/on_status/on_progress take varargs; on_log one.
+        def _safe(cb, default):
+            cb = cb or default
+            def wrapped(*a, **k):
+                try:
+                    return cb(*a, **k)
+                except Exception:
+                    return None
+            return wrapped
+
+        self.on_log = _safe(on_log, lambda m: None)
+        self.on_progress = _safe(on_progress, lambda c, t: None)
         # on_output(attack_id, name, raw_text) — the tool's own full output,
         # for a live "what actually happened" panel (distinct from on_log's
         # short narrative lines).
-        self.on_output = on_output or (lambda *a: None)
+        self.on_output = _safe(on_output, lambda *a: None)
         # on_status(attack_id, name, iteration, verdict) — one call per
         # attack completion, for a live pass/fail status list.
-        self.on_status = on_status or (lambda *a: None)
+        self.on_status = _safe(on_status, lambda *a: None)
         self.ctx = Context()
         self._stop = False
 
     def stop(self):
         self._stop = True
 
+    def _safe_module_run(self, m, ip):
+        """Run a module, converting ANY exception into an error string instead of
+        letting it abort the whole run. One buggy module can't take down a run."""
+        try:
+            out = m.run(ip, self.ctx)
+            return out if isinstance(out, str) else str(out)
+        except Exception as e:
+            import traceback
+            mid = m.META.get("id", "?") if hasattr(m, "META") else "?"
+            return (f"# module {mid} raised while running against {ip}\n\n"
+                    f"[ERROR] module crashed: {e.__class__.__name__}: {e}\n\n"
+                    + traceback.format_exc())
+
     def run(self, modules, iterations, ev, skip_unready=True, recon=True):
         def log(msg):
-            self.on_log(msg)
+            try:
+                self.on_log(msg)
+            except Exception:
+                pass
             ev.log(msg)
 
         # ----- Target safety: validate + enforce allowlist BEFORE anything -----
@@ -771,8 +851,6 @@ class Runner:
                 f"Target '{self.target_ip}' refused — {areason}. Add it to "
                 f"allowlist.txt or HARNESS_ALLOWLIST to proceed.")
 
-        total = iterations * len(modules)
-        cur = 0
         mode = "dual-path (baseline + appliance)" if self.dual else "single-target"
         log(f"Mode: {mode}")
         log(f"Target: {self.target_ip} ({areason})")
@@ -818,22 +896,39 @@ class Runner:
         # Advisory only (does not gate) — a filtered port may BE the control.
         recon_by_id = {}
         if recon:
-            rc = reachability(self.target_ip, modules)
-            ev.meta["recon"] = rc
-            recon_by_id = {r["id"]: r for r in rc["modules"]}
-            if rc["probes"]:
-                log("Recon (reachability of %s): " % self.target_ip
-                    + ", ".join(f"{port}/{proto}:{st}"
-                                for proto, port, st in sorted(rc["probes"],
-                                                              key=lambda x: (x[0], x[1] or 0))))
-            suggested = [r["name"] for r in rc["modules"] if r["category"] == "suggested"]
-            unreach = [r["name"] for r in rc["modules"] if r["category"] == "unreachable"]
-            if suggested:
-                log("  suggested (service reachable): " + ", ".join(suggested))
-            if unreach:
-                log("  not reachable (filtered/closed) — still running (filtered "
-                    "port may be the control): " + ", ".join(unreach))
+            try:
+                rc = reachability(self.target_ip, modules)
+                ev.meta["recon"] = rc
+                recon_by_id = {r["id"]: r for r in rc["modules"]}
+                if rc["probes"]:
+                    log("Recon (reachability of %s): " % self.target_ip
+                        + ", ".join(f"{port}/{proto}:{st}"
+                                    for proto, port, st in sorted(rc["probes"],
+                                                                  key=lambda x: (x[0], x[1] or 0))))
+                suggested = [r["name"] for r in rc["modules"] if r["category"] == "suggested"]
+                unreach = [r["name"] for r in rc["modules"] if r["category"] == "unreachable"]
+                if suggested:
+                    log("  suggested (service reachable): " + ", ".join(suggested))
+                if unreach:
+                    log("  not reachable (filtered/closed) — still running (filtered "
+                        "port may be the control): " + ", ".join(unreach))
+            except Exception as e:
+                log(f"[WARN] recon skipped (non-fatal): {e}")
 
+        try:
+            self._iterate(modules, iterations, ev, skip_unready, ready_ids,
+                          pf_by_id, recon_by_id, log)
+        finally:
+            try:
+                return ev.finalize()
+            except Exception as e:
+                log(f"[ERROR] finalize failed: {e}")
+                return ev.root
+
+    def _iterate(self, modules, iterations, ev, skip_unready, ready_ids,
+                 pf_by_id, recon_by_id, log):
+        total = iterations * len(modules)
+        cur = 0
         for it in range(1, iterations + 1):
             if self._stop:
                 break
@@ -881,12 +976,12 @@ class Runner:
                     self.on_progress(cur, total)
                     continue
 
-                target_raw = m.run(self.target_ip, self.ctx)
+                target_raw = self._safe_module_run(m, self.target_ip)
                 ev.save_run(it, meta["id"], "target", target_raw)
                 self.on_output(meta["id"], meta["name"], target_raw)
 
                 if self.dual:
-                    app_raw = m.run(self.appliance_ip, self.ctx)
+                    app_raw = self._safe_module_run(m, self.appliance_ip)
                     ev.save_run(it, meta["id"], "through-appliance", app_raw)
                     b, a, verdict = classify(meta, target_raw, app_raw)
                     log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
@@ -936,4 +1031,3 @@ class Runner:
                 })
                 cur += 1
                 self.on_progress(cur, total)
-        return ev.finalize()

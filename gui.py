@@ -148,7 +148,11 @@ class HarnessGUI:
         none ticked) and show the report in a scrollable window. This is the
         same check Runner.run performs automatically before executing."""
         selected = [m for (var, m) in self.vars.values() if var.get()] or self.modules
-        report = core.format_preflight_report(core.preflight(selected))
+        try:
+            report = core.format_preflight_report(core.preflight(selected))
+        except Exception as e:
+            messagebox.showerror("Preflight failed", str(e))
+            return
         win = tk.Toplevel(self.root)
         win.title("Preflight — tool & privilege check")
         win.geometry("780x520")
@@ -215,8 +219,20 @@ class HarnessGUI:
         if not target_ip:
             messagebox.showwarning("No target", "Enter the target IP.")
             return
+        ok, why = core.validate_target(target_ip)
+        if not ok:
+            messagebox.showwarning("Invalid target", f"{target_ip}: {why}")
+            return
+        allowed, areason = core.target_allowed(target_ip)
+        if not allowed:
+            messagebox.showerror("Target not allowed", areason)
+            return
 
-        iters = int(self.iterations.get())
+        try:
+            iters = max(1, int(self.iterations.get()))
+        except (ValueError, TypeError):
+            messagebox.showwarning("Bad iterations", "Iterations must be a whole number.")
+            return
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
         self.progress["value"] = 0
