@@ -16,10 +16,6 @@ from tkinter import ttk, messagebox
 import core
 import loader
 
-# module ids that hard-require the GUI process itself to run as root
-# (privileged port binds / raw poisoning — see their own module docstrings).
-NEEDS_ROOT = {"petitpotam"}
-
 
 class HarnessGUI:
     def __init__(self, root):
@@ -54,12 +50,14 @@ class HarnessGUI:
         ttk.Label(f, text=f"{len(self.modules)} attack modules discovered.",
                   foreground="#666").grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=2)
 
-        if os.geteuid() != 0:
-            needed = [m.META["name"] for m in self.modules if m.META["id"] in NEEDS_ROOT]
+        # portable privilege check (os.geteuid() doesn't exist on Windows);
+        # root-needing modules declare needs_root in their own META.
+        if not core.is_privileged():
+            needed = [m.META["name"] for m in self.modules if m.META.get("needs_root")]
             if needed:
                 ttk.Label(
-                    f, text=f"⚠ Not running as root — {', '.join(needed)} will fail "
-                            f"(NO-RESULT). Restart with: sudo python3 gui.py",
+                    f, text=f"⚠ Not running as root/admin — {', '.join(needed)} will be "
+                            f"skipped (PREREQ-MISSING). Restart elevated (e.g. sudo python3 gui.py).",
                     foreground="#b00").grid(row=2, column=0, columnspan=4, sticky="w", padx=4, pady=2)
 
     # ----- attacks (from discovered modules, grouped) ------------------
@@ -94,6 +92,7 @@ class HarnessGUI:
         f = ttk.Frame(self.root); f.pack(fill="x", padx=8, pady=4)
         ttk.Button(f, text="Select all", command=lambda: self._all(True)).pack(side="left")
         ttk.Button(f, text="Clear", command=lambda: self._all(False)).pack(side="left", padx=4)
+        ttk.Button(f, text="Preflight", command=self._preflight).pack(side="left", padx=4)
         self.roe = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="Rules-of-engagement confirmed (written authorisation on file)",
                         variable=self.roe).pack(side="left", padx=16)
@@ -129,6 +128,7 @@ class HarnessGUI:
         self.status_tree.tag_configure("BLOCKED", foreground="#06c")
         self.status_tree.tag_configure("AUTH-FAILED", foreground="#e80")
         self.status_tree.tag_configure("NO-RESULT", foreground="#c00")
+        self.status_tree.tag_configure("PREREQ-MISSING", foreground="#a60")
 
         # ----- right: live tool output (the raw evidence, tailed) -----
         right = ttk.LabelFrame(outer, text="Live output (tool's own end output)")
@@ -142,6 +142,23 @@ class HarnessGUI:
     def _all(self, v):
         for var, _ in self.vars.values():
             var.set(v)
+
+    def _preflight(self):
+        """Check tools/privileges for the currently-ticked attacks (or all, if
+        none ticked) and show the report in a scrollable window. This is the
+        same check Runner.run performs automatically before executing."""
+        selected = [m for (var, m) in self.vars.values() if var.get()] or self.modules
+        report = core.format_preflight_report(core.preflight(selected))
+        win = tk.Toplevel(self.root)
+        win.title("Preflight — tool & privilege check")
+        win.geometry("780x520")
+        txt = tk.Text(win, wrap="none", bg="#111", fg="#ddd",
+                      font=("TkFixedFont", 10))
+        txt.insert("1.0", report)
+        txt.configure(state="disabled")
+        txt.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(win, command=txt.yview); sb.pack(side="right", fill="y")
+        txt.configure(yscrollcommand=sb.set)
 
     def _log(self, m):
         self.log.insert("end", m + "\n"); self.log.see("end")

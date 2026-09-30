@@ -8,6 +8,7 @@ META = {
     "category": "Network Exploitation",
     "control": "Brute-force protection / rate-limit",
     "fix": "SD-WAN",
+    "requires": ["hydra"],
     # hydra's own success line looks like "login: X   password: Y"
     "success_regex": r"login:.*password:",
     "blocked_regex": r"timed out|Connection refused|No route",

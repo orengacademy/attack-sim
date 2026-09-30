@@ -20,6 +20,8 @@ META = {
     "category": "Network Exploitation",
     "control": "Rate-limit / DoS protection",
     "fix": "SD-WAN",
+    "requires": ["hping3", "ping", "timeout"],
+    "needs_root": True,   # hping3 needs a raw socket (root or CAP_NET_RAW)
     # attack 'worked' = meaningful packet loss during the flood
     "success_regex": r"PASS",
     # deliberately does NOT match FLOOD-PRIV-ERROR — a privilege failure means

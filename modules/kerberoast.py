@@ -5,6 +5,7 @@ META = {
     "category": "AD Exploitation",
     "control": "AD hardening (NOT SD-WAN)",
     "fix": "Server",
+    "requires": ["impacket-GetUserSPNs"],
     "success_regex": r"\$krb5tgs\$|ServicePrincipalName|MSSQL/",
     "blocked_regex": r"timed out|Connection refused|unreachable|Errno",
 }

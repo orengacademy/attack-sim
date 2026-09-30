@@ -18,7 +18,8 @@ domain/creds change.
 ```
 harness/
 ├── gui.py                 # RUN THIS
-├── core.py                # engine: subprocess ctx, evidence, classifier, runner
+├── core.py                # engine: subprocess ctx, evidence, classifier, runner, preflight
+├── preflight.py           # standalone tool/privilege check (cross-platform, CI-friendly)
 ├── loader.py               # auto-discovers modules/*.py
 ├── modules/                # ONE FILE PER ATTACK (auto-discovered)
 │   ├── apache_41773.py     # Apache Path Traversal (CVE-2021-41773)
@@ -57,6 +58,30 @@ elevated privileges at run time:
   sudo python3 gui.py
   ```
 
+## Preflight (check tools & privileges before running)
+
+Every module declares what it needs in its `META` — the external binaries
+(`requires`), whether it needs root/admin (`needs_root`), and any data files
+(`requires_files`). Check them all **before** a run:
+
+```bash
+python3 preflight.py            # human-readable report
+python3 preflight.py --json     # machine-readable (CI)
+python3 preflight.py --versions # also probe tool versions (safe tools only)
+```
+
+It's cross-platform (Linux / macOS / Windows): it detects the OS, distro, and
+package manager (apt/dnf/yum/pacman/zypper/apk, brew, winget/choco/scoop, or
+pip where there's no distro package) and prints an install command for whatever
+is missing. Exit code is `0` only if every discovered module is ready, so it
+drops into CI as a gate.
+
+The harness runs this **automatically** at the start of every run: unmet
+modules are logged and **skipped** with a `PREREQ-MISSING` verdict instead of
+executing into a "tool not found" log. To force them to run anyway (they'll
+self-report), call `Runner.run(..., skip_unready=False)`. The GUI has a
+**Preflight** button that shows the same report for the ticked attacks.
+
 ## Run
 
 ```bash
@@ -80,6 +105,10 @@ META = {
     "fix": "SD-WAN",
     "success_regex": r"...",                 # marks a successful/detected hit
     "blocked_regex": r"timed out|refused",   # marks a block
+    # --- preflight (all optional) ---
+    "requires": ["some-tool"],               # external binaries this module needs
+    "needs_root": False,                     # True if it needs root/admin (raw sockets, priv ports)
+    "requires_files": [],                    # data files that must exist (e.g. a vendored PoC)
 }
 
 def run(target, ctx):
