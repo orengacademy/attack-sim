@@ -16,8 +16,12 @@ META = {
     "id": "kerberos_asrep",
     "name": "Kerberos AS-REP Roast",
     "category": "AD Exploitation",
+    "added": True,   # added after the initial harness set
     "control": "Segmentation to DC / Kerberos exposure (88)",
     "fix": "SD-WAN",
+    "mitre": ['T1558.004'],
+    "cwe": ['CWE-262'],
+    "tactic": 'Credential Access',
     "requires": ["impacket-GetNPUsers"],
     "requires_files": [USERS],
     "ports": [("tcp", 88)],

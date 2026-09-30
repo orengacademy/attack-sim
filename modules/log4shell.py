@@ -9,6 +9,9 @@ META = {
     "category": "Server Exploitation",
     "control": "IPS signature (JNDI pattern)",
     "fix": "SD-WAN",
+    "mitre": ['T1190'],
+    "cwe": ['CWE-917'],
+    "tactic": 'Initial Access',
     "requires": ["curl"],
     "ports": [("tcp", 8080)],
     "success_regex": r"HTTP_CODE:200",
@@ -18,7 +21,8 @@ META = {
 
 def run(target, ctx):
     # os.devnull is /dev/null on POSIX and NUL on Windows — keeps this
-    # cross-platform (the harness framework runs on any OS).
+    # cross-platform. Port is overridable (ctx.get_port / HARNESS_PORT_LOG4SHELL).
+    port = ctx.get_port("log4shell", 8080)
     return ctx.run_cmd(
         f'curl -s -m8 -o {os.devnull} -w "HTTP_CODE:%{{{{http_code}}}}" '
-        '"http://{target}:8080/solr/"', target)
+        f'"http://{{target}}:{port}/solr/"', target)

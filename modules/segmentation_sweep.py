@@ -24,8 +24,12 @@ META = {
     "id": "segmentation_sweep",
     "name": "Segmentation Sweep (mgmt/DB/lateral ports)",
     "category": "Segmentation",
+    "added": True,   # added after the initial harness set
     "control": "Network segmentation / firewall policy (A->B)",
     "fix": "SD-WAN",
+    "mitre": ['T1046'],
+    "cwe": ['CWE-923'],
+    "tactic": 'Discovery',
     "requires": [],
     "ports": [],   # this module performs its own sweep; recon would duplicate it
     # a reachable sensitive port = segmentation GAP = attack "passed"

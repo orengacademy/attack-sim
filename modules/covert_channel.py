@@ -22,8 +22,12 @@ META = {
     "id": "covert_channel",
     "name": "Covert Channel (ICMP/DNS tunneling)",
     "category": "Application Control",
+    "added": True,   # added after the initial harness set
     "control": "Covert-channel / DNS-egress control",
     "fix": "SD-WAN",
+    "mitre": ['T1572', 'T1048.003'],
+    "cwe": ['CWE-693'],
+    "tactic": 'Exfiltration',
     "requires": ["ping", "dig"],
     "os_supported": ["Linux"],   # ping -p / dig flags are Linux-shaped
     "ports": [("icmp", None)],

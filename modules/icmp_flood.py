@@ -20,6 +20,9 @@ META = {
     "category": "Network Exploitation",
     "control": "Rate-limit / DoS protection",
     "fix": "SD-WAN",
+    "mitre": ['T1498.001'],
+    "cwe": ['CWE-400'],
+    "tactic": 'Impact',
     "requires": ["hping3", "ping", "timeout"],
     "needs_root": True,   # hping3 needs a raw socket (root or CAP_NET_RAW)
     "serial": True,       # DoS: must run alone (don't overlap other tests)

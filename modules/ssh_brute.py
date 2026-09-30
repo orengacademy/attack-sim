@@ -8,6 +8,9 @@ META = {
     "category": "Network Exploitation",
     "control": "Brute-force protection / rate-limit",
     "fix": "SD-WAN",
+    "mitre": ['T1110.001'],
+    "cwe": ['CWE-307'],
+    "tactic": 'Credential Access',
     "requires": ["hydra"],
     "serial": True,   # rate-limit test: run alone so it isn't skewed
     "ports": [("tcp", 22)],

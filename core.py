@@ -178,9 +178,28 @@ def _run_cmd(template, target, creds, timeout):
 # Context handed to every attack module
 # ---------------------------------------------------------------------
 class Context:
-    def __init__(self, credentials=None, timeout=DEFAULT_TIMEOUT):
+    def __init__(self, credentials=None, timeout=DEFAULT_TIMEOUT, port_overrides=None):
         self.creds = credentials or load_credentials()
         self.timeout = timeout
+        # per-module port overrides: {name: port}. Also read from env
+        # HARNESS_PORT_<NAME> (e.g. HARNESS_PORT_LOG4SHELL=8983). A module calls
+        # ctx.get_port("log4shell", 8080) to honour a custom port.
+        self.port_overrides = dict(port_overrides or {})
+
+    def get_port(self, name, default):
+        """Resolve a module's target port: explicit override > env > default."""
+        if name in self.port_overrides:
+            try:
+                return int(self.port_overrides[name])
+            except (TypeError, ValueError):
+                pass
+        env = os.environ.get(f"HARNESS_PORT_{name.upper()}")
+        if env:
+            try:
+                return int(env)
+            except ValueError:
+                pass
+        return default
 
     def run_cmd(self, template, target):
         """Run an external command (curl/hydra/impacket/etc.); returns full
@@ -264,14 +283,19 @@ class Evidence:
                     lambda f: json.dump({"meta": self.meta, "results": self.records},
                                         f, indent=2, default=str))
 
-        cols = ["iteration", "category", "attack", "control_tested", "fix_location",
-                "baseline_result", "appliance_result", "verdict", "timestamp"]
+        cols = ["iteration", "category", "attack", "tactic", "mitre", "cwe",
+                "control_tested", "fix_location", "baseline_result",
+                "appliance_result", "verdict", "timestamp"]
 
         def _write_csv(f):
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
             for r in self.records:
-                w.writerow({k: r.get(k, "") for k in cols})
+                row = {}
+                for k in cols:
+                    v = r.get(k, "")
+                    row[k] = ", ".join(v) if isinstance(v, list) else v
+                w.writerow(row)
         _safe_write("summary.csv", _write_csv)
 
         agg = {}
@@ -301,7 +325,51 @@ class Evidence:
                       f"    blocked {s['blocked']}/{s['n']}  passed {s['passed']}/{s['n']}  "
                       f"other {s['other']}/{s['n']}  -> {verdict} ({tag})",
                       f"    fix: {s['fix']}", ""]
-        lines.append(f"Evidence: {self.root}")
+
+        # ----- BAS coverage: MITRE ATT&CK + CWE (standards-aligned reporting) --
+        # Per technique: which attacks map to it and whether any PASSED (gap) vs
+        # all BLOCKED (control held). "outcome" here is the worst case observed.
+        def _outcome(r):
+            v = r.get("appliance_result") if r.get("appliance_ip") is not None \
+                else r.get("baseline_result")
+            return "PASSED" if v in ("SUCCESS", "PASSED") else \
+                   "BLOCKED" if v == "BLOCKED" else "OTHER"
+
+        tech = {}
+        cwe = {}
+        for r in self.records:
+            oc = _outcome(r)
+            for t in (r.get("mitre") or ["(unmapped)"]):
+                e = tech.setdefault(t, {"tactic": r.get("tactic", ""), "attacks": set(),
+                                        "passed": 0, "blocked": 0, "other": 0})
+                e["attacks"].add(r.get("attack", r.get("attack_id", "?")))
+                e["passed" if oc == "PASSED" else "blocked" if oc == "BLOCKED" else "other"] += 1
+            for c in (r.get("cwe") or []):
+                cwe.setdefault(c, set()).add(r.get("attack", "?"))
+
+        cov = {t: {"tactic": e["tactic"], "attacks": sorted(e["attacks"]),
+                   "passed": e["passed"], "blocked": e["blocked"], "other": e["other"],
+                   "status": "GAP" if e["passed"] else "OK" if e["blocked"] and not e["other"] else "REVIEW"}
+               for t, e in tech.items()}
+        self.meta["attack_coverage"] = cov
+        self.meta["cwe_coverage"] = {c: sorted(v) for c, v in cwe.items()}
+        # rewrite summary.json now that meta carries the coverage
+        _safe_write("summary.json",
+                    lambda f: json.dump({"meta": self.meta, "results": self.records},
+                                        f, indent=2, default=str))
+
+        lines += ["", "=" * 64, "  MITRE ATT&CK COVERAGE", "=" * 64]
+        for t in sorted(cov):
+            e = cov[t]
+            lines.append(f"{t:<12} [{e['tactic']}]  -> {e['status']}  "
+                         f"(passed {e['passed']} / blocked {e['blocked']} / other {e['other']})")
+            lines.append(f"    {', '.join(e['attacks'])}")
+        if cwe:
+            lines += ["", "  CWE COVERAGE"]
+            for c in sorted(cwe):
+                lines.append(f"    {c}: {', '.join(sorted(cwe[c]))}")
+
+        lines += ["", f"Evidence: {self.root}"]
         _safe_write("report.txt", lambda f: f.write("\n".join(lines)))
 
         if self._log_fh is not None:
@@ -478,6 +546,49 @@ def is_privileged():
 def sudo_available():
     """True if we're already root, or `sudo` exists to elevate with."""
     return is_privileged() or shutil.which("sudo") is not None
+
+
+# A safe default degree of parallelism: enough to overlap network latency across
+# the reachable modules, but low enough not to look like a flood to the target /
+# SD-WAN. DoS/brute modules run serially regardless (META["serial"]).
+RECOMMENDED_WORKERS = 4
+
+
+def sudo_nopasswd_works(timeout=4):
+    """Best-effort: does `sudo -n` run WITHOUT prompting? True if we're root or a
+    passwordless sudo rule applies. Note: with command-specific NOPASSWD this can
+    be False yet `sudo -n <that-tool>` still works — so treat False as 'maybe'."""
+    if is_privileged():
+        return True
+    if not shutil.which("sudo"):
+        return False
+    try:
+        p = subprocess.run(["sudo", "-n", "true"], capture_output=True,
+                           text=True, timeout=timeout)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+
+def privilege_status(modules=None):
+    """Summarise how root-needing modules will get their privileges, so a run
+    can be started informed. Returns a dict the GUI/CLI can render."""
+    root = is_privileged()
+    sudo = shutil.which("sudo") is not None
+    needs = [m.META["name"] for m in (modules or [])
+             if getattr(m, "META", {}).get("needs_root")]
+    if root:
+        how = "running as root/admin"
+    elif sudo and sudo_nopasswd_works():
+        how = "passwordless sudo available — tools self-elevate via `sudo -n`"
+    elif sudo:
+        how = ("sudo present but passwordless sudo not detected — add a NOPASSWD "
+               "rule for hping3/responder, or run as root")
+    else:
+        how = "NOT elevated and no sudo — root-needing modules will be skipped"
+    return {"root": root, "sudo_present": sudo,
+            "sudo_nopasswd": sudo and sudo_nopasswd_works(),
+            "needs_root_modules": needs, "how": how}
 
 
 def sudo_prefix():
@@ -1127,6 +1238,10 @@ class Runner:
             "attack_id": meta["id"],
             "control_tested": meta.get("control", meta["category"]),
             "fix_location": meta.get("fix", ""),
+            # BAS mappings — carried into evidence so results are standards-aligned
+            "mitre": meta.get("mitre", []),
+            "cwe": meta.get("cwe", []),
+            "tactic": meta.get("tactic", ""),
             "baseline_result": b,
             "appliance_result": a,
             "verdict": verdict,

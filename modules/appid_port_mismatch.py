@@ -23,8 +23,12 @@ META = {
     "id": "appid_port_mismatch",
     "name": "App-ID Protocol/Port Mismatch",
     "category": "Application Control",
+    "added": True,   # added after the initial harness set
     "control": "Application-ID / L7 policy (not port-based)",
     "fix": "SD-WAN",
+    "mitre": ['T1571'],
+    "cwe": ['CWE-923'],
+    "tactic": 'Command and Control',
     "requires": [],
     "ports": [],
     # mismatch allowed = App-ID not enforcing = finding ("passed")

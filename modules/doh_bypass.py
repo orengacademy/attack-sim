@@ -8,6 +8,9 @@ META = {
     "category": "Network Exploitation",
     "control": "DNS filtering / egress control",
     "fix": "SD-WAN",
+    "mitre": ['T1572'],
+    "cwe": ['CWE-693'],
+    "tactic": 'Command and Control',
     "requires": ["curl"],
     "ports": [],  # egress test — no target port
     "success_regex": r'"Answer"|"data"',
