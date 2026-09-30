@@ -1,6 +1,13 @@
-"""CVE-2021-44228 — Log4Shell. Confirms a JNDI-reachable target is up
-(Solr on :8080), matching the manual test script exactly — an HTTP-code
-reachability check, not a live JNDI callback exploit."""
+"""CVE-2021-44228 — Log4Shell. Sends a BENIGN JNDI marker string in the
+User-Agent and a header so the SD-WAN IPS's JNDI signature is actually
+exercised (not just a reachability ping). The JNDI URL points at
+127.0.0.1:1389 on the *target*, which has no attacker LDAP server, so there is
+NO real callback and NO code execution even if the target is vulnerable — this
+tests whether the pattern transits the IPS, which is the stated control.
+
+Verdict: the payload-bearing request was served (HTTP_CODE:200) -> the IPS did
+NOT filter the JNDI pattern (finding). No/blocked response -> control held.
+"""
 import os
 
 META = {
@@ -9,6 +16,7 @@ META = {
     "category": "Server Exploitation",
     "control": "IPS signature (JNDI pattern)",
     "fix": "SD-WAN",
+    "cve": "CVE-2021-44228",
     "mitre": ['T1190'],
     "cwe": ['CWE-917'],
     "tactic": 'Initial Access',
@@ -16,14 +24,19 @@ META = {
     "ports": [("tcp", 8080)],
     "port_customizable": True,
     "success_regex": r"HTTP_CODE:200",
-    "blocked_regex": r"timed out|Connection refused|HTTP_CODE:000",
+    "blocked_regex": r"timed out|Connection refused|HTTP_CODE:000|HTTP_CODE:403",
 }
+
+# doubled braces survive ctx.run_cmd's .format(); collapse to single at runtime.
+# non-routable target-local LDAP URL => signature test only, never a callback.
+_JNDI = "${{jndi:ldap://127.0.0.1:1389/log4shell-probe}}"
 
 
 def run(target, ctx):
-    # os.devnull is /dev/null on POSIX and NUL on Windows — keeps this
-    # cross-platform. Port is overridable (ctx.get_port / HARNESS_PORT_LOG4SHELL).
     port = ctx.get_port("log4shell", 8080)
-    return ctx.run_cmd(
-        f'curl -s -m8 -o {os.devnull} -w "HTTP_CODE:%{{{{http_code}}}}" '
-        f'"http://{{target}}:{port}/solr/"', target)
+    # %-format inserts devnull/payload/port (leaves {{ }} and {target} intact for
+    # ctx.run_cmd's later .format); %% -> % ; %d -> port.
+    tmpl = ('curl -s -m10 -o %s -A "%s" -H "X-Api-Version: %s" '
+            '-w "HTTP_CODE:%%{{http_code}}" "http://{target}:%d/"') % (
+                os.devnull, _JNDI, _JNDI, port)
+    return ctx.run_cmd(tmpl, target)

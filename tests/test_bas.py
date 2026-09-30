@@ -48,6 +48,22 @@ class TestCoverageReport(unittest.TestCase):
         self.assertEqual(cov["T1190"]["status"], "GAP")     # hit succeeded
         self.assertIn("T1046", cov)
         self.assertIn("CWE-22", ev.meta.get("cwe_coverage", {}))
+        # ATT&CK Navigator layer written and well-formed
+        import json
+        nav = json.load(open(os.path.join(ev.root, "attack_navigator_layer.json")))
+        self.assertEqual(nav["domain"], "enterprise-attack")
+        self.assertTrue(any(t["techniqueID"] == "T1190" for t in nav["techniques"]))
+
+    def test_cve_carried_and_covered(self):
+        m = types.SimpleNamespace()
+        m.META = {"id": "c", "name": "c", "category": "Test", "requires": [], "ports": [],
+                  "mitre": ["T1190"], "tactic": "Initial Access", "cve": "CVE-2021-44228",
+                  "success_regex": r"x"}
+        m.run = lambda t, c: "nope"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=False)
+        self.assertEqual(ev.records[0]["cve"], "CVE-2021-44228")
+        self.assertIn("CVE-2021-44228", ev.meta.get("cve_coverage", []))
 
 
 if __name__ == "__main__":

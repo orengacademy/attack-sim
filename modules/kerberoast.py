@@ -6,7 +6,7 @@ META = {
     "control": "AD hardening (NOT SD-WAN)",
     "fix": "Server",
     "mitre": ['T1558.003'],
-    "cwe": ['CWE-262'],
+    "cwe": ['CWE-522'],
     "tactic": 'Credential Access',
     "requires": ["impacket-GetUserSPNs"],
     "ports": [("tcp", 88), ("tcp", 389)],

@@ -255,8 +255,12 @@ Every module declares its **MITRE ATT&CK** technique(s) (`mitre`), **tactic**
 - `report.txt` ends with a **MITRE ATT&CK COVERAGE** matrix — per technique:
   which attacks map to it and whether any **PASSED** (`GAP`), all **BLOCKED**
   (`OK`), or mixed/other (`REVIEW`) — plus a **CWE COVERAGE** list.
-- `summary.json`'s `meta.attack_coverage` / `meta.cwe_coverage` hold the same,
-  machine-readable, to feed a BAS dashboard or ATT&CK Navigator layer.
+- `summary.json`'s `meta.attack_coverage` / `meta.cwe_coverage` / `meta.cve_coverage`
+  hold the same, machine-readable.
+- **`attack_navigator_layer.json`** is written each run — import it directly at
+  [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to
+  visualise coverage (red = GAP/passed, green = OK/blocked, amber = REVIEW).
+- CVE-based modules also carry a `cve` (e.g. CVE-2021-41773, CVE-2021-44228).
 
 Coverage spans Initial Access (T1190), Credential Access (T1110/T1003.006/
 T1558.003/T1558.004/T1187), Discovery (T1046/T1087.002), Lateral Movement
