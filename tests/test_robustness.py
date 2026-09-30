@@ -43,6 +43,21 @@ class TestRunnerRobustness(unittest.TestCase):
         self.assertEqual(rec["bad"]["baseline_result"], "NO-RESULT")
         self.assertIn("module crashed", rec["bad"]["verdict"].lower())
 
+    def test_hanging_module_is_watchdogged(self):
+        import time
+        slow = mod("slow", lambda t, c: time.sleep(30) or "never", success_regex=r"WIN")
+        fast = mod("fast", lambda t, c: "done")
+        ev = self._ev()
+        r = core.Runner("127.0.0.1")
+        r.module_hard_timeout = 1          # trip the watchdog quickly
+        start = time.time()
+        r.run([slow, fast], 1, ev, skip_unready=False, recon=False)
+        elapsed = time.time() - start
+        self.assertLess(elapsed, 20)       # did NOT wait for the 30s sleep
+        rec = {x["attack_id"]: x for x in ev.records}
+        self.assertIn("watchdog", rec["slow"]["verdict"].lower())
+        self.assertEqual(len(ev.records), 2)   # fast module still ran
+
     def test_bad_regex_does_not_crash(self):
         m = mod("re", lambda t, c: "some output",
                 success_regex="(unclosed", blocked_regex="[bad")

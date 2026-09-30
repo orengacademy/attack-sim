@@ -814,22 +814,45 @@ class Runner:
         self.on_status = _safe(on_status, lambda *a: None)
         self.ctx = Context()
         self._stop = False
+        # hard wall-clock cap per module run; None -> ctx.timeout + 60s.
+        self.module_hard_timeout = None
 
     def stop(self):
         self._stop = True
 
     def _safe_module_run(self, m, ip):
-        """Run a module, converting ANY exception into an error string instead of
-        letting it abort the whole run. One buggy module can't take down a run."""
-        try:
-            out = m.run(ip, self.ctx)
-            return out if isinstance(out, str) else str(out)
-        except Exception as e:
-            import traceback
-            mid = m.META.get("id", "?") if hasattr(m, "META") else "?"
-            return (f"# module {mid} raised while running against {ip}\n\n"
-                    f"[ERROR] module crashed: {e.__class__.__name__}: {e}\n\n"
-                    + traceback.format_exc())
+        """Run a module with BOTH an exception boundary and a wall-clock watchdog,
+        so neither a crash nor a hang can take down a run. Any exception becomes
+        an error string; a module that exceeds the hard cap is abandoned (left as
+        a daemon thread) and reported as an error, and the run moves on.
+
+        The cap is generous (per-command timeout + 60s) so it only trips on a
+        genuine hang — every module's own subprocess/socket calls already carry
+        their own, tighter timeouts. Overridable via self.module_hard_timeout."""
+        import threading
+        mid = m.META.get("id", "?") if hasattr(m, "META") else "?"
+        cap = self.module_hard_timeout or ((self.ctx.timeout or DEFAULT_TIMEOUT) + 60)
+        box = {}
+
+        def worker():
+            try:
+                out = m.run(ip, self.ctx)
+                box["out"] = out if isinstance(out, str) else str(out)
+            except Exception as e:
+                import traceback
+                box["out"] = (f"# module {mid} raised while running against {ip}\n\n"
+                              f"[ERROR] module crashed: {e.__class__.__name__}: {e}\n\n"
+                              + traceback.format_exc())
+
+        t = threading.Thread(target=worker, name=f"mod-{mid}", daemon=True)
+        t.start()
+        t.join(cap)
+        if t.is_alive():
+            return (f"# module {mid} vs {ip}\n\n[ERROR] module exceeded the "
+                    f"{cap:.0f}s wall-clock watchdog and was abandoned (it may "
+                    f"still be running in the background). Treat as inconclusive "
+                    f"— check the target/tool for a hang.")
+        return box.get("out", f"# module {mid}\n\n[ERROR] module produced no output")
 
     def run(self, modules, iterations, ev, skip_unready=True, recon=True):
         def log(msg):

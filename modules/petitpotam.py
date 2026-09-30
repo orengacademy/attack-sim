@@ -49,10 +49,15 @@ META = {
 
 
 def _local_ip(target):
+    # UDP connect() just sets the default peer (no packets, no handshake), so it
+    # won't block — but set a timeout anyway and fall back rather than raise.
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        s.settimeout(3)
         s.connect((target, 80))
         return s.getsockname()[0]
+    except OSError:
+        return "0.0.0.0"
     finally:
         s.close()
 
