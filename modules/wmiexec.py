@@ -32,6 +32,8 @@ META = {
     "id": "wmiexec",
     "name": "WMI Lateral Movement",
     "category": "AD Exploitation",
+    "test_type": "attack_sim",  # same segmentation/lateral-movement family as psexec, different transport (DCOM vs SVCManager)
+    "family": "D",
     "control": "Segmentation (SMB/RPC/DCOM) + IPS/EDR WMI-exec detection",
     "fix": "SD-WAN",
     "mitre": ['T1047'],

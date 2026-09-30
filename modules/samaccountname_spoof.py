@@ -34,6 +34,7 @@ META = {
     "id": "samaccountname_spoof",
     "name": "sAMAccountName Spoofing (CVE-2021-42278)",
     "category": "AD Exploitation",
+    "test_type": "pentest",  # AD exploitation primitive, not the USS attack-sim scope (see README)
     "control": "ms-DS-MachineAccountQuota / sAMAccountName uniqueness validation",
     "fix": "Set ms-DS-MachineAccountQuota=0; reject computer-account renames that collide with an existing DC name",
     "mitre": ['T1136.002', 'T1078.002'],
