@@ -1,0 +1,8 @@
+# Copy to 'allowlist.txt' (git-ignored) to RESTRICT which targets the harness
+# will run against — one IP or hostname per line. '#' starts a comment.
+# If this file (and HARNESS_ALLOWLIST) are absent, any validated target is
+# allowed (unchanged behaviour). When present, the target must match exactly.
+#
+# Example:
+# 10.10.10.5
+# dc01.lab.local

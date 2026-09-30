@@ -7,6 +7,7 @@ META = {
     "control": "Anonymous LDAP bind hardening",
     "fix": "Server",
     "requires": ["ldapsearch"],
+    "ports": [("tcp", 389)],
     # Anchor to the RESPONSE attribute line (LDIF: "namingContexts: DC=..."),
     # not the bare word — core prepends a "# command: ldapsearch ... namingContexts"
     # header to every log, and an unanchored /namingContexts/ matched THAT,

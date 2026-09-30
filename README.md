@@ -7,11 +7,24 @@ next launch. Each cycle runs N iterations (default 3), and the **full raw
 output of every simulation** is saved to `evidence/run_<timestamp>/` with
 JSON / TXT / CSV summaries.
 
-No config file — the only input is the **Target IP** typed into the GUI and
-ticking **Rules-of-engagement confirmed**. Everything else static (lab AD
-credentials, per-command timeout) is preconfigured in `core.py`
-(`DEFAULT_CREDENTIALS` / `DEFAULT_TIMEOUT`) — edit there if the lab
-domain/creds change.
+The main input is the **Target IP** typed into the GUI plus ticking
+**Rules-of-engagement confirmed**. Credentials are **not** stored in source —
+the password comes from the environment or a git-ignored `credentials.env`
+(see [Credentials & safety](#credentials--safety)). The per-command timeout
+(`DEFAULT_TIMEOUT`) lives in `core.py`.
+
+## Credentials & safety
+
+- **Credentials** (no secrets in git): set `HARNESS_DOMAIN`, `HARNESS_DC_USER`,
+  `HARNESS_DC_PASS` as env vars, or copy `credentials.env.example` →
+  `credentials.env` (git-ignored) and fill it in. Env vars win over the file;
+  the password defaults to empty if neither is set. The password is **redacted**
+  (`***`) from all evidence logs so it never lands on disk.
+- **Target allowlist** (opt-in): the target is validated (must be a real IP or
+  hostname), and if you configure an allowlist — `HARNESS_ALLOWLIST` (comma/space
+  separated) and/or a git-ignored `allowlist.txt` (see `allowlist.txt.example`) —
+  the harness refuses any target not on it. With no allowlist configured,
+  behaviour is unchanged (any validated target is allowed).
 
 ## Layout
 
@@ -82,6 +95,24 @@ executing into a "tool not found" log. To force them to run anyway (they'll
 self-report), call `Runner.run(..., skip_unready=False)`. The GUI has a
 **Preflight** button that shows the same report for the ticked attacks.
 
+### Reachability recon (preliminary target test)
+
+Each module also declares the port(s) it hits (`ports` in `META`). Before the
+exploits run, the harness does a **pure-socket TCP-connect recon** of those
+ports (no `nmap`, no root — works the same on Linux/macOS/Windows) so results
+can tell *"service absent / port filtered"* apart from *"the exploit itself was
+blocked"*, and it **suggests** which attacks are worth running (their service is
+reachable). Standalone:
+
+```bash
+python3 preflight.py --target <IP>   # recon the target's ports first
+```
+
+Recon is **advisory** — it does not skip anything, because a filtered port may
+*be* the control under test. It is also **active**: `--target` (and the recon
+phase of a run) contacts the target, so it needs the same authorisation as the
+exploits. The plain `preflight.py` (no `--target`) contacts nothing.
+
 ## Run
 
 ```bash
@@ -105,10 +136,11 @@ META = {
     "fix": "SD-WAN",
     "success_regex": r"...",                 # marks a successful/detected hit
     "blocked_regex": r"timed out|refused",   # marks a block
-    # --- preflight (all optional) ---
+    # --- preflight + recon (all optional) ---
     "requires": ["some-tool"],               # external binaries this module needs
     "needs_root": False,                     # True if it needs root/admin (raw sockets, priv ports)
     "requires_files": [],                    # data files that must exist (e.g. a vendored PoC)
+    "ports": [("tcp", 443)],                 # port(s) it targets; used for reachability recon
 }
 
 def run(target, ctx):
@@ -138,20 +170,37 @@ evidence/run_<ts>/
 ## Verdicts (single-target mode)
 
 - **SUCCESS** — attack succeeded against the target → finding.
-- **AUTH-FAILED** — credential error (wrong `dc_user`/`dc_pass` in `core.py`), not a control result.
+- **AUTH-FAILED** — credential error (wrong `HARNESS_DC_USER`/`HARNESS_DC_PASS`), not a control result.
 - **BLOCKED** — attack failed/unreachable → control likely working (or service not present).
+  If recon showed the target port filtered/closed, the verdict says so (segmentation vs service absent).
 - **NO-RESULT** — no success and no clear block marker → review the raw log
   (may be a silent block, a patched/hardened target, or a monitor-only mode).
+- **PREREQ-MISSING** — the module was skipped before running because a required
+  tool/file/privilege was absent or it isn't supported on this OS (see preflight).
 
 Automated verdicts are best-effort (regex against the raw output). **The raw
 `.log` files are the authoritative evidence** — every classifier bug found
 in this project so far was caught by reading them, not by trusting the verdict.
 
+## Tests
+
+```bash
+python3 -m unittest discover -s tests    # or: python3 -m pytest tests
+```
+
+Pure-stdlib, cross-platform, localhost-only — covers the classifier, preflight,
+reachability, credential loading, target validation/allowlist, and redaction.
+
 ## Safety
 
-- **No allowlist** — the harness will run against whatever IP you type in the
-  GUI. Rules-of-engagement confirmation is the only gate; double-check the
-  target before clicking RUN.
+- **Target allowlist** — validated targets only; configure `HARNESS_ALLOWLIST` /
+  `allowlist.txt` to hard-restrict which hosts the harness will touch. Rules-of-
+  engagement confirmation is still required in the GUI — double-check the target
+  before clicking RUN.
+- **No secrets on disk** — the password is read from the environment / git-ignored
+  `credentials.env` and redacted from all evidence logs.
+- **Recon is active** — the reachability precheck contacts the target, so it needs
+  the same authorisation as the exploits.
 - PetitPotam only coerces + captures (via Responder) — it does not relay or
   crack the captured hash.
 - ICMP Flood and PetitPotam are live, disruptive tests — only run inside an

@@ -56,6 +56,9 @@ def main():
     print("  - hping3 (ICMP Flood): grant it once with")
     print("      sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)")
     print("  - responder (PetitPotam): run the harness itself with sudo")
+    c("\nCredentials: set HARNESS_DC_PASS (and HARNESS_DOMAIN/HARNESS_DC_USER),", "1;32")
+    print("  or copy credentials.env.example -> credentials.env and fill it in.")
+    print("  Check readiness first:  python3 preflight.py")
     c("\nNow run:  python3 gui.py  (or: sudo python3 gui.py for PetitPotam)", "1;32")
 
 
