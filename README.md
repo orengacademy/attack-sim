@@ -200,6 +200,24 @@ python3 gui.py       # run as your user; root-needing tools self-elevate via sud
 The GUI's **Preflight + recon** button checks tools/privileges AND (when a target
 is entered) probes the target's ports/services, colour-coded.
 
+### Headless / SSH (no display) — use the CLI
+
+On a server (no `$DISPLAY`) the GUI can't open; use `cli.py` — same engine, all
+options as flags:
+
+```bash
+python3 cli.py --list
+python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe        # self-test on the box
+python3 cli.py --target 10.0.0.5 --only ssh_brute,ftp_anonymous --workers 4 --confirm-roe
+python3 cli.py --target 10.0.0.5 --original --iterations 3 --confirm-roe
+python3 cli.py --target 10.0.0.5 --port log4shell=8983,ssh_brute=2222 --confirm-roe
+```
+
+`--confirm-roe` is required (the CLI's rules-of-engagement gate). Selection:
+`--only <ids>` / `--original` / `--added` (default: all). Output is colour-coded
+(red = passed, green = blocked, blue = no-service) and the ATT&CK/CWE/CVE
+coverage report + evidence path print at the end.
+
 In the GUI: type the **Target IP**, set iterations (default 3), tick the
 attacks you want, tick **Rules-of-engagement confirmed**, click **RUN**.
 
