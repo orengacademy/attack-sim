@@ -21,11 +21,12 @@ import core
 import loader
 
 _ANSI = {
-    "SUCCESS": "\033[31m", "PASSED": "\033[31m",   # red — got through (finding)
+    "SUCCESS": "\033[31m", "PASSED": "\033[31m",   # red — got through undetected (finding)
+    "DETECTED": "\033[38;5;208m",                   # orange — passed but SOC alerted
     "BLOCKED": "\033[32m",                          # green — control worked
     "NO-SERVICE": "\033[34m",                       # blue — port closed, not a block
     "AUTH-FAILED": "\033[33m", "NO-RESULT": "\033[33m",  # amber — review
-    "PREREQ-MISSING": "\033[90m",                   # grey — skipped
+    "SKIP": "\033[90m", "PREREQ-MISSING": "\033[90m",    # grey — skipped
 }
 _RESET = "\033[0m"
 
@@ -62,6 +63,11 @@ def _select(modules, args):
     if args.family:
         fams = {f.strip().upper() for f in args.family.split(",") if f.strip()}
         sel = [m for m in sel if m.META.get("family", "").upper() in fams]
+    if args.direction:
+        d = args.direction.lower()
+        # a module tagged "both" always matches; otherwise exact direction match.
+        sel = [m for m in sel
+               if m.META.get("direction", "a2b").lower() in (d, "both")]
     return sel
 
 
@@ -95,6 +101,16 @@ def main():
     ap.add_argument("--attack-sim", action="store_true",
                     help="shortcut for --test-type attack_sim (USS scope only)")
     ap.add_argument("--family", help="filter attack-sim families, e.g. A,B,D")
+    ap.add_argument("--direction", choices=["a2b", "b2a", "both"],
+                    help="filter by test direction: a2b = SDWAN/site->DC (northbound), "
+                         "b2a = DC->SDWAN/out (reverse/server-initiated)")
+    ap.add_argument("--active", action="store_true",
+                    help="ALLOW active establishment — live modules may build real "
+                         "tunnels / SOCKS pivots / DNS tunnels / exfil to YOUR configured "
+                         "infra (default: non-destructive indicator mode only). Use only "
+                         "inside the authorised window.")
+    ap.add_argument("--source", help="source IP to bind egress sockets to (e.g. a DC "
+                    "foothold interface / VRF); default = OS route")
     ap.add_argument("--list", action="store_true", help="list discovered modules and exit")
     ap.add_argument("--confirm-roe", action="store_true",
                     help="confirm rules-of-engagement / written authorisation (required to run)")
@@ -106,15 +122,24 @@ def main():
 
     if args.list:
         print(f"{len(modules)} modules:")
-        for m in sorted(modules, key=lambda x: (x.META.get("test_type", ""), x.META["id"])):
+        for m in sorted(modules, key=lambda x: (x.META.get("test_type", ""),
+                                                x.META.get("family", ""), x.META["id"])):
             meta = m.META
-            tag = " [NEW]" if meta.get("added") else ""
+            tags = []
+            if meta.get("added"):
+                tags.append("NEW")
+            if meta.get("active"):
+                tags.append("ACTIVE")
+            tag = (" [" + ",".join(tags) + "]") if tags else ""
             scope = meta.get("test_type", "?")
             fam = f"/{meta['family']}" if meta.get("family") else ""
+            dirn = meta.get("direction", "a2b")
             mitre = ", ".join(meta.get("mitre", []))
-            print(f"  {meta['id']:<24} {scope+fam:<14} {mitre}{tag}")
-        print("\nattack_sim = the USS boundary scope (families A-G). "
-              "Filter a run with --attack-sim or --family A,B,D.")
+            print(f"  {meta['id']:<26} {scope+fam:<14} {dirn:<5} {mitre}{tag}")
+        print("\nattack_sim = the USS boundary scope (families A-G). Filter a run with "
+              "--attack-sim / --family A,B,D / --direction a2b|b2a.\n"
+              "[ACTIVE] modules need --active (+ config.json infra) to establish for real; "
+              "otherwise they run as non-destructive indicators.")
         return 0
 
     if not args.target:
@@ -137,6 +162,9 @@ def main():
     overrides = _parse_ports(args.port)
     if overrides:
         runner.ctx.port_overrides = overrides
+    runner.ctx.allow_active = bool(args.active)
+    if args.source:
+        runner.ctx.source_ip = args.source
 
     try:
         ev = core.Evidence(base=args.evidence_dir)

@@ -9,16 +9,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cli  # noqa: E402
 
 
-def mod(mid, added=False, test_type="", family=""):
+def mod(mid, added=False, test_type="", family="", direction="a2b"):
     m = types.SimpleNamespace()
     m.META = {"id": mid, "name": mid, "category": "T", "added": added,
-              "test_type": test_type, "family": family}
+              "test_type": test_type, "family": family, "direction": direction}
     return m
 
 
 class Args:
     only = None; original = False; added = False
-    test_type = None; attack_sim = False; family = None
+    test_type = None; attack_sim = False; family = None; direction = None
 
 
 class TestCliSelect(unittest.TestCase):

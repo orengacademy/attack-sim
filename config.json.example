@@ -1,0 +1,42 @@
+{
+  "_comment": "Operator config for the attack-sim (USS) modules. Copy to config.json (git-ignored) and fill in YOUR engagement infrastructure. Every value can also be set via env HARNESS_CFG_<KEY> (e.g. HARNESS_CFG_ATTACKER_VPS=1.2.3.4). Leave a value empty to keep the module that needs it in safe no-op mode. NEVER point these at infrastructure you do not own/control.",
+
+  "attacker_vps": "",
+  "_attacker_vps": "host/ip of YOUR redirector/VPS reachable on 443 — used by the 443 tunnel (chisel/gost/wstunnel), SSH-over-443 and SOCKS-pivot modules.",
+
+  "attacker_domain": "",
+  "_attacker_domain": "a domain YOU are authoritative for — DNS tunnelling, attacker-controlled DoH, and the newly-registered/uncategorised-domain test.",
+
+  "attacker_doh": "",
+  "_attacker_doh": "URL of YOUR DoH endpoint (e.g. https://doh.example-you-own.com/dns-query) for the attacker-controlled-resolver test.",
+
+  "canary_url": "",
+  "_canary_url": "an HTTPS endpoint YOU control that logs a hit (e.g. a Canarytokens / webhook.site URL) — the DLP canary-POST exfil target. Synthetic marked data only.",
+
+  "canary_dns_zone": "",
+  "_canary_dns_zone": "a DNS zone YOU are authoritative for, to PROVE DNS exfil reach; falls back to attacker_domain if empty.",
+
+  "internal_pivot_target": "",
+  "_internal_pivot_target": "host:port of a segmented internal service (e.g. 10.20.0.10:3389) to reach THROUGH the 443 SOCKS pivot — proves 443 collapses segmentation.",
+
+  "front_domain": "",
+  "front_host": "",
+  "_front": "front_domain = a frontable CDN edge domain to put in SNI; front_host = the real Host header to reach behind it (domain-fronting / SNI-vs-Host test).",
+
+  "published_app_url": "",
+  "_published_app_url": "a published-on-443 app URL for the WAF-evasion and exposed-management probes (family F).",
+
+  "external_resolver": "8.8.8.8",
+  "_external_resolver": "a public resolver IP for the 'is the internal DNS resolver forced' test.",
+
+  "doh_providers": [
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/resolve",
+    "https://dns.quad9.net:5053/dns-query"
+  ],
+  "_doh_providers": "public DoH endpoints tested by the multi-provider DoH-bypass module (family B).",
+
+  "beacon_seconds": 60,
+  "beacon_interval": 5,
+  "_beacon": "family G beacon-shaping window: total seconds and sleep between callbacks (jittered)."
+}
