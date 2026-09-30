@@ -14,6 +14,7 @@ META = {
     "requires": ["hydra"],
     "serial": True,   # rate-limit test: run alone so it isn't skewed
     "ports": [("tcp", 22)],
+    "port_customizable": True,
     # hydra's own success line looks like "login: X   password: Y"
     "success_regex": r"login:.*password:",
     "blocked_regex": r"timed out|Connection refused|No route",
@@ -21,5 +22,6 @@ META = {
 
 
 def run(target, ctx):
+    port = ctx.get_port("ssh_brute", 22)   # overridable per-attack (GUI/env)
     return ctx.run_cmd(
-        "hydra -l {dc_user} -p {dc_pass} -f ssh://{target}", target)
+        f"hydra -s {port} -l {{dc_user}} -p {{dc_pass}} -f ssh://{{target}}", target)

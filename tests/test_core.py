@@ -99,6 +99,26 @@ class TestCredentials(unittest.TestCase):
         self.assertEqual(core.load_credentials()["dc_pass"], "")
 
 
+class TestGetPort(unittest.TestCase):
+    def test_override_beats_default(self):
+        ctx = core.Context(port_overrides={"apache_41773": 8080})
+        self.assertEqual(ctx.get_port("apache_41773", 80), 8080)
+
+    def test_default_when_no_override(self):
+        self.assertEqual(core.Context().get_port("ssh_brute", 22), 22)
+
+    def test_env_override(self):
+        os.environ["HARNESS_PORT_LOG4SHELL"] = "8983"
+        try:
+            self.assertEqual(core.Context().get_port("log4shell", 8080), 8983)
+        finally:
+            del os.environ["HARNESS_PORT_LOG4SHELL"]
+
+    def test_bad_override_falls_back(self):
+        ctx = core.Context(port_overrides={"x": "notaport"})
+        self.assertEqual(ctx.get_port("x", 443), 443)
+
+
 class TestSudoPrefix(unittest.TestCase):
     def _patch(self, priv, has_sudo):
         self._op, self._ow = core.is_privileged, core.shutil.which

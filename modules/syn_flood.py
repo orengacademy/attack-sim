@@ -32,6 +32,7 @@ META = {
     "serial": True,               # DoS: must run alone
     "os_supported": ["Linux"],
     "ports": [("tcp", SYN_PORT)],
+    "port_customizable": True,
     "success_regex": r"^PASS",
     # a privilege failure must NOT read as "control held" (flood never ran)
     "blocked_regex": r"^INFO|INCONCLUSIVE",
@@ -50,7 +51,7 @@ def _connect_ok(host, port, timeout=1.5):
 
 
 def run(target, ctx):
-    port = ctx.get_port("syn", SYN_PORT)   # overridable (HARNESS_PORT_SYN / GUI)
+    port = ctx.get_port("syn_flood", SYN_PORT)   # overridable (HARNESS_PORT_SYN / GUI)
     out = [f"# SYN flood DoS vs {target}:{port}  "
            f"({FLOOD_SECONDS}s flood, {SAMPLES} connect samples)"]
 

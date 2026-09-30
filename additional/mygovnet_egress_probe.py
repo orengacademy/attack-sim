@@ -263,6 +263,7 @@ class Probe:
         for resolver in PUBLIC_RESOLVERS:
             # UDP/53
             target = f"{resolver}:53/udp"
+            udp = None
             try:
                 udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 udp.settimeout(self.timeout)
@@ -270,7 +271,6 @@ class Probe:
                     udp.bind((self.source, 0))
                 udp.sendto(query, (resolver, 53))
                 data, _ = udp.recvfrom(512)
-                udp.close()
                 ok = len(data) > 12 and data[:2] == query[:2]
                 self._record("dns-direct-udp", target, PASSED if ok else INCONCLUSIVE,
                              "T1071.004",
@@ -281,6 +281,9 @@ class Probe:
                              "no answer -> external :53 filtered (good)")
             except OSError as exc:
                 self._record("dns-direct-udp", target, INCONCLUSIVE, "T1071.004", str(exc))
+            finally:
+                if udp is not None:
+                    udp.close()   # was leaked on the timeout/error paths
 
     def test_doh(self):
         """Reach public DNS-over-HTTPS endpoints on 443.
@@ -298,7 +301,9 @@ class Probe:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     body = resp.read(512)
-                    ok = resp.status == 200 and b"Answer" in body or b"Status" in body
+                    # parenthesised: a non-200 with "Status" in the body must NOT
+                    # read as success (operator-precedence bug fix).
+                    ok = resp.status == 200 and (b"Answer" in body or b"Status" in body)
                     self._record(f"doh:{name}", url, PASSED if ok else INCONCLUSIVE,
                                  "T1071.004",
                                  "DoH resolved -> internal resolver bypassable"
