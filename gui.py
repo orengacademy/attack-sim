@@ -32,6 +32,17 @@ NEWC   = "#c86bff"   # "NEW" badge
 
 MONO = ("TkFixedFont", 10)
 
+# Purple-team semantics: a result that means the attack GOT THROUGH the SD-WAN is
+# a FINDING -> red; a result that means the control STOPPED it is good -> green.
+STATUS_COLORS = {
+    "SUCCESS":        ERRC,    # attack passed the SD-WAN  -> FINDING (red)
+    "PASSED":         ERRC,    # (dual-path) same
+    "BLOCKED":        OKC,     # control stopped it        -> good (green)
+    "AUTH-FAILED":    WARNC,   # bad creds, not a control result
+    "NO-RESULT":      WARNC,   # inconclusive — review
+    "PREREQ-MISSING": MUTED,   # skipped (tooling/priv)
+}
+
 
 def _apply_theme(root):
     """Best-effort modern dark theme; never breaks the app if unavailable."""
@@ -137,6 +148,19 @@ class HarnessGUI:
         ttk.Label(f, text=f"(recommended {core.RECOMMENDED_WORKERS}; DoS/brute always serial)",
                   style="Muted.TLabel").grid(row=0, column=6, sticky="w", **pad)
 
+        # black-box vs white-box posture (both run everything; recorded + announced)
+        ttk.Label(f, text="Mode").grid(row=1, column=0, sticky="w", **pad)
+        self.mode_var = tk.StringVar(value="blackbox")
+        mf = ttk.Frame(f); mf.grid(row=1, column=1, columnspan=4, sticky="w", padx=6)
+        ttk.Radiobutton(mf, text="Black-box (through SD-WAN)", value="blackbox",
+                        variable=self.mode_var).pack(side="left")
+        ttk.Radiobutton(mf, text="White-box (allow-all baseline)", value="whitebox",
+                        variable=self.mode_var).pack(side="left", padx=(12, 0))
+        ttk.Label(f, text="run both, then compare: PASSED in white-box but BLOCKED "
+                          "in black-box = control working",
+                  style="Muted.TLabel").grid(row=2, column=0, columnspan=7, sticky="w",
+                                             padx=6, pady=(0, 2))
+
         ps = core.privilege_status(self.modules)
         if ps["needs_root_modules"]:
             if ps["root"] or ps["sudo_nopasswd"]:
@@ -146,13 +170,13 @@ class HarnessGUI:
             else:
                 icon, style = "ℹ", "Warn.TLabel"
             ttk.Label(f, text=f"{icon} Privilege: {ps['how']}", style=style).grid(
-                row=1, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 6))
+                row=3, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 6))
 
-    # ----- attacks -----------------------------------------------------
+    # ----- attacks (aligned grid table) --------------------------------
     def _build_attacks(self):
-        outer = ttk.LabelFrame(self.root, text="Attacks — tick to include; edit port where shown")
+        outer = ttk.LabelFrame(self.root, text="Attacks")
         outer.pack(fill="both", expand=False, padx=12, pady=8)
-        canvas = tk.Canvas(outer, height=250, bg=PANEL, highlightthickness=0)
+        canvas = tk.Canvas(outer, height=270, bg=PANEL, highlightthickness=0)
         sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas, style="Card.TFrame")
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -162,37 +186,49 @@ class HarnessGUI:
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
+        # fixed grid columns so every row lines up: attack | badge | MITRE | tactic | port | fix
+        for col, w in ((0, 0), (1, 46), (2, 130), (3, 130), (4, 78), (5, 90)):
+            inner.grid_columnconfigure(col, minsize=w, weight=(1 if col == 0 else 0))
+
+        def hcell(text, c, r):
+            tk.Label(inner, text=text, bg=PANEL, fg=MUTED,
+                     font=("TkDefaultFont", 8, "bold")).grid(row=r, column=c, sticky="w",
+                                                             padx=8, pady=(2, 4))
+        # header
+        hcell("ATTACK", 0, 0); hcell("", 1, 0); hcell("MITRE", 2, 0)
+        hcell("TACTIC", 3, 0); hcell("PORT", 4, 0); hcell("FIX", 5, 0)
+
+        r = 1
         current_cat = None
         for m in self.modules:
             meta = m.META
             if meta["category"] != current_cat:
                 current_cat = meta["category"]
-                ttk.Label(inner, text=f"  {current_cat}", style="Cat.TLabel").pack(
-                    anchor="w", pady=(10, 3), fill="x")
-            row = ttk.Frame(inner, style="Card.TFrame"); row.pack(anchor="w", fill="x", padx=6)
+                tk.Label(inner, text=f"  {current_cat}", bg=PANEL, fg=INFOC,
+                         font=("TkDefaultFont", 9, "bold")).grid(
+                             row=r, column=0, columnspan=6, sticky="w", padx=4, pady=(9, 2))
+                r += 1
             var = tk.BooleanVar(value=True)
             self.vars[meta["id"]] = (var, m)
-            ttk.Checkbutton(row, text=meta["name"], variable=var,
-                            style="Card.TCheckbutton", width=34).pack(side="left")
+            ttk.Checkbutton(inner, text=meta["name"], variable=var,
+                            style="Card.TCheckbutton").grid(row=r, column=0, sticky="w", padx=(10, 6))
             if meta.get("added"):
-                tk.Label(row, text="NEW", bg=NEWC, fg="#fff",
-                         font=("TkDefaultFont", 7, "bold"), padx=4).pack(side="left", padx=(0, 6))
-            # MITRE + tactic chip
-            mitre = ", ".join(meta.get("mitre", []))
-            tk.Label(row, text=f"{mitre}", bg=PANEL, fg=INFOC,
-                     font=("TkDefaultFont", 8)).pack(side="left", padx=4)
-            # per-attack port entry (only where honoured)
+                tk.Label(inner, text="NEW", bg=NEWC, fg="#fff",
+                         font=("TkDefaultFont", 7, "bold"), padx=4).grid(row=r, column=1, sticky="w")
+            tk.Label(inner, text=", ".join(meta.get("mitre", [])), bg=PANEL, fg=INFOC,
+                     font=("TkDefaultFont", 8)).grid(row=r, column=2, sticky="w", padx=6)
+            tk.Label(inner, text=meta.get("tactic", ""), bg=PANEL, fg=MUTED,
+                     font=("TkDefaultFont", 8)).grid(row=r, column=3, sticky="w", padx=6)
             if meta.get("port_customizable"):
                 default = next((p for pr, p in
                                 ((s if isinstance(s, (list, tuple)) else ("tcp", s))
                                  for s in meta.get("ports", [])) if pr in ("tcp", "udp")), "")
                 pv = tk.StringVar(value=str(default))
                 self.port_vars[meta["id"]] = pv
-                tk.Label(row, text="port", bg=PANEL, fg=MUTED,
-                         font=("TkDefaultFont", 8)).pack(side="right", padx=(0, 2))
-                ttk.Entry(row, textvariable=pv, width=6).pack(side="right", padx=2)
-            tk.Label(row, text=f"fix:{meta.get('fix','')}", bg=PANEL, fg=MUTED,
-                     font=("TkDefaultFont", 8)).pack(side="right", padx=8)
+                ttk.Entry(inner, textvariable=pv, width=6).grid(row=r, column=4, sticky="w", padx=6)
+            tk.Label(inner, text=meta.get("fix", ""), bg=PANEL, fg=MUTED,
+                     font=("TkDefaultFont", 8)).grid(row=r, column=5, sticky="w", padx=6)
+            r += 1
 
     # ----- controls ----------------------------------------------------
     def _build_controls(self):
@@ -219,17 +255,29 @@ class HarnessGUI:
 
         left = ttk.LabelFrame(outer, text="Status")
         left.pack(side="left", fill="y", padx=(0, 6))
-        left.pack_propagate(False); left.configure(width=340)
-        self.status_tree = ttk.Treeview(left, columns=("attack", "iter", "result"),
+        left.pack_propagate(False); left.configure(width=350)
+
+        # legend (stacked so it never truncates) — colour semantics
+        leg = ttk.Frame(left, style="Card.TFrame"); leg.pack(fill="x", padx=6, pady=(4, 4))
+        for dot, col, txt in ((("●"), ERRC, "PASSED — attack got through (finding)"),
+                              (("●"), OKC, "BLOCKED — control stopped it (good)"),
+                              (("●"), WARNC, "NO-RESULT / AUTH — review"),
+                              (("●"), MUTED, "PREREQ-MISSING — skipped")):
+            rowf = ttk.Frame(leg, style="Card.TFrame"); rowf.pack(anchor="w", fill="x")
+            tk.Label(rowf, text=dot, fg=col, bg=PANEL).pack(side="left")
+            tk.Label(rowf, text=txt, fg=MUTED, bg=PANEL,
+                     font=("TkDefaultFont", 8)).pack(side="left")
+
+        self.status_tree = ttk.Treeview(left, columns=("mode", "attack", "iter", "result"),
                                         show="headings", height=20)
-        for c, t, w, a in (("attack", "Attack", 195, "w"), ("iter", "#", 30, "center"),
-                           ("result", "Result", 100, "center")):
+        for c, t, w, a in (("mode", "M", 34, "center"), ("attack", "Attack", 176, "w"),
+                           ("iter", "#", 26, "center"), ("result", "Result", 104, "center")):
             self.status_tree.heading(c, text=t); self.status_tree.column(c, width=w, anchor=a)
         self.status_tree.pack(side="left", fill="both", expand=True)
         sb1 = ttk.Scrollbar(left, command=self.status_tree.yview); sb1.pack(side="right", fill="y")
         self.status_tree.configure(yscrollcommand=sb1.set)
-        for tag, col in (("SUCCESS", OKC), ("BLOCKED", BLUEC), ("AUTH-FAILED", WARNC),
-                         ("NO-RESULT", ERRC), ("PREREQ-MISSING", WARNC)):
+        # red = attack passed the SD-WAN (finding); green = blocked (control worked)
+        for tag, col in STATUS_COLORS.items():
             self.status_tree.tag_configure(tag, foreground=col)
 
         right = ttk.LabelFrame(outer, text="Live output")
@@ -239,8 +287,9 @@ class HarnessGUI:
         self.log.pack(side="left", fill="both", expand=True)
         sb2 = ttk.Scrollbar(right, command=self.log.yview); sb2.pack(side="right", fill="y")
         self.log.configure(yscrollcommand=sb2.set)
-        for tag, col in (("ok", OKC), ("blocked", BLUEC), ("warn", WARNC),
-                         ("err", ERRC), ("hdr", INFOC), ("muted", MUTED)):
+        # finding=red (attack passed), good=green (blocked), warn=amber, hdr=cyan
+        for tag, col in (("finding", ERRC), ("good", OKC), ("warn", WARNC),
+                         ("hdr", INFOC), ("muted", MUTED)):
             self.log.tag_configure(tag, foreground=col)
 
     # ----- helpers -----------------------------------------------------
@@ -287,21 +336,28 @@ class HarnessGUI:
         win.geometry("860x600"); win.configure(bg=BG)
         txt = tk.Text(win, wrap="none", bg="#12131b", fg=FG, borderwidth=0,
                       font=MONO, padx=8, pady=6)
-        for tag, col in (("ok", OKC), ("bad", ERRC), ("hdr", ACCENT), ("blue", BLUEC),
+        for tag, col in (("ready", OKC), ("notready", ERRC), ("hdr", ACCENT),
+                         ("exposed", ERRC), ("held", OKC), ("amber", WARNC),
                          ("muted", MUTED)):
             txt.tag_configure(tag, foreground=col)
         for line in (report + recon).splitlines():
             s = line.strip()
             tag = ""
-            if s.startswith("[OK]") or s.startswith("Suggested"):
-                tag = "ok"
-            elif s.startswith("[XX]") or "MISSING" in line or s.startswith("Not reachable"):
-                tag = "bad"
-            elif set(s) == {"="} or s.startswith("PREFLIGHT") or s.startswith("RECON") \
-                    or s.startswith("Modules ready") or s.startswith("Probes"):
+            # tool-readiness (green=present / red=missing)
+            if s.startswith("[OK]"):
+                tag = "ready"
+            elif s.startswith("[XX]") or "MISSING" in line:
+                tag = "notready"
+            elif set(s) == {"="} or s.startswith(("PREFLIGHT", "RECON", "Modules ready", "Probes")):
                 tag = "hdr"
-            elif "open" in s or s.startswith("Indeterminate"):
-                tag = "blue"
+            # recon EXPOSURE semantics: reachable/open = exposed (red);
+            # filtered/closed / not-reachable = segmentation holding (green)
+            elif s.startswith("Suggested") or (" open" in f" {s}"):
+                tag = "exposed"
+            elif s.startswith("Not reachable") or "filtered" in s or "closed" in s:
+                tag = "held"
+            elif s.startswith("Indeterminate"):
+                tag = "amber"
             elif line.startswith("  #") or s.startswith("#"):
                 tag = "muted"
             txt.insert("end", line + "\n", tag)
@@ -314,15 +370,15 @@ class HarnessGUI:
         for line in str(m).split("\n"):
             low = line.lower()
             tag = ""
-            if "success" in low or "-> gap" in low:
-                tag = "ok"
-            elif "blocked" in low or "-> ok" in low:
-                tag = "blocked"
+            # attack PASSED / GAP = got through = finding (red)
+            if "success" in low or "-> gap" in low or "passed the appliance" in low:
+                tag = "finding"
+            # BLOCKED / OK = stopped = good (green)
+            elif "blocked" in low or "-> ok" in low or "control working" in low:
+                tag = "good"
             elif "prereq-missing" in low or "auth-failed" in low or "[warn]" in low \
-                    or "not reachable" in low:
+                    or "not reachable" in low or "[error]" in low or "no-result" in low:
                 tag = "warn"
-            elif "[error]" in low or "no-result" in low:
-                tag = "err"
             elif line.startswith(("===", "────", "Recon", "Platform", "Preflight", "Target")):
                 tag = "hdr"
             self.log.insert("end", line + "\n", tag)
@@ -341,7 +397,8 @@ class HarnessGUI:
         self.log.see("end")
 
     def _add_status(self, name, it, result):
-        self.status_tree.insert("", "end", values=(name, it, result), tags=(result,))
+        m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
+        self.status_tree.insert("", "end", values=(m, name, it, result), tags=(result,))
         kids = self.status_tree.get_children()
         if kids:
             self.status_tree.see(kids[-1])
@@ -391,6 +448,7 @@ class HarnessGUI:
         except (ValueError, TypeError):
             workers = 1
         port_overrides = self._collect_port_overrides()
+        self._run_mode = self.mode_var.get()
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
         self.progress["value"] = 0
@@ -409,10 +467,12 @@ class HarnessGUI:
         if port_overrides:
             self.runner.ctx.port_overrides = port_overrides
 
+        mode = self._run_mode
+
         def work():
             try:
                 ev = core.Evidence()
-                root = self.runner.run(selected, iters, ev)
+                root = self.runner.run(selected, iters, ev, mode=mode)
                 self.q.put(("done", root))
             except Exception as e:
                 self.q.put(("error", str(e)))

@@ -54,6 +54,17 @@ class TestCoverageReport(unittest.TestCase):
         self.assertEqual(nav["domain"], "enterprise-attack")
         self.assertTrue(any(t["techniqueID"] == "T1190" for t in nav["techniques"]))
 
+    def test_mode_recorded(self):
+        m = types.SimpleNamespace()
+        m.META = {"id": "m", "name": "m", "category": "Test", "requires": [], "ports": [],
+                  "mitre": ["T1046"], "tactic": "Discovery", "success_regex": r"x"}
+        m.run = lambda t, c: "nope"
+        for mode in ("blackbox", "whitebox"):
+            ev = core.Evidence(base=tempfile.mkdtemp())
+            core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=False, mode=mode)
+            self.assertEqual(ev.meta.get("mode"), mode)
+            self.assertEqual(ev.records[0]["mode"], mode)
+
     def test_cve_carried_and_covered(self):
         m = types.SimpleNamespace()
         m.META = {"id": "c", "name": "c", "category": "Test", "requires": [], "ports": [],

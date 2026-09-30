@@ -134,6 +134,24 @@ Recon is **advisory** — it does not skip anything, because a filtered port may
 phase of a run) contacts the target, so it needs the same authorisation as the
 exploits. The plain `preflight.py` (no `--target`) contacts nothing.
 
+## Black-box vs white-box mode
+
+Pick a **Mode** in the GUI (or `Runner.run(..., mode="whitebox")`):
+
+- **Black-box** (default) — traffic goes through the SD-WAN as configured; shows
+  what the control blocks.
+- **White-box** — you set the SD-WAN to *allow-all* first, then run this to
+  confirm each attack actually works unimpeded (a baseline).
+
+Both run **everything**; the mode is recorded per result (`mode` column in
+`summary.csv`, `meta.mode` in `summary.json`, and in `report.txt`) and announced
+in the log. Compare the two runs: **PASSED in white-box but BLOCKED in black-box
+= the control is working**; PASSED in both = a real gap; BLOCKED in white-box too
+= the attack/service itself didn't work (not a control result).
+
+Result colours follow purple-team convention: **red = attack PASSED (got through
+— finding)**, **green = BLOCKED (control worked)**, amber = review, grey = skipped.
+
 ## Performance / concurrency
 
 - **Recon is parallel** — all target ports are probed concurrently (a thread
