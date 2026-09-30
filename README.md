@@ -179,12 +179,13 @@ at a non-standard port three ways:
 - **env** — `HARNESS_PORT_<ID>=8983` (e.g. `HARNESS_PORT_LOG4SHELL=8983`);
 - **headless** — `Runner(...).ctx.port_overrides = {"log4shell": 8983}`.
 
-### Standalone egress probe
+### Egress probe (integrated)
 
 `additional/mygovnet_egress_probe.py` is a self-contained, **non-destructive**
 egress/segmentation probe (TCP port sweep, TLS carrier, L4-vs-L7 on 443, direct
 external DNS, DoH, ICMP), with source-IP binding (`-s`), `--dry-run`, `--json`,
-and MITRE ids. It complements the module harness for boundary/egress testing:
+and MITRE ids. Launch it from the GUI with the **Egress probe** button (runs
+against the current target, streams into the live log), or standalone:
 ```bash
 python3 additional/mygovnet_egress_probe.py -d <dest> -s <source-ip> --tests ports,dns,doh
 ```
@@ -257,8 +258,12 @@ evidence/run_<ts>/
 
 - **SUCCESS** — attack succeeded against the target → finding.
 - **AUTH-FAILED** — credential error (wrong `HARNESS_DC_USER`/`HARNESS_DC_PASS`), not a control result.
-- **BLOCKED** — attack failed/unreachable → control likely working (or service not present).
-  If recon showed the target port filtered/closed, the verdict says so (segmentation vs service absent).
+- **BLOCKED** — traffic was **filtered / dropped in transit** (port filtered, or a
+  timeout) → the control (SD-WAN/segmentation) likely stopped it.
+- **NO-SERVICE** — the target port was **closed / refused** (RST): the service
+  isn't running or isn't accessible, so the attack couldn't apply. This is **NOT**
+  an SD-WAN block — it's distinguished from BLOCKED precisely so a closed port
+  isn't miscredited to the control. (Recon decides closed-vs-filtered.)
 - **NO-RESULT** — no success and no clear block marker → review the raw log
   (may be a silent block, a patched/hardened target, or a monitor-only mode).
 - **PREREQ-MISSING** — the module was skipped before running because a required

@@ -8,6 +8,7 @@ Only touches 127.0.0.1; contacts no external host.
 import os
 import socket
 import sys
+import tempfile
 import types
 import unittest
 
@@ -162,6 +163,30 @@ class TestSudoUnlock(unittest.TestCase):
         ok, msg = core.sudo_unlock("x")
         self.assertFalse(ok)
         self.assertIn("sudo", msg)
+
+
+class TestServiceVsBlocked(unittest.TestCase):
+    """A closed/refused port = service absent (NO-SERVICE), NOT a control block;
+    a filtered/dropped port = BLOCKED (likely the SD-WAN)."""
+    def _mod(self, mid, port, output):
+        m = types.SimpleNamespace()
+        m.META = {"id": mid, "name": mid, "category": "Test", "requires": [],
+                  "ports": [("tcp", port)], "mitre": ["T1046"], "tactic": "Discovery",
+                  "success_regex": r"WIN", "blocked_regex": r"timed out|refused"}
+        m.run = lambda t, c, o=output: o
+        return m
+
+    def test_closed_port_is_no_service(self):
+        m = self._mod("closed", 1, "Connection refused")   # 127.0.0.1:1 -> RST
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=True)
+        self.assertEqual(ev.records[0]["baseline_result"], "NO-SERVICE")
+
+    def test_filtered_port_is_blocked(self):
+        m = self._mod("filt", 9, "[TIMEOUT] no response")  # blackhole -> filtered
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=True)
+        self.assertEqual(ev.records[0]["baseline_result"], "BLOCKED")
 
 
 class TestProbes(unittest.TestCase):

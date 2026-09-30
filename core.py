@@ -450,6 +450,14 @@ AUTHFAIL_REGEX = (
     r"AcceptSecurityContext error|Authentication failure|Login incorrect"
 )
 
+# A REFUSED/RST means the host answered "nothing is listening here" -> the SERVICE
+# is absent, NOT that the SD-WAN dropped the traffic. That must NOT be scored as a
+# control block. (A dropped/timed-out packet = FILTERED = likely a control block.)
+REFUSED_REGEX = (
+    r"Connection refused|actively refused|ECONNREFUSED|Errno 111|"
+    r"Can't contact LDAP server|Couldn't connect to server|Failed to connect"
+)
+
 
 def classify(meta, base_raw, app_raw):
     succ, blk = meta.get("success_regex"), meta.get("blocked_regex")
@@ -1269,20 +1277,35 @@ class Runner:
         else:
             ok = _match(target_raw, meta.get("success_regex"))
             authfail = _match(target_raw, AUTHFAIL_REGEX)
-            blocked = _match(target_raw, meta.get("blocked_regex")) or "[TIMEOUT]" in target_raw
+            refused = _match(target_raw, REFUSED_REGEX)
+            timed_out = "[TIMEOUT]" in target_raw or _match(target_raw, r"timed out|timeout")
+            blocked_out = _match(target_raw, meta.get("blocked_regex"))
+            # recon is the tie-breaker between "port closed (service absent)" and
+            # "port filtered (dropped in transit — likely the SD-WAN)".
             rr = recon_by_id.get(meta["id"])
-            port_filtered = rr is not None and rr["category"] == "unreachable"
+            tcp = [st for (proto, _p, st) in (rr["probes"] if rr else []) if proto == "tcp"]
+            port_open = any(s == "open" for s in tcp)
+            port_closed = bool(tcp) and not port_open and all(s == "closed" for s in tcp)
+            port_filtered = bool(tcp) and not port_open and any(
+                s in ("filtered", "unreachable", "unresolved") for s in tcp)
+
             if ok:
                 b, verdict = "SUCCESS", "attack succeeded against target"
             elif authfail:
                 b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
-            elif blocked:
-                b, verdict = "BLOCKED", "attack blocked/unreachable"
-                if port_filtered:
-                    verdict += " (recon: target port filtered/closed — segmentation or service absent)"
-            elif port_filtered:
+            # CLOSED / refused -> the service isn't there; this is NOT a control win
+            elif port_closed or (refused and not timed_out and not port_filtered):
+                b = "NO-SERVICE"
+                verdict = ("port closed / connection refused — the service isn't running "
+                           "or isn't accessible on the target; NOT an SD-WAN block "
+                           "(attack could not apply)")
+            # FILTERED / dropped / timed out -> blocked in transit (likely the SD-WAN)
+            elif port_filtered or timed_out:
                 b = "BLOCKED"
-                verdict = "attack blocked — recon shows target port filtered/closed (segmentation or service absent)"
+                verdict = ("attack blocked — target port filtered / traffic dropped in "
+                           "transit (likely SD-WAN / segmentation)")
+            elif blocked_out:
+                b, verdict = "BLOCKED", "attack blocked/unreachable (per tool output)"
             else:
                 hint = _error_hint(target_raw)
                 b = "NO-RESULT"

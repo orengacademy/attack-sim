@@ -7,13 +7,18 @@ queue). Full raw logs + JSON/TXT/CSV go to evidence/run_<ts>/.
 Run:  python3 gui.py
 """
 
+import os
 import queue
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 import core
 import loader
+
+_EGRESS_PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "additional", "mygovnet_egress_probe.py")
 
 # ---- palette (modern dark) ------------------------------------------------
 BG     = "#181a24"   # window
@@ -37,7 +42,8 @@ MONO = ("TkFixedFont", 10)
 STATUS_COLORS = {
     "SUCCESS":        ERRC,    # attack passed the SD-WAN  -> FINDING (red)
     "PASSED":         ERRC,    # (dual-path) same
-    "BLOCKED":        OKC,     # control stopped it        -> good (green)
+    "BLOCKED":        OKC,     # control stopped it (filtered/dropped) -> good (green)
+    "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
     "AUTH-FAILED":    WARNC,   # bad creds, not a control result
     "NO-RESULT":      WARNC,   # inconclusive — review
     "PREREQ-MISSING": MUTED,   # skipped (tooling/priv)
@@ -251,21 +257,25 @@ class HarnessGUI:
                      font=("TkDefaultFont", 8)).grid(row=r, column=5, sticky="w", padx=6)
             r += 1
 
-    # ----- controls ----------------------------------------------------
+    # ----- controls (two rows so nothing crowds/truncates) -------------
     def _build_controls(self):
-        f = ttk.Frame(self.root); f.pack(fill="x", padx=12, pady=4)
+        # row 1 — selection & tools
+        f1 = ttk.Frame(self.root); f1.pack(fill="x", padx=12, pady=(4, 0))
         for txt, cmd in (("Select all", lambda: self._all(True)),
                          ("Clear", lambda: self._all(False)),
                          ("Original set", lambda: self._select_group(False)),
                          ("Added set", lambda: self._select_group(True)),
-                         ("Preflight + recon", self._preflight)):
-            ttk.Button(f, text=txt, command=cmd).pack(side="left", padx=(0, 6))
+                         ("Preflight + recon", self._preflight),
+                         ("Egress probe", self._egress_probe)):
+            ttk.Button(f1, text=txt, command=cmd).pack(side="left", padx=(0, 6))
+        # row 2 — RoE gate + RUN/STOP
+        f2 = ttk.Frame(self.root); f2.pack(fill="x", padx=12, pady=(4, 2))
         self.roe = tk.BooleanVar(value=False)
-        ttk.Checkbutton(f, text="Rules-of-engagement confirmed (written authorisation on file)",
-                        variable=self.roe).pack(side="left", padx=16)
-        self.run_btn = ttk.Button(f, text="▶ RUN", style="Accent.TButton", command=self._start)
+        ttk.Checkbutton(f2, text="Rules-of-engagement confirmed (written authorisation on file)",
+                        variable=self.roe).pack(side="left")
+        self.run_btn = ttk.Button(f2, text="▶ RUN", style="Accent.TButton", command=self._start)
         self.run_btn.pack(side="right")
-        self.stop_btn = ttk.Button(f, text="■ STOP", style="Stop.TButton",
+        self.stop_btn = ttk.Button(f2, text="■ STOP", style="Stop.TButton",
                                    command=self._stop, state="disabled")
         self.stop_btn.pack(side="right", padx=6)
         self.progress = ttk.Progressbar(self.root, mode="determinate")
@@ -281,7 +291,8 @@ class HarnessGUI:
         # legend (stacked so it never truncates) — colour semantics
         leg = ttk.Frame(left, style="Card.TFrame"); leg.pack(fill="x", padx=6, pady=(4, 4))
         for dot, col, txt in ((("●"), ERRC, "PASSED — attack got through (finding)"),
-                              (("●"), OKC, "BLOCKED — control stopped it (good)"),
+                              (("●"), OKC, "BLOCKED — filtered/dropped by control (good)"),
+                              (("●"), BLUEC, "NO-SERVICE — port closed, not a block"),
                               (("●"), WARNC, "NO-RESULT / AUTH — review"),
                               (("●"), MUTED, "PREREQ-MISSING — skipped")):
             rowf = ttk.Frame(leg, style="Card.TFrame"); rowf.pack(anchor="w", fill="x")
@@ -308,9 +319,10 @@ class HarnessGUI:
         self.log.pack(side="left", fill="both", expand=True)
         sb2 = ttk.Scrollbar(right, command=self.log.yview); sb2.pack(side="right", fill="y")
         self.log.configure(yscrollcommand=sb2.set)
-        # finding=red (attack passed), good=green (blocked), warn=amber, hdr=cyan
-        for tag, col in (("finding", ERRC), ("good", OKC), ("warn", WARNC),
-                         ("hdr", INFOC), ("muted", MUTED)):
+        # finding=red (passed), good=green (blocked), info=blue (no-service),
+        # warn=amber, hdr=cyan
+        for tag, col in (("finding", ERRC), ("good", OKC), ("info", BLUEC),
+                         ("warn", WARNC), ("hdr", INFOC), ("muted", MUTED)):
             self.log.tag_configure(tag, foreground=col)
 
     # ----- helpers -----------------------------------------------------
@@ -387,6 +399,33 @@ class HarnessGUI:
         sb = ttk.Scrollbar(win, command=txt.yview); sb.pack(side="right", fill="y")
         txt.configure(yscrollcommand=sb.set)
 
+    def _egress_probe(self):
+        """Run the standalone non-destructive egress/segmentation probe against the
+        target and stream its output into the live log."""
+        tgt = self.target.get().strip()
+        ok, why = core.validate_target(tgt) if tgt else (False, "no target")
+        if not ok:
+            messagebox.showwarning("Egress probe", f"Enter a valid target first ({why})."); return
+        allowed, areason = core.target_allowed(tgt)
+        if not allowed:
+            messagebox.showerror("Target not allowed", areason); return
+        if not os.path.exists(_EGRESS_PROBE):
+            messagebox.showerror("Egress probe", "additional/mygovnet_egress_probe.py not found."); return
+        self.q.put(("log", f"\n=== Egress probe -> {tgt} ==="))
+
+        def work():
+            try:
+                p = subprocess.Popen(["python3", _EGRESS_PROBE, "-d", tgt, "--no-color"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for line in p.stdout:
+                    self.q.put(("log", line.rstrip("\n")))
+                p.wait()
+                self.q.put(("log", "=== Egress probe done ==="))
+            except Exception as e:
+                self.q.put(("log", f"[ERROR] egress probe: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _log(self, m):
         for line in str(m).split("\n"):
             low = line.lower()
@@ -394,6 +433,9 @@ class HarnessGUI:
             # attack PASSED / GAP = got through = finding (red)
             if "success" in low or "-> gap" in low or "passed the appliance" in low:
                 tag = "finding"
+            # NO-SERVICE = port closed / not a control block (blue) — check before "blocked"
+            elif "no-service" in low or "not an sd-wan block" in low or "service isn't" in low:
+                tag = "info"
             # BLOCKED / OK = stopped = good (green)
             elif "blocked" in low or "-> ok" in low or "control working" in low:
                 tag = "good"
