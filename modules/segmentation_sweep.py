@@ -6,6 +6,7 @@ no root, runs on any OS. Advisory recon is separate; this module IS the check,
 so its own output is the evidence.
 """
 import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # (port, label) — sensitive services that generally should NOT be reachable
 # straight from an agency network to a data-centre / cloud target.
@@ -49,9 +50,27 @@ def _probe(host, port):
 
 def run(target, ctx):
     out = [f"# segmentation sweep vs {target} ({len(SENSITIVE)} sensitive ports)"]
+    # probe in parallel so the sweep stays fast and bounded (~TIMEOUT total)
+    # even when many ports are filtered (which each cost the full timeout).
+    results = {}
+    try:
+        with ThreadPoolExecutor(max_workers=min(32, len(SENSITIVE) or 1)) as ex:
+            futs = {ex.submit(_probe, target, port): (port, name)
+                    for port, name in SENSITIVE}
+            for f in as_completed(futs):
+                port, name = futs[f]
+                try:
+                    results[port] = f.result()
+                except Exception:
+                    results[port] = "error"
+    except Exception:
+        # thread-pool unavailable for any reason -> fall back to sequential
+        for port, name in SENSITIVE:
+            results[port] = _probe(target, port)
+
     opened = []
-    for port, name in SENSITIVE:
-        st = _probe(target, port)
+    for port, name in SENSITIVE:            # preserve declared order in output
+        st = results.get(port, "error")
         if st == "OPEN":
             opened.append(f"{port}/{name}")
             out.append(f"OPEN {port}/tcp ({name})")

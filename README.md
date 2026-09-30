@@ -204,10 +204,14 @@ socket modules, and **robustness**: a crashing module, a bad regex, an
 unparseable command template, a failing UI callback, and an unwritable evidence
 dir all degrade gracefully instead of aborting a run.
 
-**Crash-proofing guarantee:** every module runs inside an exception boundary, so
-one faulty module is recorded as `NO-RESULT` (with its traceback in the raw log)
-and the run continues; `finalize()` always writes the summary/report even if the
-run is interrupted. This is best-effort robustness, not a proof of zero defects.
+**Crash-proofing guarantee:** every module runs inside an exception boundary AND
+a wall-clock **watchdog** (per-command timeout + 60s, overridable via
+`Runner.module_hard_timeout`), so one faulty module is recorded as `NO-RESULT`
+(traceback in the raw log) and a *hanging* module is abandoned — the run always
+continues. Every external call carries its own timeout (`subprocess` timeouts,
+socket `settimeout`), and `finalize()` always writes the summary/report even if
+the run is interrupted. This is best-effort robustness, not a proof of zero
+defects.
 
 ## Safety
 
