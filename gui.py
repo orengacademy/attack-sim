@@ -60,11 +60,17 @@ class HarnessGUI:
         # root-needing modules declare needs_root in their own META.
         if not core.is_privileged():
             needed = [m.META["name"] for m in self.modules if m.META.get("needs_root")]
-            if needed:
+            if needed and not core.sudo_available():
                 ttk.Label(
-                    f, text=f"⚠ Not running as root/admin — {', '.join(needed)} will be "
-                            f"skipped (PREREQ-MISSING). Restart elevated (e.g. sudo python3 gui.py).",
-                    foreground="#b00").grid(row=2, column=0, columnspan=4, sticky="w", padx=4, pady=2)
+                    f, text=f"⚠ Not root and no sudo — {', '.join(needed)} will be "
+                            f"skipped (PREREQ-MISSING). Run as root or install sudo.",
+                    foreground="#b00").grid(row=2, column=0, columnspan=6, sticky="w", padx=4, pady=2)
+            elif needed:
+                ttk.Label(
+                    f, text=f"ℹ Not root — {', '.join(needed)} will elevate per-tool via "
+                            f"`sudo -n` (needs NOPASSWD for hping3/responder, or run as root). "
+                            f"sudo -n never prompts.",
+                    foreground="#a60").grid(row=2, column=0, columnspan=6, sticky="w", padx=4, pady=2)
 
     # ----- attacks (from discovered modules, grouped) ------------------
     def _build_attacks(self):

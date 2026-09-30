@@ -36,18 +36,23 @@ META = {
 # it exits almost instantly and the "flood" never sends a single packet,
 # which used to silently show up as 0% loss -> "control held" (false
 # negative). Grant the capability once: sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)
-_PRIV_ERR_MARKERS = ("operation not permitted", "raw socket", "permission denied")
+_PRIV_ERR_MARKERS = ("operation not permitted", "raw socket", "permission denied",
+                     "a password is required", "a terminal is required", "sudo:")
 
 
 def run(target, ctx):
     out = [f"# ICMP flood DoS vs {target}  ({FLOOD_SECONDS}s flood, "
            f"{PING_COUNT}-count loss sample)"]
 
+    # Elevate hping3 itself (not `timeout`) via `sudo -n` when we're not root, so
+    # a per-command NOPASSWD rule for hping3 matches and sudo never prompts.
+    import core
+    flood_cmd = ["timeout", str(FLOOD_SECONDS)] + core.sudo_prefix() + \
+                ["hping3", "-1", "--flood", target]
     flood = None
     try:
         flood = subprocess.Popen(
-            ["timeout", str(FLOOD_SECONDS), "hping3", "-1", "--flood", target],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            flood_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except FileNotFoundError:
         return "\n".join(out) + "\n[ERROR] hping3 not found (sudo apt install hping3). INCONCLUSIVE"
 
@@ -66,9 +71,12 @@ def run(target, ctx):
     if flood_out and any(m in flood_out.lower() for m in _PRIV_ERR_MARKERS):
         out.append(f"hping3 output: {flood_out.strip()}")
         out.append(
-            "FLOOD-PRIV-ERROR: hping3 could not open a raw socket (needs root "
-            "or CAP_NET_RAW) — the flood never ran. This is NOT evidence the "
-            "control works. Fix: sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)")
+            "FLOOD-PRIV-ERROR: hping3 could not run with the privileges it needs "
+            "— the flood never ran. This is NOT evidence the control works. Fix "
+            "any ONE of: (a) grant the capability once: sudo setcap "
+            "cap_net_raw,cap_net_admin+eip $(which hping3); (b) add a NOPASSWD "
+            "sudoers rule for hping3 (the module runs it via `sudo -n hping3`); "
+            "or (c) run the harness as root.")
         return "\n".join(out)
 
     # modern iputils prints a fractional percentage (e.g. "73.3333%"), not

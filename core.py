@@ -475,6 +475,23 @@ def is_privileged():
         return False
 
 
+def sudo_available():
+    """True if we're already root, or `sudo` exists to elevate with."""
+    return is_privileged() or shutil.which("sudo") is not None
+
+
+def sudo_prefix():
+    """Command prefix to elevate a single tool: [] when already root or no sudo,
+    else ['sudo', '-n']. The -n (NON-INTERACTIVE) is the whole point: sudo will
+    NEVER prompt for a password — it runs when NOPASSWD covers the command, or
+    fails immediately with a clear message, so a run can't hang on a hidden
+    password prompt behind a GUI. Elevate the actual privileged binary (hping3,
+    responder) so a per-command NOPASSWD rule for that binary matches."""
+    if is_privileged() or not shutil.which("sudo"):
+        return []
+    return ["sudo", "-n"]
+
+
 def _linux_distro():
     # /etc/os-release is the freedesktop standard across modern distros.
     try:
@@ -582,7 +599,10 @@ def preflight(modules, want_versions=False):
             })
         missing = [t["binary"] for t in tools if not t["found"]]
         missing_files = [f for f in req_files if not os.path.exists(f)]
-        priv_ok = (not needs_root) or priv
+        # a root-needing module is OK if we're root OR sudo exists to elevate the
+        # tool non-interactively (the module runs it via `sudo -n <tool>`; if
+        # NOPASSWD isn't configured for it, the module reports a clear error).
+        priv_ok = (not needs_root) or priv or (shutil.which("sudo") is not None)
         os_supported = meta.get("os_supported")   # None => runs on any OS
         os_ok = os_supported is None or platform.system() in os_supported
         out.append({

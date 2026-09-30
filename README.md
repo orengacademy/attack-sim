@@ -68,18 +68,29 @@ python3 bootstrap.py
 ```
 
 Installs: `curl`, `snmp` (snmpwalk), `hydra`, `impacket-scripts`, `ldap-utils`
-(ldapsearch), `hping3`, `responder`, `python3-tk`. Two of the modules need
-elevated privileges at run time:
+(ldapsearch), `hping3`, `responder`, `python3-tk`.
 
-- **ICMP Flood** (`hping3` needs a raw socket) — grant it once:
+### Privileges (you do NOT have to run the whole harness as root)
+
+The root-needing modules (`icmp_flood`, `syn_flood`, `petitpotam`) **self-elevate
+the specific tool** via `sudo -n` when you're not root. `-n` is non-interactive —
+**sudo never prompts for a password**; it runs if a `NOPASSWD` rule covers that
+tool, otherwise the module reports a clear privilege error (it never hangs on a
+hidden prompt). Pick whichever fits your setup:
+
+- **Run as a normal user with per-tool `NOPASSWD`** (recommended — this is why
+  `sudo python3 gui.py` used to prompt: `python3` wasn't in your NOPASSWD). Add,
+  via `sudo visudo`:
+  ```
+  youruser ALL=(root) NOPASSWD: /usr/bin/hping3, /usr/sbin/responder
+  ```
+  then just `python3 gui.py` — the tools elevate themselves, no prompt.
+- **Or grant `hping3` the capability once** (no sudo needed for the floods):
   ```bash
   sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)
   ```
-- **PetitPotam** (Responder binds privileged ports + does raw poisoning) —
-  run the harness itself with `sudo` when you want this attack included:
-  ```bash
-  sudo python3 gui.py
-  ```
+- **Or run the whole harness as root:** `sudo python3 gui.py` (needs your
+  password / NOPASSWD for `python3` itself).
 
 ## Preflight (check tools & privileges before running)
 

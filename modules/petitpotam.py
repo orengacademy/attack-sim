@@ -84,21 +84,32 @@ def run(target, ctx):
     # piped from here), so output only appears once the internal buffer
     # fills or the process exits cleanly — terminate() can lose it entirely.
     resp_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    # elevate Responder via `sudo -n` (never prompts) when not already root, so a
+    # NOPASSWD sudoers rule for responder works without running the whole harness
+    # as root. `sudo -E` preserves PYTHONUNBUFFERED across the sudo boundary.
+    import core
+    pfx = core.sudo_prefix()
+    resp_cmd = (pfx + ["-E", "responder", "-I", IFACE]) if pfx else ["responder", "-I", IFACE]
     responder = subprocess.Popen(
-        ["responder", "-I", IFACE],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        resp_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         env=resp_env)
 
     time.sleep(2)  # let Responder finish binding its listeners before triggering
     if responder.poll() is not None:
         # exited already (almost always: not running as root)
         early_out, _ = responder.communicate()
+        low = (early_out or "").lower()
         out.append("## Responder\n" + (early_out or ""))
-        if "must be run as root" in (early_out or ""):
+        if any(m in low for m in ("a password is required", "a terminal is required", "sudo:")):
+            out.append(
+                "RESPONDER-PRIV-ERROR: `sudo -n responder` was refused — passwordless "
+                "sudo isn't configured for responder. Add a NOPASSWD sudoers rule "
+                "for responder, or run the harness as root. The target was never coerced.")
+        elif "must be run as root" in low:
             out.append(
                 "RESPONDER-PRIV-ERROR: Responder needs root (privileged port "
-                "binds + raw poisoning). Run the harness itself with sudo for "
-                "this attack — the target was never actually coerced.")
+                "binds + raw poisoning). Add a NOPASSWD rule for responder, or "
+                "run the harness as root — the target was never actually coerced.")
         else:
             out.append("RESPONDER-PRIV-ERROR: Responder exited before the trigger ran.")
         return "\n".join(out)
