@@ -15,7 +15,8 @@ from *guest config* and reuse the one lab definition (`../windows/provision.ps1`
 | Local bench | Vagrant + VirtualBox (`../windows/`) | `provision.ps1` (2 passes) |
 | KVDC (on-prem hypervisor) | Terraform vSphere/Hyper-V/Nutanix, or a Windows template clone | `provision_cloud.ps1` via WinRM/guest-ops |
 | **Cloud (Azure — best for a DC)** | **`azure/` Terraform here** | `provision_cloud.ps1` (Custom Script Extension) |
-| Cloud (AWS/GCP) | Terraform ec2/compute + `user_data`/startup-script | `provision_cloud.ps1` |
+| **Cloud (AWS)** | **`aws/` Terraform here** | `provision_cloud.ps1` (EC2 `user_data`) |
+| Cloud (GCP) | Terraform `google_compute_instance` + `windows-startup-script-ps1` | `provision_cloud.ps1` (same pattern as AWS) |
 
 `provision_cloud.ps1` wraps the unchanged `provision.ps1`: it registers a
 self-removing startup task so the **promote → reboot → seed** two-pass flow
@@ -40,6 +41,21 @@ Destroy when done:
 ```bash
 terraform destroy
 ```
+
+## AWS (Terraform)
+
+```bash
+cd deploy/cloud/aws
+cp terraform.tfvars.example terraform.tfvars   # set vpc_id, subnet_id, tester_cidrs, key_name
+terraform init && terraform apply
+terraform output harness_hint
+```
+
+Launches a Windows Server 2022 EC2 instance whose `user_data` base64-embeds and runs
+the same `provision.ps1` + `provision_cloud.ps1` (no S3 needed), with a security group
+locked to `tester_cidrs`. Retrieve the local admin password with your key pair
+(`terraform output windows_password_data`); the **domain** Administrator password is
+the lab weak password from `provision.ps1`. `terraform destroy` when done.
 
 ## The ISP 139/445 constraint (cloud path)
 

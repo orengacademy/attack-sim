@@ -39,9 +39,11 @@ MONO = ("TkFixedFont", 10)
 
 # Purple-team semantics: a result that means the attack GOT THROUGH the SD-WAN is
 # a FINDING -> red; a result that means the control STOPPED it is good -> green.
+DETC = "#db6d28"               # orange — passed but detected (partial win)
 STATUS_COLORS = {
-    "SUCCESS":        ERRC,    # attack passed the SD-WAN  -> FINDING (red)
+    "SUCCESS":        ERRC,    # attack passed undetected -> FINDING (red)
     "PASSED":         ERRC,    # (dual-path) same
+    "DETECTED":       DETC,    # passed the boundary but the SOC alerted (orange)
     "BLOCKED":        OKC,     # control stopped it (filtered/dropped) -> good (green)
     "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
     "AUTH-FAILED":    WARNC,   # bad creds, not a control result
@@ -167,9 +169,20 @@ class HarnessGUI:
                   style="Muted.TLabel").grid(row=2, column=0, columnspan=7, sticky="w",
                                              padx=6, pady=(0, 2))
 
+        # USS runtime options: active establishment + egress source binding
+        of = ttk.Frame(f); of.grid(row=3, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 2))
+        self.active_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(of, text="Active establishment (build real tunnels/pivots/exfil — needs config.json)",
+                        variable=self.active_var).pack(side="left")
+        ttk.Label(of, text="Source IP").pack(side="left", padx=(12, 4))
+        self.source_entry = ttk.Entry(of, width=16)
+        self.source_entry.pack(side="left")
+        ttk.Label(of, text="(bind egress — DC foothold / VRF)",
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
+
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        self._priv_label.grid(row=4, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
         self._refresh_privilege()
 
@@ -183,7 +196,7 @@ class HarnessGUI:
         self._priv_label.configure(text=f"{icon} Privilege: {ps['how']}", style=style)
         self._priv_label.grid()
         if ps["can_unlock"]:
-            self._unlock_btn.grid(row=3, column=6, sticky="e", padx=6, pady=(0, 6))
+            self._unlock_btn.grid(row=4, column=6, sticky="e", padx=6, pady=(0, 6))
         else:
             self._unlock_btn.grid_remove()
 
@@ -290,7 +303,8 @@ class HarnessGUI:
 
         # legend (stacked so it never truncates) — colour semantics
         leg = ttk.Frame(left, style="Card.TFrame"); leg.pack(fill="x", padx=6, pady=(4, 4))
-        for dot, col, txt in ((("●"), ERRC, "PASSED — attack got through (finding)"),
+        for dot, col, txt in ((("●"), ERRC, "PASSED — got through undetected (finding)"),
+                              (("●"), DETC, "DETECTED — passed but SOC alerted"),
                               (("●"), OKC, "BLOCKED — filtered/dropped by control (good)"),
                               (("●"), BLUEC, "NO-SERVICE — port closed, not a block"),
                               (("●"), WARNC, "NO-RESULT / AUTH — review"),
@@ -529,6 +543,13 @@ class HarnessGUI:
         self.runner.concurrency = workers
         if port_overrides:
             self.runner.ctx.port_overrides = port_overrides
+        self.runner.ctx.allow_active = bool(self.active_var.get())
+        src = self.source_entry.get().strip()
+        if src:
+            self.runner.ctx.source_ip = src
+        if self.active_var.get():
+            self._log("ACTIVE establishment ENABLED — live modules may build real "
+                      "tunnels/pivots/exfil to your configured infra.")
 
         mode = self._run_mode
 

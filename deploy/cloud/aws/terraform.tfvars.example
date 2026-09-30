@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+prefix        = "ussdc"
+region        = "ap-southeast-1"
+vpc_id        = "vpc-xxxxxxxx"
+subnet_id     = "subnet-xxxxxxxx"
+
+# REQUIRED — the ONLY source CIDRs allowed to reach the vulnerable DC. NEVER 0.0.0.0/0.
+tester_cidrs  = ["203.0.113.10/32"]
+
+key_name         = "my-ec2-keypair"   # to retrieve the Windows admin password
+instance_type    = "t3.large"
+create_public_ip = false

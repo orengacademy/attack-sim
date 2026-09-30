@@ -24,7 +24,7 @@ locals {
   # AD / management ports the harness needs to the DC (see README for the ISP
   # 139/445 caveat on the cloud path). Opened to tester_cidrs ONLY.
   allowed_ports = ["53", "88", "135", "139", "389", "445", "636", "3268",
-                   "3269", "3389", "5985", "5986"]
+  "3269", "3389", "5985", "5986"]
 }
 
 resource "random_string" "sfx" {
@@ -100,13 +100,13 @@ resource "azurerm_network_interface_security_group_association" "assoc" {
 }
 
 resource "azurerm_windows_virtual_machine" "dc" {
-  name                = "${var.prefix}-dc01"
-  computer_name       = "DC01"
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  size                = var.vm_size
-  admin_username      = var.admin_username
-  admin_password      = var.admin_password
+  name                  = "${var.prefix}-dc01"
+  computer_name         = "DC01"
+  resource_group_name   = azurerm_resource_group.rg.name
+  location              = azurerm_resource_group.rg.location
+  size                  = var.vm_size
+  admin_username        = var.admin_username
+  admin_password        = var.admin_password
   network_interface_ids = [azurerm_network_interface.nic.id]
 
   os_disk {
@@ -167,8 +167,8 @@ resource "azurerm_virtual_machine_extension" "provision" {
   })
   # private blobs: the extension authenticates with the storage account key.
   protected_settings = jsonencode({
-    commandToExecute     = "powershell -ExecutionPolicy Bypass -File provision_cloud.ps1"
-    storageAccountName   = azurerm_storage_account.sa.name
-    storageAccountKey    = azurerm_storage_account.sa.primary_access_key
+    commandToExecute   = "powershell -ExecutionPolicy Bypass -File provision_cloud.ps1"
+    storageAccountName = azurerm_storage_account.sa.name
+    storageAccountKey  = azurerm_storage_account.sa.primary_access_key
   })
 }
