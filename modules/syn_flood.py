@@ -25,6 +25,7 @@ META = {
     "fix": "SD-WAN",
     "requires": ["hping3", "timeout"],
     "needs_root": True,           # hping3 needs a raw socket (root or CAP_NET_RAW)
+    "serial": True,               # DoS: must run alone
     "os_supported": ["Linux"],
     "ports": [("tcp", SYN_PORT)],
     "success_regex": r"^PASS",

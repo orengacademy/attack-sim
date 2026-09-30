@@ -9,6 +9,7 @@ META = {
     "control": "Brute-force protection / rate-limit",
     "fix": "SD-WAN",
     "requires": ["hydra"],
+    "serial": True,   # rate-limit test: run alone so it isn't skewed
     "ports": [("tcp", 22)],
     # hydra's own success line looks like "login: X   password: Y"
     "success_regex": r"login:.*password:",

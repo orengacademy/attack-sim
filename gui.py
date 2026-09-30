@@ -46,9 +46,15 @@ class HarnessGUI:
         self.iterations = ttk.Spinbox(f, from_=1, to=20, width=5)
         self.iterations.set(3)
         self.iterations.grid(row=0, column=3, padx=4)
+        ttk.Label(f, text="Workers:").grid(row=0, column=4, sticky="w", padx=4)
+        self.workers = ttk.Spinbox(f, from_=1, to=32, width=5)
+        self.workers.set(1)
+        self.workers.grid(row=0, column=5, padx=4)
 
-        ttk.Label(f, text=f"{len(self.modules)} attack modules discovered.",
-                  foreground="#666").grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=2)
+        ttk.Label(f, text=f"{len(self.modules)} attack modules discovered. "
+                          f"Workers>1 runs parallel-safe modules concurrently "
+                          f"(DoS/brute stay serial).",
+                  foreground="#666").grid(row=1, column=0, columnspan=6, sticky="w", padx=4, pady=2)
 
         # portable privilege check (os.geteuid() doesn't exist on Windows);
         # root-needing modules declare needs_root in their own META.
@@ -233,6 +239,10 @@ class HarnessGUI:
         except (ValueError, TypeError):
             messagebox.showwarning("Bad iterations", "Iterations must be a whole number.")
             return
+        try:
+            workers = max(1, int(self.workers.get()))
+        except (ValueError, TypeError):
+            workers = 1
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
         self.progress["value"] = 0
@@ -247,6 +257,7 @@ class HarnessGUI:
             on_progress=lambda c, t: self.q.put(("progress", (c, t))),
             on_output=lambda aid, name, raw: self.q.put(("output", (aid, name, raw))),
             on_status=lambda aid, name, it, b, v: self.q.put(("status", (aid, name, it, b, v))))
+        self.runner.concurrency = workers
 
         def work():
             try:

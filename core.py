@@ -194,11 +194,13 @@ class Context:
 # ---------------------------------------------------------------------
 class Evidence:
     def __init__(self, base="evidence"):
+        import threading
         self.ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.root = os.path.join(base, f"run_{self.ts}")
         self.records = []
         self.meta = {"run": self.ts, "started": datetime.now().isoformat()}
         self._log_fh = None
+        self._lock = threading.Lock()   # log/save are safe under concurrent runs
         try:
             os.makedirs(self.root, exist_ok=True)
             self._log_fh = open(os.path.join(self.root, "run.log"), "a")
@@ -209,14 +211,15 @@ class Evidence:
 
     def log(self, msg):
         """Persist an engine log line to run.log. Never raises — logging must
-        not be able to abort a run."""
+        not be able to abort a run — and is safe under concurrency."""
         if self._log_fh is None:
             return
         try:
             ts = datetime.now().strftime("%H:%M:%S")
-            for line in str(msg).splitlines() or [""]:
-                self._log_fh.write(f"[{ts}] {line}\n")
-            self._log_fh.flush()
+            with self._lock:
+                for line in str(msg).splitlines() or [""]:
+                    self._log_fh.write(f"[{ts}] {line}\n")
+                self._log_fh.flush()
         except Exception:
             pass
 
@@ -238,7 +241,8 @@ class Evidence:
     def save_result(self, iteration, attack_id, result):
         # keep the record in memory regardless (finalize needs it); persisting
         # the per-attack result.json is best-effort.
-        self.records.append(result)
+        with self._lock:
+            self.records.append(result)
         try:
             path = os.path.join(self._dir(iteration, attack_id), "result.json")
             with open(path, "w") as f:
@@ -712,25 +716,48 @@ def probe_icmp(host, timeout=3.0):
         return "unknown"
 
 
-def reachability(target, modules, timeout=2.0):
-    """Probe the port(s) each module targets (tcp connect / best-effort udp /
-    icmp ping), cached per (proto,port). Returns {target, probes:[[proto,port,
-    status]...], modules:[{id,name,probes,reachable,category,notes}]}.
-    category is suggested | unreachable | indeterminate | noport. Advisory only."""
-    cache = {}
+def _probe_one(target, proto, port, timeout):
+    if proto == "tcp":
+        return probe_tcp(target, port, timeout)
+    if proto == "udp":
+        return probe_udp(target, port, timeout)
+    if proto == "icmp":
+        return probe_icmp(target, timeout)
+    return "unknown"
 
-    def get(proto, port):
-        key = (proto, port)
-        if key not in cache:
-            if proto == "tcp":
-                cache[key] = probe_tcp(target, port, timeout)
-            elif proto == "udp":
-                cache[key] = probe_udp(target, port, timeout)
-            elif proto == "icmp":
-                cache[key] = probe_icmp(target, timeout)
-            else:
-                cache[key] = "unknown"
-        return cache[key]
+
+def reachability(target, modules, timeout=2.0, workers=32):
+    """Probe the port(s) each module targets (tcp connect / best-effort udp /
+    icmp ping), CONCURRENTLY (each distinct (proto,port) once). Returns {target,
+    probes:[[proto,port,status]...], modules:[{id,name,probes,reachable,category,
+    notes}]}. category is suggested|unreachable|indeterminate|noport. Advisory."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    # collect the distinct probes needed across all modules, then run them in
+    # parallel so filtered ports (each costing a full timeout) don't serialise.
+    keys = []
+    seen = set()
+    for m in modules:
+        for spec in m.META.get("ports", []):
+            proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
+            if (proto, port) not in seen:
+                seen.add((proto, port))
+                keys.append((proto, port))
+
+    cache = {}
+    if keys:
+        try:
+            with ThreadPoolExecutor(max_workers=min(workers, len(keys))) as ex:
+                futs = {ex.submit(_probe_one, target, p, port, timeout): (p, port)
+                        for (p, port) in keys}
+                for fut, key in futs.items():
+                    try:
+                        cache[key] = fut.result()
+                    except Exception:
+                        cache[key] = "error"
+        except Exception:
+            for (p, port) in keys:          # pool unavailable -> sequential
+                cache[(p, port)] = _probe_one(target, p, port, timeout)
 
     results = []
     for m in modules:
@@ -738,7 +765,7 @@ def reachability(target, modules, timeout=2.0):
         probes = []
         for spec in meta.get("ports", []):
             proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
-            probes.append([proto, port, get(proto, port)])
+            probes.append([proto, port, cache.get((proto, port), "unknown")])
         reachable = any(p[2] in _OPEN_STATES for p in probes)
         if not probes:
             category = "noport"
@@ -959,107 +986,132 @@ class Runner:
 
     def _iterate(self, modules, iterations, ev, skip_unready, ready_ids,
                  pf_by_id, recon_by_id, log):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
         total = iterations * len(modules)
-        cur = 0
+        prog = {"cur": 0}
+        plock = threading.Lock()
+
+        def bump():
+            with plock:
+                prog["cur"] += 1
+                c = prog["cur"]
+            self.on_progress(c, total)
+
+        conc = max(1, int(getattr(self, "concurrency", 1) or 1))
+
         for it in range(1, iterations + 1):
             if self._stop:
                 break
             log(f"\n=== Iteration: {it} ===")
+
+            # Parallel-safe = concurrency requested, module is ready, and not
+            # flagged serial (DoS/brute tests must run ALONE so they can't
+            # pollute each other's rate-limit/latency results). Everything else
+            # (skips + serial + all modules when conc==1) runs sequentially.
+            parallel, serial = [], []
             for m in modules:
+                mid = m.META["id"]
+                unready = skip_unready and mid not in ready_ids
+                is_serial = bool(m.META.get("serial"))
+                if conc > 1 and not unready and not is_serial:
+                    parallel.append(m)
+                else:
+                    serial.append(m)
+
+            if parallel:
+                log(f"  running {len(parallel)} module(s) with {conc} workers")
+                with ThreadPoolExecutor(max_workers=min(conc, len(parallel))) as ex:
+                    list(ex.map(lambda mm: self._process_module(
+                        mm, it, skip_unready, ready_ids, pf_by_id, recon_by_id,
+                        ev, log, bump), parallel))
+            for m in serial:
                 if self._stop:
                     break
-                meta = m.META
-                log(f"  [{meta['category']}] {meta['name']}")
+                self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
+                                     recon_by_id, ev, log, bump)
 
-                # Skip modules whose prerequisites aren't met, recording WHY —
-                # more honest than running them blind into a tool-not-found log.
-                if skip_unready and meta["id"] not in ready_ids:
-                    r = pf_by_id[meta["id"]]
-                    bits = []
-                    if r["missing"]:
-                        bits.append("missing " + ", ".join(r["missing"]))
-                    if r["missing_files"]:
-                        bits.append("missing file(s): " +
-                                    ", ".join(os.path.basename(f) for f in r["missing_files"]))
-                    if not r["priv_ok"]:
-                        bits.append("needs root/admin")
-                    if not r.get("os_ok", True):
-                        bits.append(f"not supported on {platform.system()}")
-                    verdict = "PREREQ-MISSING — skipped (" + "; ".join(bits) + ")"
-                    b, a = "PREREQ-MISSING", "-"
-                    log(f"     target: [{b}]  -> {verdict}")
-                    self.on_status(meta["id"], meta["name"], it, b, verdict)
-                    ev.save_result(it, meta["id"], {
-                        "iteration": it,
-                        "category": meta["category"],
-                        "attack": meta["name"],
-                        "attack_id": meta["id"],
-                        "control_tested": meta.get("control", meta["category"]),
-                        "fix_location": meta.get("fix", ""),
-                        "baseline_result": b,
-                        "appliance_result": a,
-                        "verdict": verdict,
-                        "target_ip": self.target_ip,
-                        "appliance_ip": self.appliance_ip if self.dual else None,
-                        "reachability": recon_by_id.get(meta["id"]),
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                    cur += 1
-                    self.on_progress(cur, total)
-                    continue
+    def _process_module(self, m, it, skip_unready, ready_ids, pf_by_id,
+                        recon_by_id, ev, log, bump):
+        """Run (or skip) one module for one iteration and record the result.
+        Safe to call from worker threads (Evidence is locked, callbacks wrapped)."""
+        if self._stop:
+            return
+        meta = m.META
+        log(f"  [{meta['category']}] {meta['name']}")
 
-                target_raw = self._safe_module_run(m, self.target_ip)
-                ev.save_run(it, meta["id"], "target", target_raw)
-                self.on_output(meta["id"], meta["name"], target_raw)
+        # Skip modules whose prerequisites aren't met, recording WHY.
+        if skip_unready and meta["id"] not in ready_ids:
+            r = pf_by_id[meta["id"]]
+            bits = []
+            if r["missing"]:
+                bits.append("missing " + ", ".join(r["missing"]))
+            if r["missing_files"]:
+                bits.append("missing file(s): " +
+                            ", ".join(os.path.basename(f) for f in r["missing_files"]))
+            if not r["priv_ok"]:
+                bits.append("needs root/admin")
+            if not r.get("os_ok", True):
+                bits.append(f"not supported on {platform.system()}")
+            verdict = "PREREQ-MISSING — skipped (" + "; ".join(bits) + ")"
+            b, a = "PREREQ-MISSING", "-"
+            log(f"     target: [{b}]  -> {verdict}")
+            self.on_status(meta["id"], meta["name"], it, b, verdict)
+            self._record(ev, it, meta, b, a, verdict, recon_by_id)
+            bump()
+            return
 
-                if self.dual:
-                    app_raw = self._safe_module_run(m, self.appliance_ip)
-                    ev.save_run(it, meta["id"], "through-appliance", app_raw)
-                    b, a, verdict = classify(meta, target_raw, app_raw)
-                    log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
-                else:
-                    # single-target: classify the one path directly
-                    ok = _match(target_raw, meta.get("success_regex"))
-                    authfail = _match(target_raw, AUTHFAIL_REGEX)
-                    blocked = _match(target_raw, meta.get("blocked_regex")) or "[TIMEOUT]" in target_raw
-                    rr = recon_by_id.get(meta["id"])
-                    port_filtered = rr is not None and rr["category"] == "unreachable"
-                    if ok:
-                        b, verdict = "SUCCESS", "attack succeeded against target"
-                    elif authfail:
-                        b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
-                    elif blocked:
-                        b, verdict = "BLOCKED", "attack blocked/unreachable"
-                        if port_filtered:
-                            verdict += " (recon: target port filtered/closed — segmentation or service absent)"
-                    elif port_filtered:
-                        # no success + recon says the port is filtered/closed -> a
-                        # BLOCKED result the exploit output alone didn't make explicit.
-                        b = "BLOCKED"
-                        verdict = "attack blocked — recon shows target port filtered/closed (segmentation or service absent)"
-                    else:
-                        hint = _error_hint(target_raw)
-                        b = "NO-RESULT"
-                        verdict = f"no result — {hint}" if hint else "no result — review raw log"
-                    a = "-"
-                    log(f"     target: [{b}]  -> {verdict}")
+        target_raw = self._safe_module_run(m, self.target_ip)
+        ev.save_run(it, meta["id"], "target", target_raw)
+        self.on_output(meta["id"], meta["name"], target_raw)
 
-                self.on_status(meta["id"], meta["name"], it, b, verdict)
+        if self.dual:
+            app_raw = self._safe_module_run(m, self.appliance_ip)
+            ev.save_run(it, meta["id"], "through-appliance", app_raw)
+            b, a, verdict = classify(meta, target_raw, app_raw)
+            log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
+        else:
+            ok = _match(target_raw, meta.get("success_regex"))
+            authfail = _match(target_raw, AUTHFAIL_REGEX)
+            blocked = _match(target_raw, meta.get("blocked_regex")) or "[TIMEOUT]" in target_raw
+            rr = recon_by_id.get(meta["id"])
+            port_filtered = rr is not None and rr["category"] == "unreachable"
+            if ok:
+                b, verdict = "SUCCESS", "attack succeeded against target"
+            elif authfail:
+                b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
+            elif blocked:
+                b, verdict = "BLOCKED", "attack blocked/unreachable"
+                if port_filtered:
+                    verdict += " (recon: target port filtered/closed — segmentation or service absent)"
+            elif port_filtered:
+                b = "BLOCKED"
+                verdict = "attack blocked — recon shows target port filtered/closed (segmentation or service absent)"
+            else:
+                hint = _error_hint(target_raw)
+                b = "NO-RESULT"
+                verdict = f"no result — {hint}" if hint else "no result — review raw log"
+            a = "-"
+            log(f"     target: [{b}]  -> {verdict}")
 
-                ev.save_result(it, meta["id"], {
-                    "iteration": it,
-                    "category": meta["category"],
-                    "attack": meta["name"],
-                    "attack_id": meta["id"],
-                    "control_tested": meta.get("control", meta["category"]),
-                    "fix_location": meta.get("fix", ""),
-                    "baseline_result": b,
-                    "appliance_result": a,
-                    "verdict": verdict,
-                    "target_ip": self.target_ip,
-                    "appliance_ip": self.appliance_ip if self.dual else None,
-                    "reachability": recon_by_id.get(meta["id"]),
-                    "timestamp": datetime.now().isoformat(),
-                })
-                cur += 1
-                self.on_progress(cur, total)
+        self.on_status(meta["id"], meta["name"], it, b, verdict)
+        self._record(ev, it, meta, b, a, verdict, recon_by_id)
+        bump()
+
+    def _record(self, ev, it, meta, b, a, verdict, recon_by_id):
+        ev.save_result(it, meta["id"], {
+            "iteration": it,
+            "category": meta["category"],
+            "attack": meta["name"],
+            "attack_id": meta["id"],
+            "control_tested": meta.get("control", meta["category"]),
+            "fix_location": meta.get("fix", ""),
+            "baseline_result": b,
+            "appliance_result": a,
+            "verdict": verdict,
+            "target_ip": self.target_ip,
+            "appliance_ip": self.appliance_ip if self.dual else None,
+            "reachability": recon_by_id.get(meta["id"]),
+            "timestamp": datetime.now().isoformat(),
+        })
