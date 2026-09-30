@@ -199,7 +199,15 @@ python3 -m unittest discover -s tests    # or: python3 -m pytest tests
 ```
 
 Pure-stdlib, cross-platform, localhost-only — covers the classifier, preflight,
-reachability, credential loading, target validation/allowlist, and redaction.
+reachability, credential loading, target validation/allowlist, redaction, the
+socket modules, and **robustness**: a crashing module, a bad regex, an
+unparseable command template, a failing UI callback, and an unwritable evidence
+dir all degrade gracefully instead of aborting a run.
+
+**Crash-proofing guarantee:** every module runs inside an exception boundary, so
+one faulty module is recorded as `NO-RESULT` (with its traceback in the raw log)
+and the run continues; `finalize()` always writes the summary/report even if the
+run is interrupted. This is best-effort robustness, not a proof of zero defects.
 
 ## Safety
 
