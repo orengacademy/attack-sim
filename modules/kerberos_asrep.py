@@ -16,6 +16,7 @@ META = {
     "id": "kerberos_asrep",
     "name": "Kerberos AS-REP Roast",
     "category": "AD Exploitation",
+    "test_type": "pentest",
     "added": True,   # added after the initial harness set
     "control": "Segmentation to DC / Kerberos exposure (88)",
     "fix": "SD-WAN",

@@ -22,6 +22,8 @@ META = {
     "id": "covert_channel",
     "name": "Covert Channel (ICMP/DNS tunneling)",
     "category": "Application Control",
+    "test_type": "attack_sim",
+    "family": "E",
     "added": True,   # added after the initial harness set
     "control": "Covert-channel / DNS-egress control",
     "fix": "SD-WAN",

@@ -10,6 +10,8 @@ META = {
     "id": "tls_carrier",
     "name": "TLS Carrier (443)",
     "category": "Application Control",
+    "test_type": "attack_sim",
+    "family": "A",
     "added": True,
     "control": "TLS egress / C2 carrier on 443",
     "fix": "SD-WAN",

@@ -30,6 +30,7 @@ META = {
     "id": "petitpotam",
     "name": "PetitPotam NTLM Coercion",
     "category": "AD Exploitation",
+    "test_type": "pentest",
     "control": "SMB signing / NTLM relay & outbound-auth protections",
     "fix": "Server",
     "mitre": ['T1187'],

@@ -10,6 +10,8 @@ META = {
     "id": "l7_enforce_443",
     "name": "L4-vs-L7 Enforcement (443)",
     "category": "Application Control",
+    "test_type": "attack_sim",
+    "family": "A",
     "added": True,
     "control": "Application-ID / L7 enforcement on 443",
     "fix": "SD-WAN",

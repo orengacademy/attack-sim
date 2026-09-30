@@ -4,6 +4,7 @@ META = {
     "id": "snmp_brute",
     "name": "SNMP Community Brute",
     "category": "Network Exploitation",
+    "test_type": "va",
     "control": "Default-credential / community-string hygiene",
     "fix": "SD-WAN",
     "mitre": ['T1110.001'],

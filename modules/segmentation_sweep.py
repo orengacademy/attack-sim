@@ -24,6 +24,8 @@ META = {
     "id": "segmentation_sweep",
     "name": "Segmentation Sweep (mgmt/DB/lateral ports)",
     "category": "Segmentation",
+    "test_type": "attack_sim",
+    "family": "D",
     "added": True,   # added after the initial harness set
     "control": "Network segmentation / firewall policy (A->B)",
     "fix": "SD-WAN",

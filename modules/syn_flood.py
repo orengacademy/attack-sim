@@ -21,6 +21,7 @@ META = {
     "id": "syn_flood",
     "name": "SYN Flood (DoS)",
     "category": "Network Exploitation",
+    "test_type": "dos",
     "added": True,   # added after the initial harness set
     "control": "Rate-limit / DoS protection (SYN)",
     "fix": "SD-WAN",

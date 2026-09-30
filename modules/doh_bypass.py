@@ -6,6 +6,8 @@ META = {
     "id": "doh_bypass",
     "name": "DNS-over-HTTPS Bypass",
     "category": "Network Exploitation",
+    "test_type": "attack_sim",
+    "family": "B",
     "control": "DNS filtering / egress control",
     "fix": "SD-WAN",
     "mitre": ['T1572'],

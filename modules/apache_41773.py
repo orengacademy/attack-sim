@@ -5,6 +5,7 @@ META = {
     "id": "apache_41773",
     "name": "Apache Path Traversal (CVE-2021-41773)",
     "category": "Server Exploitation",
+    "test_type": "pentest",
     "control": "IPS signature / path normalization",
     "fix": "SD-WAN",
     "cve": "CVE-2021-41773",

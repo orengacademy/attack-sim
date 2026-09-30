@@ -48,11 +48,21 @@ def _select(modules, args):
         if missing:
             print(f"[!] unknown module id(s): {', '.join(sorted(missing))}", file=sys.stderr)
         return sel
+    # base set
     if args.original:
-        return [m for m in modules if not m.META.get("added")]
-    if args.added:
-        return [m for m in modules if m.META.get("added")]
-    return list(modules)
+        sel = [m for m in modules if not m.META.get("added")]
+    elif args.added:
+        sel = [m for m in modules if m.META.get("added")]
+    else:
+        sel = list(modules)
+    # scope filters (compose with the base set)
+    tt = "attack_sim" if args.attack_sim else args.test_type
+    if tt:
+        sel = [m for m in sel if m.META.get("test_type") == tt]
+    if args.family:
+        fams = {f.strip().upper() for f in args.family.split(",") if f.strip()}
+        sel = [m for m in sel if m.META.get("family", "").upper() in fams]
+    return sel
 
 
 def _parse_ports(spec):
@@ -80,6 +90,11 @@ def main():
     sel.add_argument("--only", help="comma list of module ids")
     sel.add_argument("--original", action="store_true", help="only the initial module set")
     sel.add_argument("--added", action="store_true", help="only the newly-added modules")
+    ap.add_argument("--test-type", choices=["attack_sim", "pentest", "va", "dos"],
+                    help="filter to a test type (attack_sim = the USS boundary scope)")
+    ap.add_argument("--attack-sim", action="store_true",
+                    help="shortcut for --test-type attack_sim (USS scope only)")
+    ap.add_argument("--family", help="filter attack-sim families, e.g. A,B,D")
     ap.add_argument("--list", action="store_true", help="list discovered modules and exit")
     ap.add_argument("--confirm-roe", action="store_true",
                     help="confirm rules-of-engagement / written authorisation (required to run)")
@@ -91,11 +106,15 @@ def main():
 
     if args.list:
         print(f"{len(modules)} modules:")
-        for m in sorted(modules, key=lambda x: x.META["id"]):
+        for m in sorted(modules, key=lambda x: (x.META.get("test_type", ""), x.META["id"])):
             meta = m.META
             tag = " [NEW]" if meta.get("added") else ""
+            scope = meta.get("test_type", "?")
+            fam = f"/{meta['family']}" if meta.get("family") else ""
             mitre = ", ".join(meta.get("mitre", []))
-            print(f"  {meta['id']:<20} {meta['category']:<22} {mitre}{tag}")
+            print(f"  {meta['id']:<24} {scope+fam:<14} {mitre}{tag}")
+        print("\nattack_sim = the USS boundary scope (families A-G). "
+              "Filter a run with --attack-sim or --family A,B,D.")
         return 0
 
     if not args.target:

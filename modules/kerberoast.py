@@ -3,6 +3,7 @@ META = {
     "id": "kerberoast",
     "name": "Kerberoast",
     "category": "AD Exploitation",
+    "test_type": "pentest",
     "control": "AD hardening (NOT SD-WAN)",
     "fix": "Server",
     "mitre": ['T1558.003'],

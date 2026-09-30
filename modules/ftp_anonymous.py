@@ -6,6 +6,7 @@ META = {
     "id": "ftp_anonymous",
     "name": "FTP Anonymous Login",
     "category": "Network Exploitation",
+    "test_type": "va",
     "control": "Anonymous access hardening",
     "fix": "Server",
     "mitre": ['T1078.001'],
