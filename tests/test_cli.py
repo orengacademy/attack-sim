@@ -61,6 +61,22 @@ class TestCliScopeFilter(unittest.TestCase):
         self.assertEqual({m.META["id"] for m in cli._select(self.mods, a)}, {"t1"})
 
 
+class TestCliDirection(unittest.TestCase):
+    def setUp(self):
+        self.mods = [mod("north", test_type="attack_sim", family="A", direction="a2b"),
+                     mod("rev", test_type="attack_sim", family="D", direction="b2a"),
+                     mod("ew", test_type="attack_sim", family="D", direction="both")]
+
+    def test_a2b(self):
+        a = Args(); a.direction = "a2b"
+        # a2b matches a2b + both
+        self.assertEqual({m.META["id"] for m in cli._select(self.mods, a)}, {"north", "ew"})
+
+    def test_b2a(self):
+        a = Args(); a.direction = "b2a"
+        self.assertEqual({m.META["id"] for m in cli._select(self.mods, a)}, {"rev", "ew"})
+
+
 class TestCliPorts(unittest.TestCase):
     def test_parse(self):
         self.assertEqual(cli._parse_ports("log4shell=8983, ssh_brute=2222"),
