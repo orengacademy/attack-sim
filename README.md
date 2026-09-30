@@ -170,11 +170,18 @@ META = {
     "fix": "SD-WAN",
     "success_regex": r"...",                 # marks a successful/detected hit
     "blocked_regex": r"timed out|refused",   # marks a block
+    # --- BAS mappings (recommended: appear in the ATT&CK/CWE coverage report) ---
+    "mitre": ["T1190"],                      # MITRE ATT&CK technique id(s)
+    "tactic": "Initial Access",              # ATT&CK tactic
+    "cwe": ["CWE-22"],                       # CWE id(s), if applicable
     # --- preflight + recon (all optional) ---
     "requires": ["some-tool"],               # external binaries this module needs
     "needs_root": False,                     # True if it needs root/admin (raw sockets, priv ports)
+    "serial": False,                         # True = must run alone (DoS/brute)
+    "os_supported": None,                    # e.g. ["Linux"]; None = any OS
     "requires_files": [],                    # data files that must exist (e.g. a vendored PoC)
-    "ports": [("tcp", 443)],                 # port(s) it targets; used for reachability recon
+    "ports": [("tcp", 443)],                 # port(s) it targets; recon + custom-port override
+    "added": False,                          # True keeps it out of the "Original set" selector
 }
 
 def run(target, ctx):
@@ -215,6 +222,24 @@ evidence/run_<ts>/
 Automated verdicts are best-effort (regex against the raw output). **The raw
 `.log` files are the authoritative evidence** — every classifier bug found
 in this project so far was caught by reading them, not by trusting the verdict.
+
+## BAS mappings (MITRE ATT&CK / CWE)
+
+Every module declares its **MITRE ATT&CK** technique(s) (`mitre`), **tactic**
+(`tactic`), and **CWE**(s) (`cwe`) in `META`, so the harness runs as a proper
+**Breach & Attack Simulation**: results are standards-aligned, not just pass/fail.
+
+- Mappings are carried into every evidence record (`summary.json` / `summary.csv`).
+- `report.txt` ends with a **MITRE ATT&CK COVERAGE** matrix — per technique:
+  which attacks map to it and whether any **PASSED** (`GAP`), all **BLOCKED**
+  (`OK`), or mixed/other (`REVIEW`) — plus a **CWE COVERAGE** list.
+- `summary.json`'s `meta.attack_coverage` / `meta.cwe_coverage` hold the same,
+  machine-readable, to feed a BAS dashboard or ATT&CK Navigator layer.
+
+Coverage spans Initial Access (T1190), Credential Access (T1110/T1003.006/
+T1558.003/T1558.004/T1187), Discovery (T1046/T1087.002), Lateral Movement
+(T1021.002), C2 (T1572/T1571), Exfiltration (T1048.003), and Impact (T1498.001).
+A new module is added to the matrix automatically once it declares `mitre`.
 
 ## Tests
 

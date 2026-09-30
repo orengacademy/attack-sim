@@ -30,6 +30,9 @@ META = {
     "category": "AD Exploitation",
     "control": "SMB signing / NTLM relay & outbound-auth protections",
     "fix": "Server",
+    "mitre": ['T1187'],
+    "cwe": ['CWE-294'],
+    "tactic": 'Credential Access',
     "requires": ["responder", "python3"],
     "needs_root": True,            # Responder binds privileged ports + raw poisoning
     "os_supported": ["Linux"],     # Responder + eth0 raw poisoning are Linux-only
