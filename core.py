@@ -915,15 +915,24 @@ class Runner:
             except Exception as e:
                 log(f"[WARN] recon skipped (non-fatal): {e}")
 
+        # Run the iterations; capture (don't propagate) module-loop faults so the
+        # run is crash-proof, but let KeyboardInterrupt/SystemExit through. The
+        # finally finalises evidence in ALL cases — without a return inside it
+        # (return-in-finally swallows exceptions and is a Py3.14 SyntaxWarning).
         try:
             self._iterate(modules, iterations, ev, skip_unready, ready_ids,
                           pf_by_id, recon_by_id, log)
+        except Exception as e:
+            import traceback
+            log(f"[ERROR] run aborted mid-iteration (non-fatal): {e}")
+            log(traceback.format_exc())
         finally:
             try:
-                return ev.finalize()
+                root = ev.finalize()
             except Exception as e:
                 log(f"[ERROR] finalize failed: {e}")
-                return ev.root
+                root = ev.root
+        return root
 
     def _iterate(self, modules, iterations, ev, skip_unready, ready_ids,
                  pf_by_id, recon_by_id, log):
