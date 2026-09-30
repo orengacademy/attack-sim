@@ -47,9 +47,19 @@ harness/
 │   ├── psexec.py           # PsExec lateral movement
 │   ├── ldap_null_bind.py   # LDAP anonymous/null bind
 │   ├── petitpotam.py       # PetitPotam NTLM coercion + Responder capture — needs root
+│   ├── kerberos_asrep.py   # Kerberos AS-REP roast (no creds; impacket-GetNPUsers)
+│   ├── segmentation_sweep.py # sensitive mgmt/DB/lateral port exposure A->B (pure sockets)
+│   ├── appid_port_mismatch.py # App-ID / protocol-on-wrong-port bypass (pure sockets)
+│   ├── covert_channel.py   # ICMP/DNS tunnelling & DNS-egress test (ping/dig, Linux)
+│   ├── syn_flood.py        # SYN Flood (DoS) — needs hping3 raw-socket cap, Linux
 │   └── _vendor/PetitPotam.py   # vendored PoC (github.com/topotam/PetitPotam)
+├── tests/                  # stdlib unittest suite (python3 -m unittest discover -s tests)
 └── evidence/               # created at run time
 ```
+
+These last five target what an **SD-WAN itself** enforces (segmentation, App-ID,
+covert-channel/egress, DoS, and Kerberos exposure to the DC) — i.e. the A→B path
+through the SD-WAN — rather than app-layer/WAF controls that sit at the agency.
 
 ## Install (Kali)
 
