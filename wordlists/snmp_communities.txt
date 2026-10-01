@@ -2,14 +2,4 @@ private
 community
 manager
 admin
-cisco
-snmp
-internal
-network
-default
-test
-guest
-read
-write
-monitor
 public
