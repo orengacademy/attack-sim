@@ -123,6 +123,44 @@ def ensure_impacket_module():
               "(pip install impacket); wmiexec/nopac/dcsync will stay skipped.")
 
 
+def ensure_impacket_runtime():
+    """A DEEP impacket import (impacket.examples.secretsdump) that `import impacket`
+    alone doesn't exercise. A stale USER-SITE cryptography shadowing a newer system
+    one breaks impacket's `cryptography.hazmat.asn1` use, so noPac/sAMAccountName/
+    dcsync NO-RESULT even though top-level `import impacket` SUCCEEDS. Only warns
+    when impacket is installed but its runtime path is broken (no false alarm on a
+    system that simply has an older-but-consistent cryptography)."""
+    try:
+        import impacket  # noqa: F401
+    except Exception:
+        return  # ensure_impacket_module already reported this
+    err = None
+    try:
+        import importlib
+        importlib.import_module("impacket.examples.secretsdump")
+        print("  impacket runtime (secretsdump + crypto): OK")
+        return
+    except Exception as ex:
+        err = ex
+    c(f"  [!] impacket is installed but a deep import FAILS ({err.__class__.__name__}: {err}) "
+      "— the AD modules (noPac/sAMAccountName/dcsync) will NO-RESULT at runtime.", "1;31")
+    e = err
+    try:
+        import site, cryptography
+        path = getattr(cryptography, "__file__", "") or ""
+        ver = getattr(cryptography, "__version__", "?")
+        usersite = site.getusersitepackages() if hasattr(site, "getusersitepackages") else ""
+        if "asn1" in str(e).lower() or "cryptography" in str(e).lower():
+            if usersite and path.startswith(usersite):
+                print(f"      cause: a user-site cryptography {ver} is shadowing the system one.")
+                print(f"      FIX:  rm -rf {usersite}/cryptography*")
+            else:
+                print(f"      cryptography {ver} at {path} — upgrade it:")
+                print(f"      FIX:  {sys.executable} -m pip install --upgrade cryptography")
+    except Exception:
+        print(f"      try: {sys.executable} -m pip install --upgrade impacket cryptography")
+
+
 def install_active():
     c("\nInstalling ACTIVE-establishment tooling (--with-active)...", "1;33")
     r_update = run(sudo(["apt-get", "update"]))
@@ -154,6 +192,7 @@ def main():
     c("=== Harness bootstrap ===", "1;32")
     missing = install_core()
     ensure_impacket_module()
+    ensure_impacket_runtime()
     if with_active:
         missing += install_active()
     else:
