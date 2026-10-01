@@ -135,3 +135,16 @@ cd deploy/windows && vagrant destroy -f
 # and on the droplet, revert setup_target.sh services if keeping the box:
 sudo ./deploy/setup_target.sh --teardown
 ```
+
+## Keep the lab up (5-minute refresh)
+
+Deliberately-vulnerable services die (OOM, reboots, crashed containers). A cron
+re-starts anything down — host services, docker containers, and the libvirt
+Windows DC — without reconfiguring:
+
+```bash
+sudo deploy/refresh-lab.sh                 # one-shot: start anything that's down
+sudo deploy/refresh-lab.sh --install-cron  # every 5 min via /etc/cron.d/mygovnet-lab
+sudo deploy/refresh-lab.sh --remove-cron
+```
+Log: `/var/log/mygovnet-refresh.log`.
