@@ -151,6 +151,11 @@ class HarnessGUI:
         ttk.Label(f, text="Target IP / host").grid(row=0, column=0, sticky="w", **pad)
         self.target = ttk.Entry(f, width=20)
         self.target.grid(row=0, column=1, sticky="w", **pad)
+        # recall the last-used source/cloud options for a target when you leave the
+        # field or press Enter (saved per target on RUN) — so re-running against the
+        # next host doesn't need re-typing.
+        self.target.bind("<FocusOut>", lambda e: self._recall_target())
+        self.target.bind("<Return>", lambda e: self._recall_target())
 
         ttk.Label(f, text="Iterations").grid(row=0, column=2, sticky="e", **pad)
         self.iterations = ttk.Spinbox(f, from_=1, to=20, width=5)
@@ -482,6 +487,36 @@ class HarnessGUI:
         self._smb_entry.configure(state=state)
         self._rpc_entry.configure(state=state)
 
+    def _recall_target(self):
+        """Populate source/cloud/ports from the last run against this target."""
+        try:
+            rec = core.recall_target(self.target.get().strip())
+        except Exception:
+            rec = {}
+        if not rec:
+            return
+        if rec.get("source") and not self.source_entry.get().strip():
+            self.source_entry.insert(0, rec["source"])
+        if "cloud" in rec:
+            self.cloud_var.set(bool(rec["cloud"]))
+            if rec.get("smb_port"):
+                self.smb_port.set(str(rec["smb_port"]))
+            if rec.get("rpc_port"):
+                self.rpc_port.set(str(rec["rpc_port"]))
+            self._toggle_cloud_ports()
+
+    def _save_target(self, target):
+        """Remember this target's source/cloud options for next time."""
+        try:
+            core.remember_target(
+                target,
+                source=self.source_entry.get().strip() or None,
+                cloud=bool(self.cloud_var.get()),
+                smb_port=(self.smb_port.get().strip() or None) if self.cloud_var.get() else None,
+                rpc_port=(self.rpc_port.get().strip() or None) if self.cloud_var.get() else None)
+        except Exception:
+            pass
+
     def _apply_cloud_ports(self, target_ip):
         """When 'Cloud target' is ticked, register the target's NAT'd SMB/RPC
         ports so the impacket modules reach the forwarded alternates (same
@@ -732,6 +767,7 @@ class HarnessGUI:
             workers = 1
         port_overrides = self._collect_port_overrides()
         self._apply_cloud_ports(target_ip)
+        self._save_target(target_ip)   # remember source/cloud for next run vs this target
         self._run_mode = self.mode_var.get()
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"

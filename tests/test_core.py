@@ -266,6 +266,33 @@ class TestSshBruteSkipsWithoutPassword(unittest.TestCase):
         self.assertIn("[SKIP]", out)
 
 
+class TestTargetMemory(unittest.TestCase):
+    def setUp(self):
+        self._orig = core._TARGET_MEM
+        core._TARGET_MEM = os.path.join(tempfile.mkdtemp(), "mem.json")
+
+    def tearDown(self):
+        core._TARGET_MEM = self._orig
+
+    def test_remember_recall_roundtrip(self):
+        core.remember_target("10.1.2.3", source="192.168.0.9", cloud=True,
+                             smb_port="4445", rpc_port="1135")
+        r = core.recall_target("10.1.2.3")
+        self.assertEqual(r["source"], "192.168.0.9")
+        self.assertTrue(r["cloud"])
+        self.assertEqual(r["smb_port"], "4445")
+
+    def test_recall_unknown_is_empty(self):
+        self.assertEqual(core.recall_target("9.9.9.9"), {})
+
+    def test_none_fields_do_not_overwrite(self):
+        core.remember_target("t", source="1.1.1.1", cloud=True)
+        core.remember_target("t", source=None, cloud=False)   # None source must not wipe it
+        r = core.recall_target("t")
+        self.assertEqual(r["source"], "1.1.1.1")
+        self.assertFalse(r["cloud"])
+
+
 class TestProbes(unittest.TestCase):
     def test_tcp_open_then_closed(self):
         srv = socket.socket()
