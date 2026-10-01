@@ -75,10 +75,14 @@ def run(target, ctx):
     buf = io.StringIO()
     try:
         WMIEXEC = _load_wmiexec_class()
-        executer = WMIEXEC(
-            "whoami", ctx.creds["dc_user"], ctx.creds["dc_pass"], ctx.creds["domain"],
-            share="ADMIN$", remoteHost=target,
-        )
+        _args = ("whoami", ctx.creds["dc_user"], ctx.creds["dc_pass"], ctx.creds["domain"])
+        try:
+            # newer impacket: remoteHost is a WMIEXEC.__init__ kwarg
+            executer = WMIEXEC(*_args, share="ADMIN$", remoteHost=target)
+        except TypeError:
+            # older impacket: no remoteHost in __init__ (it's a run() arg) — without
+            # this the whole module died with a caught TypeError for EVERY target.
+            executer = WMIEXEC(*_args, share="ADMIN$")
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             try:
                 executer.run(target)

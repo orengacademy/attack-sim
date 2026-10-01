@@ -85,10 +85,16 @@ def run(target, ctx):
     log, matched = U.run_transient(argv, seconds=12,
                                    look_for=["Authenticated", "Local forwarding", "debug1: Entering"])
     out.append(log)
-    # ssh -N is quiet; treat "no immediate auth failure and process stayed up" as reachable
-    if matched or "Permission denied" not in log and "Connection refused" not in log:
-        out.append("SSH443-TUNNEL attempted (see log). If it stayed connected, dynamic "
-                   "SOCKS over SSH-on-443 works through the SD-WAN. [FINDING]")
-    else:
+    # Only an actual established-tunnel signal counts as a finding. The old
+    # heuristic ("no 'Permission denied'/'Connection refused' in the log") fired on
+    # almost any quiet/timeout/host-key log -> false FINDING (operator-precedence bug).
+    if matched:
+        out.append("SSH443-TUNNEL established — dynamic SOCKS over SSH-on-443 works "
+                   "through the SD-WAN (torn down). [FINDING]")
+    elif "Permission denied" in log or "Connection refused" in log:
         out.append("SSH-over-443 blocked — SSH auth/connection failed on 443.")
+    else:
+        out.append("SSH-over-443 not confirmed — no tunnel-established signal in the "
+                   "window (check the log: host-key prompt, timeout, or sshd not on "
+                   "443). The banner indicator above is the reliable result.")
     return "\n".join(out)

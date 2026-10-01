@@ -44,8 +44,9 @@ META = {
     "serial": True,       # DoS: must run alone (don't overlap other tests)
     "os_supported": ["Linux"],   # uses `ping -c` + hping3/raw ICMP (Linux-only)
     "ports": [("icmp", None)],   # ICMP, not a TCP/UDP port
-    # attack 'worked' = meaningful packet loss during the flood
-    "success_regex": r"PASS",
+    # attack 'worked' = meaningful packet loss during the flood (anchored so it
+    # can't match incidental words like "bypass"/"password" in tool output)
+    "success_regex": r"^PASS",
     # deliberately does NOT match FLOOD-PRIV-ERROR — a privilege failure means
     # the flood never ran at all, which must NOT read as "control held".
     "blocked_regex": r"^INFO|INCONCLUSIVE",

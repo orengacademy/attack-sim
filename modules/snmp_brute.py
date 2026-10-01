@@ -39,7 +39,9 @@ META = {
     "requires": ["snmpbulkwalk"],
     "ports": [("udp", 161)],
     "port_customizable": True,
-    "success_regex": r"STRING|INTEGER|OID",
+    # match a real net-snmp VALUE line ("... = STRING: ...") rather than a bare
+    # type word — "OID" alone also appears inside error text ("...at this OID").
+    "success_regex": r"= (STRING|INTEGER|Counter32|Gauge32|Timeticks|Hex-STRING|IpAddress|OID|OPAQUE):",
     "blocked_regex": r"Timeout|No Response|timed out",
 }
 

@@ -60,12 +60,22 @@ def run(target, ctx):
                    "User-Agent: MyGovNet-USS/frontcheck\r\nConnection: close\r\n\r\n")
             tls.sendall(req.encode())
             data = tls.recv(512).decode(errors="replace")
-            status = data.splitlines()[0] if data else "(no response)"
-            out.append(f"SNI={front}  ->  Host={host}  first line: {status!r}")
-            if data.startswith("HTTP/"):
-                out.append(f"FRONTED SNI≠Host request was served — the boundary filtered "
-                           f"on SNI ({front}) only; the true Host ({host}) reached the "
-                           "back-end. TLS inspection is not reading the real Host.")
+            status_line = data.splitlines()[0] if data else "(no response)"
+            parts = status_line.split()
+            code = int(parts[1]) if (len(parts) >= 2 and parts[0].startswith("HTTP/")
+                                     and parts[1].isdigit()) else 0
+            out.append(f"SNI={front}  ->  Host={host}  first line: {status_line!r}")
+            # Only a SERVED response (2xx/3xx) proves the mismatched Host reached the
+            # back-end. A CDN that rejects the SNI≠Host mismatch answers 4xx/5xx
+            # (commonly 403/421) — that is the front being BLOCKED, not fronted. The
+            # old check fired on any 'HTTP/' line, scoring a 421 reject as FRONTED.
+            if 200 <= code < 400:
+                out.append(f"FRONTED SNI≠Host request was served ({code}) — the boundary "
+                           f"filtered on SNI ({front}) only; the true Host ({host}) reached "
+                           "the back-end. TLS inspection is not reading the real Host.")
+            elif code >= 400:
+                out.append(f"fronting blocked — the CDN/front rejected the mismatched Host "
+                           f"({code}); SNI≠Host was not served.")
             else:
                 out.append("fronting blocked — no HTTP response to the mismatched Host "
                            "(inspection or CDN rejected it)")
