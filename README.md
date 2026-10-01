@@ -101,6 +101,33 @@ at `127.0.0.1` for a self-test).
 Full steps + teardown: **[deploy/DEPLOY.md](deploy/DEPLOY.md)** · cloud/KVDC + the
 reverse (B→A) direction: **[deploy/cloud/README.md](deploy/cloud/README.md)**.
 
+## Runs from any OS (Kali · any Linux · Windows · macOS)
+
+The **engine is pure-stdlib Python 3** (no third-party deps) and runs anywhere;
+`loader` auto-discovers all 48 modules on every OS. What differs is only which
+*per-module* tools are present:
+
+- **Kali** (the primary operator OS) — `bootstrap.py` installs everything; all
+  modules run.
+- **Other Linux / macOS** — install the tools with your package manager;
+  `python3 preflight.py` prints the exact `apt/dnf/yum/pacman/zypper/apk/brew`
+  command for whatever's missing.
+- **Windows** — `curl` is built in (Win10+), `impacket` via `pip install impacket`;
+  the pure-socket and in-process impacket modules (segmentation, App-ID, TLS/443,
+  egress, dcsync/psexec/wmiexec/kerberoast/asrep/nopac/sAMAccountName) run. The
+  Linux-only tools (`hydra`, `hping3`, `snmp`, `ldapsearch`, `responder`) aren't on
+  Windows, so those modules report `PREREQ-MISSING`/skip — never a crash. The AD
+  modules resolve impacket across flavours (`impacket-X` → `X.py` → the example
+  script), so they need only the impacket **library**, not a Kali CLI.
+
+**Typical run — Kali (behind the SDWAN) → a DO/cloud target:**
+```bash
+python3 cli.py --target <DO-public-ip> --source <your-sdwan-foothold-ip> \
+  --cloud --attack-sim --confirm-roe       # --cloud: SMB->4445 / RPC->1135 (cloud NAT)
+```
+`--source`/`--cloud` are remembered per target (re-run `--target <ip>` alone next
+time). AD modules need the DC's creds (`HARNESS_DOMAIN`/`HARNESS_DC_USER`/`HARNESS_DC_PASS`).
+
 ## Install (Kali)
 
 ```bash
@@ -108,7 +135,8 @@ python3 bootstrap.py
 ```
 
 Installs: `curl`, `snmp` (snmpwalk), `hydra`, `impacket-scripts`, `ldap-utils`
-(ldapsearch), `hping3`, `responder`, `python3-tk`.
+(ldapsearch), `hping3`, `responder`, `python3-tk`. On a non-apt OS it prints the
+right install command instead (the engine still runs — see "Runs from any OS").
 
 ### Privileges (you do NOT have to run the whole harness as root)
 
