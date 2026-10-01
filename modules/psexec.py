@@ -33,7 +33,8 @@ META = {
     "mitre": ['T1021.002', 'T1569.002'],
     "cwe": [],
     "tactic": 'Lateral Movement',
-    "requires": ["impacket-psexec"],
+    "requires": [],                 # uses the impacket PYTHON lib in-process
+    "requires_py": ["impacket"],    # (CLI name varies; the lib is the real dep)
     "ports": [("tcp", 445)],
     "success_regex": r"nt authority\\system|Creating service|Starting service|SVCManager|Opening SVCManager",
     "blocked_regex": r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|Errno",
