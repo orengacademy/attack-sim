@@ -5,8 +5,12 @@ exercised (not just a reachability ping). The JNDI URL points at
 NO real callback and NO code execution even if the target is vulnerable — this
 tests whether the pattern transits the IPS, which is the stated control.
 
-Verdict: the payload-bearing request was served (HTTP_CODE:200) -> the IPS did
-NOT filter the JNDI pattern (finding). No/blocked response -> control held.
+Verdict: the payload-bearing request was served (any HTTP_CODE:2xx/3xx) -> it
+reached the app layer and got a real response, so the IPS did NOT filter the
+JNDI pattern (finding) — a 3xx redirect still means the backend processed the
+request (headers included), same conclusion as a 200; curl's own exit/timeout
+code (via HTTP_CODE:000) or an explicit 403 means something between us and the
+app refused/dropped it. No/blocked response -> control held.
 """
 import os
 
@@ -24,7 +28,11 @@ META = {
     "requires": ["curl"],
     "ports": [("tcp", 8080)],
     "port_customizable": True,
-    "success_regex": r"HTTP_CODE:200",
+    # was HTTP_CODE:200 only — a 3xx redirect (common for app servers/reverse
+    # proxies on the target) fell through neither regex and showed as a
+    # confusing NO-RESULT even though the payload-bearing request clearly
+    # reached the app (confirmed: a lab target returning HTTP_CODE:302).
+    "success_regex": r"HTTP_CODE:[23]\d\d",
     "blocked_regex": r"timed out|Connection refused|HTTP_CODE:000|HTTP_CODE:403",
 }
 
