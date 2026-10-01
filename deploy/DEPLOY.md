@@ -76,18 +76,42 @@ python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe
 `SUCCESS` per module = that vuln/service is genuinely up. `NO-SERVICE`/`AUTH-FAILED`
 = not really up (fix the lab, not a control result).
 
-## 2. Windows AD DC (Vagrant)
+## 2. Windows AD DC — three ways
 
-On a host with Vagrant + a provider (VirtualBox/libvirt/Hyper-V):
+The DC is the same deliberately-vulnerable lab (`provision.ps1`) however you boot it:
+
+| Backend | Use when | How |
+|---------|----------|-----|
+| **VirtualBox / Vagrant** | VirtualBox host, want a one-liner | `cd deploy/windows && vagrant up` |
+| **QEMU / libvirt** | your host runs libvirt/KVM | `sudo deploy/windows/qemu/create-dc.sh …` ([README](windows/qemu/README.md)) |
+| **Cloud Terraform** | KVDC / a cloud DC | `deploy/cloud/{aws,azure,gcp}/` ([README](cloud/README.md)) |
+
+### 2a. VirtualBox / Vagrant
 
 ```bash
 cd deploy/windows
 vagrant up            # ONE command: install AD DS, promote, reboot, seed accounts
 ```
 
-A single `vagrant up` now runs both provisioning passes automatically (Vagrant
-reboots the guest between them; `provision.ps1` waits for AD DS to come up before
-seeding). Needs Vagrant 2.2.0+ and a provider (VirtualBox by default).
+A single `vagrant up` runs both provisioning passes automatically (Vagrant reboots
+the guest between them; `provision.ps1` waits for AD DS to come up before seeding).
+Needs Vagrant 2.2.0+ and a provider (VirtualBox by default).
+
+### 2b. QEMU / libvirt
+
+If your host runs libvirt/QEMU (not VirtualBox), use the native path — q35 + OVMF +
+virtio, reusing the same `provision.ps1`:
+
+```bash
+# import an existing Windows qcow2 you already have:
+sudo deploy/windows/qemu/create-dc.sh --disk /var/lib/libvirt/images/win2019-do.qcow2
+# …or install fresh from an ISO (unattended; edit autounattend.xml for your ISO):
+sudo deploy/windows/qemu/create-dc.sh --iso /path/Windows_Server_2022.iso
+```
+
+`setup_all.sh --with-windows` auto-uses this when libvirt is present and you set
+`WIN_QEMU_DISK=<qcow2>` (or `WIN_QEMU_ISO=<iso>`); otherwise it falls back to
+VirtualBox/Vagrant. Full details: **[deploy/windows/qemu/README.md](windows/qemu/README.md)**.
 
 It creates a domain with a **Kerberoastable** SPN account, an **AS-REP-roastable**
 (no-preauth) account, weak admin creds for DCSync/PsExec/WMIExec, and sets
