@@ -42,6 +42,9 @@ META = {
     "cwe": ['CWE-290'],
     "tactic": 'Persistence',
     "requires": [],  # runs entirely in-process (ldap3/ldapdomaindump), not a shutil.which-checkable CLI tool
+    # preflight imports these so a shadowed/stale cryptography (breaks
+    # cryptography.hazmat.asn1) is caught instead of a runtime NO-RESULT.
+    "requires_py": ["impacket.examples.secretsdump"],  # deep import: fails if impacket is missing OR broken by a stale cryptography (asn1)
     "ports": [("tcp", 389), ("tcp", 445)],
     "success_regex": r"SPOOF-CONFIRMED: sAMAccountName ==",
     "blocked_regex": (

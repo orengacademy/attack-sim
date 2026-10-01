@@ -25,6 +25,7 @@ import shutil
 import socket
 import platform
 import ipaddress
+import importlib
 import subprocess
 from datetime import datetime
 
@@ -983,6 +984,19 @@ def preflight(modules, want_versions=False):
             })
         missing = [t["binary"] for t in tools if not t["found"]]
         missing_files = [f for f in req_files if not os.path.exists(f)]
+        # Python-module deps (requires_py): a module that shells out is covered by
+        # `requires`, but an IN-PROCESS one (impacket/cryptography) can import fine
+        # at module load yet die on a deeper lazy import at runtime — e.g. a stale
+        # user-site `cryptography` shadowing a newer one breaks
+        # `cryptography.hazmat.asn1`, so noPac/sAMAccountName NO-RESULT while
+        # shutil.which sees nothing wrong. Actually importing the declared paths
+        # catches that class before the run.
+        missing_py = []
+        for modpath in meta.get("requires_py", []):
+            try:
+                importlib.import_module(modpath)
+            except Exception:
+                missing_py.append(modpath)
         # a root-needing module is OK if we're root OR sudo exists to elevate the
         # tool non-interactively (the module runs it via `sudo -n <tool>`; if
         # NOPASSWD isn't configured for it, the module reports a clear error).
@@ -994,8 +1008,10 @@ def preflight(modules, want_versions=False):
             "requires": reqs, "tools": tools, "missing": missing,
             "needs_root": needs_root, "priv_ok": priv_ok,
             "requires_files": req_files, "missing_files": missing_files,
+            "requires_py": list(meta.get("requires_py", [])), "missing_py": missing_py,
             "os_supported": os_supported, "os_ok": os_ok,
-            "ready": not missing and not missing_files and priv_ok and os_ok,
+            "ready": not missing and not missing_files and not missing_py
+                     and priv_ok and os_ok,
         })
     return {"platform": platform_info(), "privileged": priv,
             "package_manager": pm, "modules": out}
@@ -1032,6 +1048,9 @@ def format_preflight_report(pf):
             L.append(f"       privilege: {'ok' if r['priv_ok'] else 'NEEDS root/admin'}")
         if r["missing_files"]:
             L.append(f"       missing files: {', '.join(r['missing_files'])}")
+        if r.get("missing_py"):
+            L.append(f"       python import FAILS: {', '.join(r['missing_py'])} "
+                     "(stale/shadowed lib? e.g. rm a user-site cryptography)")
         if not r.get("os_ok", True):
             L.append(f"       OS: not supported on {p['system']} "
                      f"(supports: {', '.join(r['os_supported'])})")
@@ -1407,6 +1426,8 @@ class Runner:
             if r["missing_files"]:
                 reasons.append("missing files: " +
                                ", ".join(os.path.basename(f) for f in r["missing_files"]))
+            if r.get("missing_py"):
+                reasons.append("python import fails: " + ", ".join(r["missing_py"]))
             if not r["priv_ok"]:
                 reasons.append("needs root/admin")
             if not r.get("os_ok", True):
@@ -1530,6 +1551,8 @@ class Runner:
             if r["missing_files"]:
                 bits.append("missing file(s): " +
                             ", ".join(os.path.basename(f) for f in r["missing_files"]))
+            if r.get("missing_py"):
+                bits.append("python import fails: " + ", ".join(r["missing_py"]))
             if not r["priv_ok"]:
                 bits.append("needs root/admin")
             if not r.get("os_ok", True):
