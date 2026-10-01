@@ -60,6 +60,7 @@ META = {
     "cwe": ['CWE-290'],
     "tactic": 'Privilege Escalation',
     "requires": [],  # runs entirely in-process (ldap3/ldapdomaindump/dnspython, not a shutil.which-checkable CLI tool)
+    "serial": True,  # in-process impacket + _portpatch swap process-global socket.connect; ALSO collides with samaccountname_spoof (both rename to the DC's name) — must run ALONE
     # in-process imports preflight verifies — a stale user-site cryptography that
     # shadows a newer one breaks cryptography.hazmat.asn1 and this NO-RESULTs.
     "requires_py": ["impacket", "ldapdomaindump", "dns.asyncquery"],  # real runtime chain: dns.asyncquery -> cryptography.hazmat.asn1 trips a stale user-site cryptography (the actual noPac/sAMAccountName breakage)

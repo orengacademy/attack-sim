@@ -554,10 +554,18 @@ class HarnessGUI:
         """When 'Cloud target' is ticked, register the target's NAT'd SMB/RPC
         ports so the impacket modules reach the forwarded alternates (same
         mechanism as modules/_portpatch.py, applied per run for this target)."""
-        if not self.cloud_var.get():
-            return
         try:
             from modules import _portpatch
+        except Exception as e:
+            self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
+            return
+        if not self.cloud_var.get():
+            # Cloud OFF: clear any remap this long-lived GUI left for this target
+            # from an earlier cloud run, or a direct (non-NAT) run would keep
+            # redirecting SMB/RPC to the stale alternate ports.
+            _portpatch.CUSTOM_PORT_TARGETS.pop(target_ip, None)
+            return
+        try:
             smb = int((self.smb_port.get() or "4445").strip())
             rpc = int((self.rpc_port.get() or "1135").strip())
             _portpatch.CUSTOM_PORT_TARGETS[target_ip] = {445: smb, 135: rpc}

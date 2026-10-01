@@ -26,16 +26,27 @@ egress / segmentation control validation* across 7 ATT&CK families **A–G** (se
 ```bash
 python3 gui.py                       # GUI (needs $DISPLAY); defaults to the ORIGINAL set ticked
 python3 cli.py --list                # list all discovered modules + their scope tags
+python3 cli.py --confirm-roe         # bare run: DEFAULTS to target 127.0.0.1 + the ORIGINAL 11-module set
 python3 cli.py --target <IP> --attack-sim --confirm-roe   # headless USS run (--confirm-roe is MANDATORY)
+python3 cli.py --target <IP> --all --confirm-roe          # run ALL 48 modules (default is the original set)
+python3 cli.py --target <IP> --full-report --confirm-roe  # also echo report.txt (default: clean table only)
 python3 fleet.py --dry-run --attack-sim                   # N-target matrix preview (no traffic); then --confirm-roe
 python3 preflight.py                 # tools + Python-package check (no network); --json for CI; --target <IP> adds recon
 python3 bootstrap.py                 # Kali/Debian apt install (degrades on non-apt); --with-active adds tunnel/exec tools
 python3 -m pip install -r requirements.txt   # the in-process AD modules' Python libs (impacket/ldap3/ldapdomaindump/dnspython)
 python3 -m unittest discover -s tests   # test suite (pure stdlib, localhost-only, offline)
 ```
-Per-target options (source IP, `--cloud` SMB/RPC ports, and `--domain/--dc-user/
---dc-pass` creds) are **remembered per target** in a `0600 .target_memory.json`
-(CLI flags + GUI fields) — a Linux SSH lab and a Windows DC keep different creds.
+Per-target options (source IP, `--cloud` SMB/RPC ports, `--domain/--dc-user/
+--dc-pass` creds, **and separate `--ssh-user/--ssh-pass`**) are **remembered per
+target** in a `0600 .target_memory.json` (CLI flags + GUI fields) — a Linux SSH
+lab and a Windows DC keep different creds. SSH creds are deliberately distinct
+from the DC creds (a dual-role target is both an SSH host and a DC front, and one
+identity can't serve both; `ssh_brute` falls back to the DC creds only when the
+SSH ones are unset). CLI output: both GUI and CLI run **preflight + recon first**
+(service/port health), then the CLI prints clean numbered live results and a
+modern end-of-run **table** (verdict strip + per-row verdict/module/category/
+detail); the full ATT&CK/CWE/CVE `report.txt` is always written to evidence and
+echoed to the console only with `--full-report`.
 Keep the lab alive with `deploy/refresh-lab.sh --install-cron` (restarts dead
 services/containers/VM every 5 min). Engine is pure-stdlib and runs on any OS;
 tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
@@ -56,7 +67,7 @@ tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 | `core.py` | **The engine.** `Context` (handed to each module), `Evidence` (the `run_<ts>/` tree + `finalize()` which writes summaries + the ATT&CK Navigator layer), `classify()` + `Runner` (orchestrates N iterations, preflight gating, recon, verdicts, DETECTED scoring), and all the preflight/reachability/privilege/platform helpers. **Attack logic does NOT live here.** |
 | `loader.py` | Auto-discovers `modules/*.py` that expose `META` + `run(target, ctx)`. Files starting with `_` (helpers, `_vendor/`) are skipped. No registration anywhere. |
 | `gui.py` | Tkinter dark-theme front-end. Worker thread + queue so the UI never freezes. Live log + live raw-output panel (click a status row to jump), Preflight+recon button, Egress-probe button, per-row custom port, mode/workers selectors. |
-| `cli.py` | Headless equivalent; every GUI option as a flag (`--original`/`--attack-sim`/`--family`/`--cloud`/`--source`/`--domain`/`--dc-user`/`--dc-pass`/…). Prints a modern end-of-run summary (verdict-distribution bars + per-category coloured table + MITRE) then the full coverage report. |
+| `cli.py` | Headless equivalent; every GUI option as a flag (`--original` (DEFAULT) / `--all` / `--added` / `--attack-sim` / `--family` / `--cloud` / `--source` / `--domain` / `--dc-user` / `--dc-pass` / `--ssh-user` / `--ssh-pass` / `--full-report` / …). Defaults: `--target 127.0.0.1`, original 11-module set. Suppresses the engine's interleaved per-module log on the console and re-renders clean numbered live lines + a modern end-of-run **table** (verdict strip + verdict/module/category/detail columns). `report.txt` goes to evidence always; `--full-report` echoes it too. |
 | `fleet.py` | **N-target front end.** Runs the same engine over a fleet of vuln servers defined in `fleet.json` (git-ignored; `fleet.json.example` committed) — a zone-to-zone matrix (`targets`×`sources`×`runs`), both directions, per-target `cloud_ports`, per-source egress binding. Reuses `cli._select` + `core.Runner` per job; evidence under `evidence/fleet_<ts>/<source>__<target>/`, plus `fleet_summary.json`. |
 | `preflight.py` | Standalone cross-platform tool/privilege/recon checker; CI gate (exit 0 only if all discovered modules are ready). |
 | `bootstrap.py` | One-shot apt installer for Kali/Debian. |
@@ -76,9 +87,17 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
 - **BAS mappings:** `mitre` (list), `tactic`, `cwe` (list), `cve` — these drive
   the coverage matrix + Navigator layer. Add them so a new module shows up there.
 - **Preflight/recon:** `requires` (binaries), `needs_root`, `requires_files`,
-  `os_supported`, `serial` (must run alone — DoS/brute), `ports` (for recon +
+  `os_supported`, `serial` (must run alone), `ports` (for recon +
   custom-port override), `port_customizable`, `added` (keeps it out of the
   "Original set" selector).
+  - **`serial: True`** covers two classes: (1) DoS/brute (`icmp_flood`,
+    `syn_flood`, `ssh_brute`, `stateful_evasion`) that skew each other's
+    rate/latency, and (2) the in-process AD modules (`dcsync`, `psexec`,
+    `wmiexec`, `nopac`, `samaccountname_spoof`) which swap **process-global**
+    state (`_portpatch`'s `socket.connect` monkeypatch + `redirect_stdout`) and
+    would, under `--workers > 1`, pollute each other's output (→ NO-RESULT) or
+    un-patch mid-connection. `nopac`+`samaccountname_spoof` additionally collide
+    (both rename a machine account to the DC's name). Serial ⇒ deterministic.
 - **USS scope:** `test_type` (`attack_sim` | `pentest` | `va` | `dos`), `family`
   (`A`–`G`), `direction` (`a2b` default | `b2a` | `both`), `active` (advertises
   active-establishment capability).
@@ -104,7 +123,11 @@ classifier bug so far was caught by reading them, not by trusting the verdict.
   likely worked (green).
 - **NO-SERVICE** — port closed/refused (RST): service absent, **not** a control
   block (blue). Recon distinguishes closed-vs-filtered so a closed port isn't
-  miscredited to the control.
+  miscredited to the control. The refused→NO-SERVICE gate is suppressed when the
+  attack ports are actually **open** — an incidental "Connection refused" (e.g. a
+  stray ancillary lookup) must not rob a reachable, hardened target of the
+  BLOCKED verdict its own `blocked_regex` earned (this is why patched noPac now
+  scores BLOCKED, not NO-SERVICE).
 - **AUTH-FAILED** — credential error (fix `HARNESS_DC_PASS`), not a control result.
 - **NO-RESULT** — no clear marker; surfaces the `[ERROR]/[WARN]/[SKIP]` hint.
 - **PREREQ-MISSING** — skipped by preflight (missing tool/file/privilege/OS).
@@ -123,7 +146,7 @@ Copy the `*.example` and fill in; env vars override the files:
 | `config.json` | `HARNESS_CFG_<KEY>` | Destinations the USS modules aim at (your VPS/domain/DoH/canary/pivot). Unset → the module `[SKIP]`s. **This is how "no live infra hardcoded" is enforced — keep it that way.** |
 | `allowlist.txt` | `HARNESS_ALLOWLIST` | Opt-in hard target allowlist. Unconfigured → any validated target allowed. |
 | `detections.json` | `HARNESS_DETECTIONS` | Blue-team confirmations that drive the DETECTED verdict. |
-| `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`, and per-target creds `domain`/`dc_user`/`dc_pass`. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted. |
+| `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`, per-target creds `domain`/`dc_user`/`dc_pass`, and **separate `ssh_user`/`ssh_pass`**. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted. |
 | `fleet.json` | — | N-target fleet for `fleet.py` (`targets`/`sources`/`runs`). |
 | `requirements.txt` | — | Committed; Python libs for the in-process AD modules (`pip install -r`). Engine itself needs none. |
 

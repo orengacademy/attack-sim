@@ -35,6 +35,7 @@ META = {
     "tactic": 'Lateral Movement',
     "requires": [],                 # uses the impacket PYTHON lib in-process
     "requires_py": ["impacket"],    # (CLI name varies; the lib is the real dep)
+    "serial": True,  # in-process impacket + _portpatch swap process-global socket.connect / redirect stdout — must run ALONE (see dcsync.py)
     "ports": [("tcp", 445)],
     "success_regex": r"nt authority\\system|Creating service|Starting service|SVCManager|Opening SVCManager",
     "blocked_regex": r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|Errno",
@@ -117,6 +118,13 @@ def _run_in_process(target, ctx):
 
 
 def run(target, ctx):
+    # PsExec authenticates over SMB with admin creds — needs a password. With
+    # none the impacket tool would prompt getpass (now EOFs cleanly thanks to
+    # the detached stdin); skip with a clear reason instead.
+    if not (ctx.creds.get("dc_pass") or "").strip():
+        return ("# psexec vs %s\n\n[SKIP] no admin password configured (set "
+                "HARNESS_DC_PASS / --dc-pass / credentials.env) — PsExec needs "
+                "valid admin creds over SMB." % target)
     if _portpatch.is_custom_port_target(target):
         return _run_in_process(target, ctx)
     # Runs a single command (whoami) via a temporary service over SMB. Resolve the

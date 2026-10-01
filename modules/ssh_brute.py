@@ -24,13 +24,25 @@ META = {
 
 def run(target, ctx):
     port = ctx.get_port("ssh_brute", 22)   # overridable per-attack (GUI/env)
+    # SSH creds are SEPARATE from the DC creds (HARNESS_SSH_USER/PASS or the
+    # per-target --ssh-user/--ssh-pass): a dual-role target is both an SSH host
+    # (e.g. labadmin) and a Windows DC front (Administrator), and one identity
+    # can't serve both. Use the SSH creds when set; otherwise fall back to the
+    # DC creds so the single-identity lab case still works.
+    user = (ctx.creds.get("ssh_user") or ctx.creds.get("dc_user") or "").strip()
+    pw = ctx.creds.get("ssh_pass") or ctx.creds.get("dc_pass") or ""
     # This is a single known-credential check, not a wordlist brute. With no
     # password configured, hydra would run with an empty -p and complete cleanly
     # as "0 valid passwords found" — which matches neither success nor blocked
     # regex and mis-reports as NO-RESULT. Skip instead, with a clear reason.
-    if not (ctx.creds.get("dc_pass") or "").strip():
+    if not pw.strip():
         return (f"# ssh_brute vs {target}\n\n[SKIP] no SSH password configured "
-                "(set HARNESS_DC_PASS or credentials.env) — nothing to test. "
-                "deploy/setup_target.sh writes a credentials.env for the lab user.")
+                "(set HARNESS_SSH_PASS / --ssh-pass, or HARNESS_DC_PASS / "
+                "credentials.env) — nothing to test. deploy/setup_target.sh "
+                "writes a credentials.env for the lab user.")
+    # Populate the effective SSH creds so the template fills them and _redact()
+    # scrubs the password from the evidence (it redacts ssh_pass too).
+    ctx.creds["ssh_user"] = user or "root"
+    ctx.creds["ssh_pass"] = pw
     return ctx.run_cmd(
-        f"hydra -s {port} -l {{dc_user}} -p {{dc_pass}} -f ssh://{{target}}", target)
+        f"hydra -s {port} -l {{ssh_user}} -p {{ssh_pass}} -f ssh://{{target}}", target)
