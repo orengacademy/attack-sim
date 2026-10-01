@@ -220,6 +220,14 @@ class TestSkipNotScoredAsBlocked(unittest.TestCase):
         b, a, v = core.classify(meta, "WIN here", "[SKIP] not configured")
         self.assertEqual(a, "NO-RESULT")   # a skip is NOT a block through the appliance
 
+    def test_skip_marker_matches_end_of_line(self):
+        # ipv6_acl_parity puts the marker at the END of a line; the old ^-anchored
+        # regex missed it and the skip leaked through to blocked_regex (false BLOCK).
+        self.assertIsNotNone(core._SKIP_MARKER.search("no IPv6 target. [SKIP]"))
+        meta = {"success_regex": r"OK", "blocked_regex": r"no .* reachable"}
+        _, a, _ = core.classify(meta, "OK", "no AAAA reachable [SKIP]")
+        self.assertEqual(a, "NO-RESULT")
+
 
 class TestConsistencyBuckets(unittest.TestCase):
     def test_single_other_iteration_is_consistent(self):

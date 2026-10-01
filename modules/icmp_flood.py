@@ -49,7 +49,10 @@ META = {
     "success_regex": r"^PASS",
     # deliberately does NOT match FLOOD-PRIV-ERROR — a privilege failure means
     # the flood never ran at all, which must NOT read as "control held".
-    "blocked_regex": r"^INFO|INCONCLUSIVE",
+    # INFO/INCONCLUSIVE are NOT a control win — the module's own text says so
+    # ("usually means not enough load, NOT that the control held"). They fall to
+    # NO-RESULT. Only a genuine network-layer block counts as BLOCKED.
+    "blocked_regex": r"No route to host|Network is unreachable|host unreachable",
 }
 
 # markers that mean the flood never actually sent (privilege/tooling failure) —

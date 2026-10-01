@@ -36,7 +36,9 @@ META = {
     "port_customizable": True,
     "success_regex": r"^PASS",
     # a privilege failure must NOT read as "control held" (flood never ran)
-    "blocked_regex": r"^INFO|INCONCLUSIVE",
+    # INFO/INCONCLUSIVE are NOT a control win (one host rarely saturates a target)
+    # -> NO-RESULT. Only a genuine network-layer block is BLOCKED.
+    "blocked_regex": r"No route to host|Network is unreachable|host unreachable",
 }
 
 _PRIV_ERR = ("operation not permitted", "raw socket", "permission denied",

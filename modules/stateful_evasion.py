@@ -69,24 +69,38 @@ def run(target, ctx):
     base_reply = _got_reply(base)
     out.append(f"baseline plain SYN -> port {port}: {'reply' if base_reply else 'no reply (blocked/closed)'}")
 
+    any_reply = base_reply
+
     # 1) fragmented SYN
-    frag = _hping(["-S", "-f", "-c", "2", "-p", str(port), target])
-    if _got_reply(frag) and not base_reply:
+    frag_reply = _got_reply(_hping(["-S", "-f", "-c", "2", "-p", str(port), target]))
+    any_reply = any_reply or frag_reply
+    if frag_reply and not base_reply:
         findings.append("fragmented SYN passed where a plain SYN did not")
-    out.append(f"fragmented SYN     -> port {port}: {'reply' if _got_reply(frag) else 'no reply'}")
+    out.append(f"fragmented SYN     -> port {port}: {'reply' if frag_reply else 'no reply'}")
 
     # 2) source-port 53 and 443 (does the FW trust the source port?)
     for sp in (53, 443):
-        r = _hping(["-S", "-s", str(sp), "--keep", "-c", "2", "-p", str(port), target])
-        if _got_reply(r) and not base_reply:
+        r = _got_reply(_hping(["-S", "-s", str(sp), "--keep", "-c", "2", "-p", str(port), target]))
+        any_reply = any_reply or r
+        if r and not base_reply:
             findings.append(f"source-port {sp} SYN passed where a plain SYN did not")
-        out.append(f"src-port {sp} SYN   -> port {port}: {'reply' if _got_reply(r) else 'no reply'}")
+        out.append(f"src-port {sp} SYN   -> port {port}: {'reply' if r else 'no reply'}")
 
     out.append("")
     if findings:
         out.append("EVASION-GAP — " + "; ".join(findings) +
                    ". [FINDING] stateful inspection can be evaded (fragmentation / "
                    "source-port trust).")
+    elif not any_reply:
+        # NOTHING answered any probe -> the port is closed/absent, so there is no
+        # baseline to evade and "inspection holding" would be vacuous. NB: this
+        # module uses hping3, which does NOT honour --cloud/_portpatch (that only
+        # remaps socket connects), so on a cloud target SMB/RPC is on an ALTERNATE
+        # port (e.g. 4445) and 445 is dead. Report NO-SERVICE, not a control win.
+        out.append(f"[SKIP] no probe to {target}:{port} got any reply; the port is "
+                   "closed/filtered so there is nothing to evade (not 'inspection holding'). "
+                   "On a cloud target set the real port — hping3 ignores --cloud: "
+                   "--port stateful_evasion=4445 or HARNESS_PORT_STATEFUL_EVASION=4445.")
     else:
         out.append("no evasion gap — crafted probes did not bypass the baseline result "
                    "(reassembly-aware / source-port-agnostic inspection holding)")

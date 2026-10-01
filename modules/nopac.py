@@ -62,7 +62,7 @@ META = {
     "requires": [],  # runs entirely in-process (ldap3/ldapdomaindump/dnspython, not a shutil.which-checkable CLI tool)
     # in-process imports preflight verifies — a stale user-site cryptography that
     # shadows a newer one breaks cryptography.hazmat.asn1 and this NO-RESULTs.
-    "requires_py": ["impacket.examples.secretsdump"],  # deep import: fails if impacket is missing OR broken by a stale cryptography (asn1)
+    "requires_py": ["impacket", "ldapdomaindump", "dns.asyncquery"],  # real runtime chain: dns.asyncquery -> cryptography.hazmat.asn1 trips a stale user-site cryptography (the actual noPac/sAMAccountName breakage)
     "ports": [("tcp", 389), ("tcp", 445), ("tcp", 88)],
     "success_regex": r"nt authority\\system|Executing command|SVCManager|Opening SVCManager",
     # KDC_ERR_TGT_REVOKED / "TGT has been revoked" right after the sAMAccountName
