@@ -1,0 +1,8 @@
+$ErrorActionPreference = "Stop"
+# Deliver the (unchanged) lab provisioning scripts, then run the cloud wrapper.
+# GCP runs windows-startup-script-ps1 at every boot; provision_cloud.ps1 is
+# idempotent and self-removes its seed task once the AD accounts exist.
+[IO.File]::WriteAllBytes("C:\provision.ps1", [Convert]::FromBase64String("${prov_b64}"))
+[IO.File]::WriteAllBytes("C:\provision_cloud.ps1", [Convert]::FromBase64String("${provc_b64}"))
+Set-Location C:\
+powershell.exe -ExecutionPolicy Bypass -File C:\provision_cloud.ps1 *>> C:\uss_provision.log
