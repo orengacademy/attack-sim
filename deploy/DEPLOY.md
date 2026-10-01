@@ -11,7 +11,7 @@ Two target types:
 
 | Target | Provides | How |
 |--------|----------|-----|
-| **Linux services** (FTP/SSH/SNMP/LDAP + web CVEs) | ftp_anonymous, ssh_brute, snmp_brute, ldap_null_bind, apache_41773, log4shell, floods, segmentation, egress | `setup_target.sh` + `docker compose` |
+| **Linux services** (FTP/SSH/SNMP/LDAP + web CVEs + HTTPS 443) | ftp_anonymous, ssh_brute, snmp_brute, ldap_null_bind, apache_41773, log4shell, tls_carrier, ja3_mimicry, l7_enforce_443, http_smuggling, waf_evasion, exposed_mgmt_api, floods, segmentation, egress | `setup_target.sh` + `docker compose` |
 | **Windows AD DC** (Kerberos/LDAP/SMB) | kerberoast, kerberos_asrep, dcsync, psexec, wmiexec, petitpotam, nopac·samaccountname_spoof (unpatched DC only) | **Vagrant** (`deploy/windows/`) |
 
 The Debian droplet can host the Linux side; the **Windows/AD attacks need a real
@@ -49,8 +49,17 @@ The manual, step-by-step equivalent is below.
 
 ```bash
 sudo ./deploy/setup_target.sh            # host services: SSH lab user, FTP anon, SNMP public
-cd deploy && docker compose up -d        # web CVEs + LDAP (Apache 41773 :80, Log4Shell :8080, OpenLDAP :389)
+cd deploy && docker compose up -d        # web CVEs + LDAP + HTTPS-443 (Apache :80, Log4Shell :8080, OpenLDAP :389, https-lab :443)
 ```
+
+The `https-lab` container (nginx on **:443**, self-signed cert generated in-container
+on first start) gives the 443 boundary modules a real target — without it they
+report `NO-SERVICE`. With it: `tls_carrier` / `ja3_mimicry` complete handshakes,
+`exposed_mgmt_api` finds the deliberately-exposed mgmt paths (`/actuator`, `/.git/HEAD`,
+`/.env`, `/server-status`, …), and `l7_enforce_443` / `http_smuggling` / `waf_evasion`
+have an endpoint to probe (they report `REVIEW` against a plain app — point
+`published_app_url` at your real WAF'd app to exercise them fully). First start needs
+outbound internet (the container `apk add`s openssl to mint the cert).
 
 `setup_target.sh` auto-writes a git-ignored `credentials.env` pointing `ssh_brute`
 at the lab SSH user (`labadmin`/`Passw0rd!`), so **no manual export is needed** —
