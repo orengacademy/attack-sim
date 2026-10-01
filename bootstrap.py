@@ -71,6 +71,39 @@ def install_core():
     run(sudo(["apt-get", "install", "-y"] + missing))
 
 
+def ensure_impacket_module():
+    """The AD modules (wmiexec/nopac/dcsync/…) import the `impacket` PYTHON
+    module, not just the CLI wrappers in impacket-scripts. On Kali the apt
+    package pulls python3-impacket, but elsewhere it may be absent — in which
+    case loader.py silently skips wmiexec.py ("No module named 'impacket'").
+    Verify it imports; if not, install python3-impacket (apt) or pip it."""
+    try:
+        import impacket  # noqa: F401
+        print("  impacket python module: present")
+        return
+    except ImportError:
+        pass
+    c("  impacket python module MISSING — installing (needed by wmiexec/nopac/dcsync)…", "1;33")
+    if not apt_installed("python3-impacket"):
+        run(sudo(["apt-get", "install", "-y", "python3-impacket"]))
+    try:
+        import impacket  # noqa: F401
+        return
+    except ImportError:
+        pass
+    # no distro package — pip into the user env (PEP 668: allow break-system-packages)
+    r = run([sys.executable, "-m", "pip", "install", "--user", "impacket"])
+    if r.returncode != 0:
+        run([sys.executable, "-m", "pip", "install", "--user",
+             "--break-system-packages", "impacket"])
+    try:
+        import impacket  # noqa: F401
+        print("  impacket python module: installed")
+    except ImportError:
+        print("  [!] impacket still not importable — install it manually "
+              "(pip install impacket); wmiexec/nopac/dcsync will stay skipped.")
+
+
 def install_active():
     c("\nInstalling ACTIVE-establishment tooling (--with-active)...", "1;33")
     run(sudo(["apt-get", "update"]))
@@ -94,6 +127,7 @@ def main():
     with_active = "--with-active" in sys.argv[1:]
     c("=== Harness bootstrap ===", "1;32")
     install_core()
+    ensure_impacket_module()
     if with_active:
         install_active()
     else:

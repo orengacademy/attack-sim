@@ -54,7 +54,7 @@ python3 -m unittest discover -s tests   # test suite (pure stdlib, localhost-onl
 | `modules/` | **One file per attack**, auto-discovered. See "Adding a module". |
 | `modules/_*.py` | Shared helpers (not modules): `_util.py`, `_portpatch.py` (NAT port patching), `_dcompatch.py`, `_clockskew.py`. `_vendor/` holds vendored PoCs (PetitPotam, noPac). |
 | `additional/` | `mygovnet_egress_probe.py` (standalone egress/segmentation probe, launched from GUI too), `reverse_runner.py` (drop-in B→A runner for a host you can't install on), the plan HTML. |
-| `deploy/` | Lab-target provisioning (⚠ lab only): `setup_all.sh`/`setup_target.sh` + `docker-compose.yml` (Linux CVEs/services), `windows/` (Vagrant AD DC), `cloud/` (Terraform for AWS/Azure/GCP). |
+| `deploy/` | Lab-target provisioning (⚠ lab only), **2-in-1**: `setup_all.sh`/`setup_target.sh` turn *any mainstream Linux* into the vuln target (distro-agnostic — detects apt/dnf/yum/pacman/zypper/apk + systemd/OpenRC) and `setup_target.sh` auto-writes a git-ignored `credentials.env` so `ssh_brute` works out of the box. Plus `docker-compose.yml` (Apache 41773 / Log4Shell / OpenLDAP), `windows/` (Vagrant AD DC), `cloud/` (Terraform AWS/Azure/GCP). ⚠ `nopac`/`samaccountname_spoof` need an **unpatched** DC; `wmiexec`/`nopac`/`dcsync` need the **`impacket` Python module** (bootstrap ensures it). |
 
 ## The module contract
 

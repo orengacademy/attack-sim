@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup_all.sh — ONE-SHOT lab bring-up on a fresh Debian/Ubuntu VM.
+# setup_all.sh — ONE-SHOT lab bring-up on a fresh Linux VM (any mainstream distro).
 #
 #   ⚠ LAB ONLY. Stands up DELIBERATELY VULNERABLE services. Run only on an
 #   isolated, authorised host you own, inside scope/RoE. Never expose to the
@@ -7,7 +7,8 @@
 #
 # Does everything the README's "Deploying the vulnerable target(s)" section does,
 # automated, and idempotent:
-#   1. installs Docker + compose plugin if missing (apt)
+#   1. installs Docker + compose plugin if missing (apt, or get.docker.com, or
+#      the native pacman/zypper/apk package)
 #   2. runs setup_target.sh   (SSH weak user, anon FTP, SNMP public)
 #   3. docker compose up -d    (Apache 41773 :80, Log4Shell :8080, OpenLDAP :389)
 #   4. (optional) bootstrap.py to install the ATTACKER tooling too, so one box can
@@ -43,22 +44,49 @@ compose() {
   else return 127; fi
 }
 
+start_docker() {
+  # systemd on most; OpenRC on Alpine. Best-effort — don't abort the run.
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl enable --now docker 2>/dev/null || true
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-update add docker default 2>/dev/null || true; rc-service docker start 2>/dev/null || true
+  fi
+}
+
 install_docker() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  if command -v docker >/dev/null 2>&1 && compose version >/dev/null 2>&1; then
     log "Docker + compose already present."; return
   fi
-  if ! command -v apt-get >/dev/null 2>&1; then
-    warn "Non-apt distro — install Docker + the compose plugin manually, then re-run."
-    exit 1
+  if command -v apt-get >/dev/null 2>&1; then
+    log "Installing Docker Engine + compose plugin (apt)…"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y -q
+    # docker.io + the distro compose plugin is enough for this lab (no docker
+    # apt repo needed). docker-compose-v2 provides "docker compose".
+    apt-get install -y -q docker.io docker-compose-v2 || \
+      apt-get install -y -q docker.io docker-compose
+  elif command -v pacman >/dev/null 2>&1; then
+    log "Installing Docker + compose (pacman)…"
+    pacman -Sy --noconfirm docker docker-compose
+  elif command -v zypper >/dev/null 2>&1; then
+    log "Installing Docker + compose (zypper)…"
+    zypper --non-interactive install docker docker-compose
+  elif command -v apk >/dev/null 2>&1; then
+    log "Installing Docker + compose (apk)…"
+    apk add --no-cache docker docker-cli-compose
+  elif command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+    # dnf/yum (RHEL/Fedora/CentOS/Rocky/Alma) and the rest: Docker's official
+    # convenience script installs docker-ce + the compose plugin everywhere it
+    # supports. Falls back to wget if curl is absent.
+    log "Installing Docker via get.docker.com convenience script…"
+    if command -v curl >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sh;
+    else wget -qO- https://get.docker.com | sh; fi
+  else
+    warn "Could not auto-install Docker on this distro — install Docker + the"
+    warn "compose plugin manually, then re-run. (Host SSH/FTP/SNMP still set up.)"
+    return 1
   fi
-  log "Installing Docker Engine + compose plugin (apt)…"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y -q
-  # docker.io + the distro compose plugin is enough for this lab (no need for
-  # docker's own apt repo). docker-compose-v2 provides "docker compose".
-  apt-get install -y -q docker.io docker-compose-v2 || \
-    apt-get install -y -q docker.io docker-compose
-  systemctl enable --now docker
+  start_docker
 }
 
 teardown() {
@@ -77,11 +105,17 @@ setup() {
      Isolate this host. Do not expose to the internet unfirewalled.
 ==========================================================================
 BANNER
-  install_docker
+  DOCKER_OK=1
+  install_docker || DOCKER_OK=0
   log "Configuring host services (SSH/FTP/SNMP)…"
   bash "$HERE/setup_target.sh"
-  log "Starting containerised web/dir services (Apache/Log4Shell/OpenLDAP)…"
-  ( cd "$HERE" && compose up -d )
+  if [ "$DOCKER_OK" -eq 1 ] && compose version >/dev/null 2>&1; then
+    log "Starting containerised web/dir services (Apache/Log4Shell/OpenLDAP)…"
+    ( cd "$HERE" && compose up -d ) || warn "docker compose up failed — host services are still configured."
+  else
+    warn "Docker unavailable — skipping web/dir containers (Apache/Log4Shell/OpenLDAP)."
+    warn "Host SSH/FTP/SNMP are configured; install Docker + re-run for the web CVEs."
+  fi
   if [ "$WITH_TOOLS" -eq 1 ]; then
     log "Installing attacker tooling (bootstrap.py)…"
     python3 "$REPO/bootstrap.py" || warn "bootstrap.py had issues — see output."

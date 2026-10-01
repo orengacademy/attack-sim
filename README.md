@@ -70,16 +70,27 @@ through the SD-WAN — rather than app-layer/WAF controls that sit at the agency
 
 ## Deploying the vulnerable target(s)
 
-`deploy/` provisions the lab you test against (⚠ **lab only** — isolate it):
-- **One-shot on a fresh Ubuntu/Debian VM**: `sudo deploy/setup_all.sh` installs
-  Docker if missing, runs `setup_target.sh`, and brings up the containers — the whole
-  Linux target in one command (`--with-tools` also installs the attacker tooling;
-  `--teardown` removes it).
+`deploy/` provisions the lab you test against (⚠ **lab only** — isolate it). The
+same repo is **2-in-1**: it both *configures a Linux box as the vulnerable target*
+and *attacks it* — run `setup_all.sh` on the box, then point the harness at it (or
+at `127.0.0.1` for a self-test).
+- **One-shot on any mainstream Linux**: `sudo deploy/setup_all.sh` installs Docker
+  if missing (apt / `get.docker.com` / native pacman·zypper·apk), runs
+  `setup_target.sh`, and brings up the containers — the whole Linux target in one
+  command (`--with-tools` also installs the attacker tooling; `--teardown` removes
+  it). If Docker can't be installed, host SSH/FTP/SNMP are still configured and the
+  web containers are skipped with a warning.
 - **Linux services + web CVEs** (manual): `sudo deploy/setup_target.sh` (SSH lab user,
-  FTP anon, SNMP public) then `cd deploy && docker compose up -d` (Apache
-  CVE-2021-41773, Log4Shell, anonymous OpenLDAP).
+  FTP anon, SNMP public — distro-agnostic: apt/dnf/yum/pacman/zypper/apk) then
+  `cd deploy && docker compose up -d` (Apache CVE-2021-41773, Log4Shell, anonymous
+  OpenLDAP). `setup_target.sh` also drops a git-ignored `credentials.env` pointing at
+  the lab SSH user, so `ssh_brute` succeeds out of the box (it tests one known
+  credential, `HARNESS_DC_USER`/`PASS`, not a wordlist).
 - **Windows AD DC** — local bench: `cd deploy/windows && vagrant up` (Kerberoastable
-  SPN, AS-REP-roastable account, weak admin). **KVDC / cloud**: use
+  SPN, AS-REP-roastable account, weak admin). ⚠ `nopac` / `samaccountname_spoof`
+  (CVE-2021-42278/42287) additionally need an **unpatched** DC — a current patched
+  build makes those two correctly fail; the other AD modules still land. **KVDC /
+  cloud**: use
   **[deploy/cloud/](deploy/cloud/README.md)** — Terraform (Azure module included)
   that reuses `provision.ps1` via `provision_cloud.ps1`, locked to your tester IPs.
 

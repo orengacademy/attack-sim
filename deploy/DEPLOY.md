@@ -12,14 +12,17 @@ Two target types:
 | Target | Provides | How |
 |--------|----------|-----|
 | **Linux services** (FTP/SSH/SNMP/LDAP + web CVEs) | ftp_anonymous, ssh_brute, snmp_brute, ldap_null_bind, apache_41773, log4shell, floods, segmentation, egress | `setup_target.sh` + `docker compose` |
-| **Windows AD DC** (Kerberos/LDAP/SMB) | kerberoast, kerberos_asrep, dcsync, psexec, petitpotam | **Vagrant** (`deploy/windows/`) |
+| **Windows AD DC** (Kerberos/LDAP/SMB) | kerberoast, kerberos_asrep, dcsync, psexec, wmiexec, petitpotam, nopac·samaccountname_spoof (unpatched DC only) | **Vagrant** (`deploy/windows/`) |
 
 The Debian droplet can host the Linux side; the **Windows/AD attacks need a real
 Windows DC** (PsExec/PetitPotam are Windows-only) — use the Vagrant box (local bench),
 the **[cloud/KVDC Terraform](cloud/README.md)** (Azure module reusing `provision.ps1`),
 or point the harness's AD modules at a separate Windows DC IP.
 
-## Fastest path: one command (Ubuntu/Debian)
+## Fastest path: one command (any mainstream Linux)
+
+Distro-agnostic — detects apt/dnf/yum/pacman/zypper/apk (and installs Docker via
+the native package or `get.docker.com`):
 
 ```bash
 sudo deploy/setup_all.sh              # Docker (if missing) + host services + containers
@@ -32,19 +35,18 @@ The manual, step-by-step equivalent is below.
 
 ---
 
-## 1. Linux target (on the Debian droplet)
+## 1. Linux target (any distro)
 
 ```bash
 sudo ./deploy/setup_target.sh            # host services: SSH lab user, FTP anon, SNMP public
 cd deploy && docker compose up -d        # web CVEs + LDAP (Apache 41773 :80, Log4Shell :8080, OpenLDAP :389)
 ```
 
-Then set the SSH creds the harness will try (match what setup_target.sh created):
-
-```bash
-export HARNESS_DC_USER=labadmin
-export HARNESS_DC_PASS='Passw0rd!'       # or whatever you set in setup_target.sh
-```
+`setup_target.sh` auto-writes a git-ignored `credentials.env` pointing `ssh_brute`
+at the lab SSH user (`labadmin`/`Passw0rd!`), so **no manual export is needed** —
+the self-test below shows `ssh_brute` SUCCESS out of the box. (If a `credentials.env`
+already exists it's left untouched; export `HARNESS_DC_USER=labadmin
+HARNESS_DC_PASS='Passw0rd!'` yourself in that case.)
 
 Verify from the box itself (bypasses any ISP/SD-WAN path issues):
 
@@ -65,12 +67,14 @@ vagrant up            # provisions Windows Server, promotes to a DC, seeds vulne
 ```
 
 It creates a domain with a **Kerberoastable** SPN account, an **AS-REP-roastable**
-(no-preauth) account, and weak admin creds for DCSync/PsExec. Point the harness at
-the DC:
+(no-preauth) account, weak admin creds for DCSync/PsExec/WMIExec, and sets
+`ms-DS-MachineAccountQuota=10`. ⚠ `nopac`/`samaccountname_spoof` additionally need an
+**unpatched** DC (pre-Nov-2021); on a patched build those two correctly fail. Point
+the harness at the DC:
 
 ```bash
 export HARNESS_DOMAIN=lab.local HARNESS_DC_USER=Administrator HARNESS_DC_PASS='<from Vagrantfile>'
-python3 cli.py --target <DC_IP> --only kerberoast,kerberos_asrep,dcsync,psexec,petitpotam --confirm-roe
+python3 cli.py --target <DC_IP> --only kerberoast,kerberos_asrep,dcsync,psexec,wmiexec,petitpotam,nopac,samaccountname_spoof --confirm-roe
 ```
 
 For a fuller, battle-tested AD lab, consider **GOAD** (Game of Active Directory,

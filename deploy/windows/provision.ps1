@@ -7,6 +7,14 @@
     - svc_sql   : Kerberoastable (has an SPN) + weak password  -> kerberoast
     - svc_asrep : AS-REP roastable (no Kerberos pre-auth)       -> kerberos_asrep
     - Administrator password set weak                            -> dcsync/psexec/petitpotam
+    - ms-DS-MachineAccountQuota = 10 (default, set explicitly)   -> nopac/samaccountname_spoof
+
+  ⚠ nopac (CVE-2021-42278 + CVE-2021-42287) and samaccountname_spoof
+    (CVE-2021-42278) require an UNPATCHED DC. A fully-patched Windows Server
+    (KB5008380/KB5008602, Nov-2021+) is NOT vulnerable — those two modules will
+    then correctly fail. For a repeatable lab, build this DC from an pre-Nov-2021
+    media/image and DO NOT run Windows Update, or accept that only the other AD
+    modules (kerberoast/asrep/dcsync/psexec/petitpotam) will land.
 #>
 $ErrorActionPreference = "Stop"
 $Domain       = "lab.local"
@@ -37,6 +45,14 @@ $sec = ConvertTo-SecureString $WeakPass -AsPlainText -Force
 
 # weak Administrator password (dcsync/psexec/petitpotam use these creds)
 Set-ADAccountPassword -Identity Administrator -NewPassword $sec -Reset
+
+# machine-account quota (default 10) that nopac/samaccountname_spoof rely on to
+# add a computer account — set explicitly so the lab doesn't depend on a default
+# that a hardened build may have zeroed. (The DC must also be UNPATCHED — see top.)
+try {
+    Set-ADDomain -Identity $Domain -Replace @{"ms-DS-MachineAccountQuota" = "10"}
+    Write-Host "[*] ms-DS-MachineAccountQuota set to 10 (nopac/samaccountname_spoof)"
+} catch { Write-Host "[!] could not set ms-DS-MachineAccountQuota: $_" }
 
 # Kerberoastable: user WITH an SPN + weak password
 if (-not (Get-ADUser -Filter "SamAccountName -eq 'svc_sql'")) {
