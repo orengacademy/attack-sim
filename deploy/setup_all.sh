@@ -176,7 +176,16 @@ BANNER
   log "Configuring host services (SSH/FTP/SNMP)…"
   bash "$HERE/setup_target.sh"
   if [ "$DOCKER_OK" -eq 1 ] && compose version >/dev/null 2>&1; then
-    log "Starting containerised web/dir services (Apache/Log4Shell/OpenLDAP)…"
+    # Pre-generate the https-lab TLS cert on the HOST so the nginx container works
+    # even on an egress-filtered droplet (where its in-container `apk add openssl`
+    # can't reach the Alpine CDN). openssl is near-universal on a host.
+    if command -v openssl >/dev/null 2>&1 && [ ! -s "$HERE/nginx/certs/lab.crt" ]; then
+      mkdir -p "$HERE/nginx/certs"
+      openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+        -keyout "$HERE/nginx/certs/lab.key" -out "$HERE/nginx/certs/lab.crt" \
+        -subj "/CN=mygovnet-bas-lab" >/dev/null 2>&1 && log "Generated https-lab TLS cert (host)."
+    fi
+    log "Starting containerised web/dir services (Apache/Log4Shell/OpenLDAP/HTTPS-443)…"
     ( cd "$HERE" && compose up -d ) || warn "docker compose up failed — host services are still configured."
   else
     warn "Docker unavailable — skipping web/dir containers (Apache/Log4Shell/OpenLDAP)."
