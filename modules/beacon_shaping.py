@@ -33,7 +33,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^BEACON-RAN",
-    "blocked_regex": r"beacon blocked|not configured",
+    "blocked_regex": r"beacon blocked",
 }
 
 

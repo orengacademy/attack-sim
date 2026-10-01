@@ -28,7 +28,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^UNCATEGORISED-REACHABLE",
-    "blocked_regex": r"uncategorised egress blocked|not configured",
+    "blocked_regex": r"uncategorised egress blocked",
 }
 
 

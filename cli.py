@@ -26,7 +26,7 @@ _ANSI = {
     "BLOCKED": "\033[32m",                          # green — control worked
     "NO-SERVICE": "\033[34m",                       # blue — port closed, not a block
     "AUTH-FAILED": "\033[33m", "NO-RESULT": "\033[33m",  # amber — review
-    "SKIP": "\033[90m", "PREREQ-MISSING": "\033[90m",    # grey — skipped
+    "SKIP": "\033[90m", "SKIPPED": "\033[90m", "PREREQ-MISSING": "\033[90m",  # grey — skipped
 }
 _RESET = "\033[0m"
 

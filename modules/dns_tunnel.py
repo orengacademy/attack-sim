@@ -34,7 +34,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^DNSTUN-|^CHANNEL-OPEN ",
-    "blocked_regex": r"DNS tunnel precondition blocked|not configured",
+    "blocked_regex": r"DNS tunnel precondition blocked",
 }
 
 _TUNNELS = {

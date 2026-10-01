@@ -33,7 +33,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^LOWSLOW-OK",
-    "blocked_regex": r"low-and-slow blocked|not configured",
+    "blocked_regex": r"low-and-slow blocked",
 }
 
 
