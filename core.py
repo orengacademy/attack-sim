@@ -39,8 +39,14 @@ from datetime import datetime
 # ---------------------------------------------------------------------
 DEFAULT_TIMEOUT = 300  # seconds per attack module
 _CRED_ENV = {"domain": "HARNESS_DOMAIN", "dc_user": "HARNESS_DC_USER",
-             "dc_pass": "HARNESS_DC_PASS"}
-_CRED_DEFAULTS = {"domain": "lab.local", "dc_user": "Administrator", "dc_pass": ""}
+             "dc_pass": "HARNESS_DC_PASS",
+             # SSH creds are SEPARATE from the DC creds: a dual-role target is
+             # both an SSH host (e.g. labadmin) AND a Windows DC front
+             # (Administrator), and one identity can't serve both. ssh_brute
+             # uses these and falls back to dc_user/dc_pass only when unset.
+             "ssh_user": "HARNESS_SSH_USER", "ssh_pass": "HARNESS_SSH_PASS"}
+_CRED_DEFAULTS = {"domain": "lab.local", "dc_user": "Administrator", "dc_pass": "",
+                  "ssh_user": "", "ssh_pass": ""}
 
 
 def _read_cred_file():
@@ -304,7 +310,7 @@ def _redact(text, creds):
     the cleartext password (e.g. hydra prints it, impacket takes it on argv)."""
     if not text:
         return text
-    for key in ("dc_pass", "dc_user"):
+    for key in ("dc_pass", "dc_user", "ssh_pass", "ssh_user"):
         val = creds.get(key)
         if val and len(val) >= 3:            # don't redact trivially short values
             text = text.replace(val, "***")
@@ -325,7 +331,13 @@ def _run_cmd(template, target, creds, timeout):
         argv = shlex.split(cmd, posix=(os.name != "nt"))
         if not argv:
             return header + "[ERROR] empty command after parsing"
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        # stdin=DEVNULL + start_new_session: detach from the controlling
+        # terminal so a tool that prompts for a password (impacket/hydra call
+        # getpass, which otherwise opens /dev/tty and prints "Password:" into
+        # the operator's terminal mid-run, blocking and polluting the output)
+        # gets EOF instead and fails cleanly into captured stderr.
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL, start_new_session=True)
         body = (p.stdout or "") + "\n[stderr]\n" + (p.stderr or "")
         return header + _redact(body, creds)
     except subprocess.TimeoutExpired:
@@ -1758,8 +1770,15 @@ class Runner:
                 b = "SKIPPED"
                 verdict = ("module did nothing (not applicable / not configured) — "
                            + (hint or "see raw log") + "; NOT a control result")
-            # CLOSED / refused -> the service isn't there; this is NOT a control win
-            elif port_closed or (refused and not timed_out and not port_filtered):
+            # CLOSED / refused -> the service isn't there; this is NOT a control win.
+            # ...but only when the attack ports aren't actually OPEN. An exploit
+            # whose ports are reachable can still print an incidental "Connection
+            # refused" (e.g. a stray DNS/ancillary lookup); without the port_open
+            # guard that stray line mislabels a reachable, hardened target as
+            # NO-SERVICE and robs its own blocked_regex (e.g. noPac's
+            # KDC_ERR_TGT_REVOKED) of the BLOCKED verdict it earned.
+            elif port_closed or (refused and not timed_out and not port_filtered
+                                 and not port_open):
                 b = "NO-SERVICE"
                 verdict = ("port closed / connection refused — the service isn't running "
                            "or isn't accessible on the target; NOT an SD-WAN block "

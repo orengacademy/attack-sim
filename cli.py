@@ -65,13 +65,15 @@ def _select(modules, args):
         if missing:
             print(f"[!] unknown module id(s): {', '.join(sorted(missing))}", file=sys.stderr)
         return sel
-    # base set
-    if args.original:
-        sel = [m for m in modules if not m.META.get("added")]
+    # base set. DEFAULT = the original 11-module baseline (same as the GUI's
+    # default tick) — a bare `cli.py --target X` runs a sensible, fast,
+    # self-contained set rather than all 48. Use --all for everything.
+    if getattr(args, "all", False):
+        sel = list(modules)
     elif args.added:
         sel = [m for m in modules if m.META.get("added")]
-    else:
-        sel = list(modules)
+    else:  # --original or nothing given
+        sel = [m for m in modules if not m.META.get("added")]
     # scope filters (compose with the base set)
     tt = "attack_sim" if args.attack_sim else args.test_type
     if tt:
@@ -91,10 +93,35 @@ def _c(s, color, no_color):
     return s if no_color or not sys.stdout.isatty() else f"{color}{s}{_RESET}"
 
 
+DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"
+
+# one-line human gloss per verdict, for the table's DETAIL column
+_VERDICT_GLOSS = {
+    "SUCCESS":        "got through — undetected (finding)",
+    "PASSED":         "got through — undetected (finding)",
+    "DETECTED":       "got through but SOC alerted",
+    "BLOCKED":        "control worked — attack stopped",
+    "NO-SERVICE":     "port closed — service not present",
+    "AUTH-FAILED":    "bad credentials — fix creds",
+    "NO-RESULT":      "inconclusive — review raw log",
+    "SKIPPED":        "did nothing — n/a or unconfigured",
+    "PREREQ-MISSING": "prerequisite missing — not run",
+}
+
+
+def _cell(text, w, color, no_color):
+    """A fixed-width table cell: truncate, pad, then colour the whole cell (ANSI
+    codes don't count toward width because padding happens first)."""
+    text = "" if text is None else str(text)
+    if len(text) > w:
+        text = text[:w - 1] + "…"
+    text = f"{text:<{w}}"
+    return _c(text, color, no_color) if color else text
+
+
 def _print_summary(ev, args, no_color, elapsed):
-    """Modern, detailed end-of-run summary from the evidence records: a verdict
-    distribution with bars and a per-category table of every module's result."""
-    DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"
+    """Modern end-of-run summary from the evidence records: a verdict-distribution
+    strip plus one aligned, colour-coded TABLE of every module's result."""
     recs = getattr(ev, "records", []) or []
     # aggregate per module across iterations (most-significant verdict wins)
     by_mod = {}
@@ -111,41 +138,68 @@ def _print_summary(ev, args, no_color, elapsed):
     for d in by_mod.values():
         dist[d["v"]] = dist.get(d["v"], 0) + 1
     n = len(by_mod)
-    W = 72
-    bar = "═" * W
-    print()
-    print(_c(f"╔{bar}╗", ACC, no_color))
-    title = f" RESULTS — {args.target}   mode={args.mode}   {n} module(s) × {args.iterations} iter   {elapsed:.0f}s"
-    print(_c("║", ACC, no_color) + _c(f"{title:<{W}}", BOLD, no_color) + _c("║", ACC, no_color))
-    print(_c(f"╚{bar}╝", ACC, no_color))
 
-    # distribution bars
+    # ---- header strip --------------------------------------------------
+    W = 78
+    print()
+    print(_c("┏" + "━" * W + "┓", ACC, no_color))
+    title = (f" RESULTS  ·  {args.target}  ·  {args.mode}  ·  "
+             f"{n} module(s) × {args.iterations} iter  ·  {elapsed:.0f}s")
+    print(_c("┃", ACC, no_color) + _c(f"{title:<{W}}", BOLD, no_color) + _c("┃", ACC, no_color))
+    print(_c("┗" + "━" * W + "┛", ACC, no_color))
+
+    # ---- distribution strip -------------------------------------------
     mx = max(dist.values()) if dist else 1
     for v in _VERDICT_ORDER:
         if v not in dist:
             continue
         col, icon = _VERDICT_STYLE.get(v, ("", "•"))
-        blocks = int(round(20 * dist[v] / mx)) or 1
-        meter = _c("█" * blocks, col, no_color) + _c("░" * (20 - blocks), DIM, no_color)
-        print(f"  {_c(icon, col, no_color)} {_c(v, col, no_color):<22} {meter} {dist[v]}/{n}")
+        blocks = int(round(18 * dist[v] / mx)) or 1
+        meter = _c("█" * blocks, col, no_color) + _c("░" * (18 - blocks), DIM, no_color)
+        print(f"  {_c(icon, col, no_color)} {_c(v, col, no_color):<22} {meter} "
+              f"{dist[v]}/{n}")
 
-    # per-category table
-    cats = {}
-    for d in by_mod.values():
-        cats.setdefault(d["cat"], []).append(d)
-    for cat in sorted(cats):
-        print("\n  " + _c(cat.upper(), ACC, no_color))
-        for d in sorted(cats[cat], key=lambda x: (_VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9, x["name"])):
-            col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
-            mitre = _c(d["mitre"], DIM, no_color) if d["mitre"] else ""
-            print(f"    {_c(icon, col, no_color)} {_c(d['v'], col, no_color):<22} "
-                  f"{d['name']:<38} {mitre}")
+    # ---- the table -----------------------------------------------------
+    NUM, VER, MOD, CAT, DET = 3, 13, 36, 20, 34
+    cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT), ("DETAIL", DET)]
+    inner = [w for _, w in cols]
+
+    def rule(left, mid, right):
+        return _c(left + mid.join("─" * (w + 2) for w in inner) + right, DIM, no_color)
+
+    def row(cells, colors=None):
+        colors = colors or [None] * len(cells)
+        parts = [_cell(c, inner[i], colors[i], no_color) for i, c in enumerate(cells)]
+        sep = _c("│", DIM, no_color)
+        return sep + " " + (" " + sep + " ").join(parts) + " " + sep
+
+    print()
+    print(rule("┌", "┬", "┐"))
+    print(row([h for h, _ in cols], [BOLD] * len(cols)))
+    print(rule("├", "┼", "┤"))
+
+    rows = sorted(by_mod.values(),
+                  key=lambda x: (x["cat"],
+                                 _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
+                                 x["name"]))
+    prev_cat = None
+    i = 0
+    for d in rows:
+        i += 1
+        col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
+        cat = d["cat"] if d["cat"] != prev_cat else ""
+        prev_cat = d["cat"]
+        print(row([str(i), f"{icon} {d['v']}", d["name"], cat, _VERDICT_GLOSS.get(d["v"], "")],
+                  [DIM, col, None, ACC, DIM]))
+    print(rule("└", "┴", "┘"))
+
     findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
     detected = dist.get("DETECTED", 0)
+    blocked = dist.get("BLOCKED", 0)
     print()
     print(_c(f"  → {findings} finding(s) got through"
              + (f", {detected} detected" if detected else "")
-             + f"; {dist.get('BLOCKED', 0)} blocked.", BOLD, no_color))
+             + f"; {blocked} blocked.", BOLD, no_color))
 
 
 def _parse_ports(spec):
@@ -161,7 +215,8 @@ def _parse_ports(spec):
 
 def main():
     ap = argparse.ArgumentParser(description="Headless control-validation harness runner.")
-    ap.add_argument("-t", "--target", help="target IP/host")
+    ap.add_argument("-t", "--target", default="127.0.0.1",
+                    help="target IP/host (default: 127.0.0.1 — the local lab)")
     ap.add_argument("-i", "--iterations", type=int, default=1)
     ap.add_argument("-w", "--workers", type=int, default=core.RECOMMENDED_WORKERS)
     ap.add_argument("--mode", choices=["blackbox", "whitebox"], default="blackbox")
@@ -171,8 +226,10 @@ def main():
     ap.add_argument("--port", help='per-attack port overrides, e.g. "log4shell=8983,ssh_brute=2222"')
     sel = ap.add_mutually_exclusive_group()
     sel.add_argument("--only", help="comma list of module ids")
-    sel.add_argument("--original", action="store_true", help="only the initial module set")
+    sel.add_argument("--original", action="store_true",
+                     help="only the initial 11-module baseline set (THIS IS THE DEFAULT)")
     sel.add_argument("--added", action="store_true", help="only the newly-added modules")
+    sel.add_argument("--all", action="store_true", help="run ALL discovered modules (not just the baseline)")
     ap.add_argument("--test-type", choices=["attack_sim", "pentest", "va", "dos"],
                     help="filter to a test type (attack_sim = the USS boundary scope)")
     ap.add_argument("--attack-sim", action="store_true",
@@ -201,11 +258,19 @@ def main():
     ap.add_argument("--domain", help="AD domain for this target (e.g. lab.local)")
     ap.add_argument("--dc-user", help="username for this target (e.g. Administrator)")
     ap.add_argument("--dc-pass", help="password for this target (remembered per target, file is 0600)")
+    # SSH creds are SEPARATE from the DC creds — a dual-role target is both an
+    # SSH host and a DC front, and one identity can't serve both. ssh_brute uses
+    # these; if unset it falls back to --dc-user/--dc-pass.
+    ap.add_argument("--ssh-user", help="SSH username for this target (ssh_brute; falls back to --dc-user)")
+    ap.add_argument("--ssh-pass", help="SSH password for this target (remembered per target, 0600)")
     ap.add_argument("--list", action="store_true", help="list discovered modules and exit")
     ap.add_argument("--confirm-roe", action="store_true",
                     help="confirm rules-of-engagement / written authorisation (required to run)")
     ap.add_argument("--evidence-dir", default="evidence")
     ap.add_argument("--no-color", action="store_true")
+    ap.add_argument("--full-report", action="store_true",
+                    help="also print the full ATT&CK/CWE/CVE report.txt to the console "
+                         "(it is always written to the evidence dir regardless)")
     args = ap.parse_args()
 
     modules = loader.discover()
@@ -232,11 +297,15 @@ def main():
               "otherwise they run as non-destructive indicators.")
         return 0
 
-    if not args.target:
-        ap.error("--target is required (or use --list)")
+    target_defaulted = not any(a in ("-t", "--target") for a in sys.argv)
+    if target_defaulted:
+        print(f"[default] no --target given → using {args.target} (the local lab). "
+              "Pass --target <ip> for a remote target.")
     if not args.confirm_roe:
         print("[!] refusing to run without --confirm-roe (rules-of-engagement / written "
-              "authorisation). This tool runs real attacks against the target.", file=sys.stderr)
+              "authorisation). This tool runs REAL attacks against the target.\n"
+              f"    Re-run:  python3 cli.py --target {args.target} --confirm-roe",
+              file=sys.stderr)
         return 2
 
     selected = _select(modules, args)
@@ -244,10 +313,37 @@ def main():
         print("[!] no modules selected", file=sys.stderr)
         return 2
 
+    # Clean live rendering: the engine's own per-module log lines interleave
+    # under concurrency; suppress those on the console (they stay in the
+    # evidence run.log) and re-render each result as a tidy numbered line via
+    # on_status. The banner / preflight / recon / health setup output is kept.
+    _cats = {m.META.get("category", "") for m in selected}
+    _total = len(selected) * max(1, args.iterations)
+    _prog = {"n": 0}
+
+    def _on_log(m):
+        s = str(m)
+        st = s.strip()
+        if st.lower().startswith(("target:", "baseline:")):
+            return  # per-module verdict line — re-rendered by on_status
+        for c in _cats:                     # "  [Category] Name" now-running line
+            if c and st.startswith(f"[{c}]"):
+                return
+        print(_colorize(s, args.no_color))
+
+    def _on_status(aid, name, it, b, v):
+        _prog["n"] += 1
+        col, icon = _VERDICT_STYLE.get(b, ("", "•"))
+        idx = _c(f"[{_prog['n']:>2}/{_total}]", DIM, args.no_color)
+        # pad the PLAIN label to a fixed width, THEN colour it, so ANSI codes
+        # don't throw the column alignment off.
+        verd = _c(f"{icon} {b:<13}", col, args.no_color)
+        print(f"  {idx} {verd} {name}")
+
     runner = core.Runner(
         args.target, None,
-        on_log=lambda m: print(_colorize(str(m), args.no_color)),
-        on_status=lambda aid, name, it, b, v: None)  # per-attack lines already in on_log
+        on_log=_on_log,
+        on_status=_on_status)
     runner.concurrency = max(1, args.workers)
     overrides = _parse_ports(args.port)
     if overrides:
@@ -289,12 +385,21 @@ def main():
     if (dom or usr or pw is not None) and not (args.domain or args.dc_user or args.dc_pass is not None):
         print(f"[recall] creds for {args.target}: {runner.ctx.creds.get('domain')}/"
               f"{runner.ctx.creds.get('dc_user')} (remembered)")
+    # SSH creds, separate from the DC creds (dual-role target: SSH host + DC).
+    ssh_u = args.ssh_user or mem.get("ssh_user")
+    ssh_p = args.ssh_pass if args.ssh_pass is not None else mem.get("ssh_pass")
+    if ssh_u:
+        runner.ctx.creds["ssh_user"] = ssh_u
+    if ssh_p is not None:
+        runner.ctx.creds["ssh_pass"] = ssh_p
     # remember creds only when explicitly given this run (don't stamp the global
     # default onto every target).
     cred_fields = {}
     if args.domain is not None: cred_fields["domain"] = args.domain
     if args.dc_user is not None: cred_fields["dc_user"] = args.dc_user
     if args.dc_pass is not None: cred_fields["dc_pass"] = args.dc_pass
+    if args.ssh_user is not None: cred_fields["ssh_user"] = args.ssh_user
+    if args.ssh_pass is not None: cred_fields["ssh_pass"] = args.ssh_pass
     core.remember_target(args.target, source=source or None, cloud=bool(cloud),
                          smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
                          **cred_fields)
@@ -317,13 +422,19 @@ def main():
         _print_summary(ev, args, args.no_color, time.time() - t0)
     except Exception as e:
         print(f"[!] summary error (non-fatal): {e}", file=sys.stderr)
-    # full ATT&CK/CWE/CVE coverage report + evidence path
-    try:
-        with open(os.path.join(root, "report.txt")) as f:
-            print("\n" + f.read())
-    except Exception:
-        pass
-    print(_c(f"Evidence: {root}", "\033[36m", args.no_color))
+    # full ATT&CK/CWE/CVE coverage report: written to evidence always; echoed to
+    # the console only with --full-report (keeps the default output clean).
+    report_path = os.path.join(root, "report.txt")
+    if args.full_report:
+        try:
+            with open(report_path) as f:
+                print("\n" + f.read())
+        except Exception:
+            pass
+    else:
+        print(_c(f"\n  Full ATT&CK/CWE/CVE report:  {report_path}"
+                 "   (add --full-report to print it here)", DIM, args.no_color))
+    print(_c(f"  Evidence:                    {root}", ACC, args.no_color))
     return 0
 
 

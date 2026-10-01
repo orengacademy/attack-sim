@@ -34,6 +34,7 @@ META = {
     "tactic": 'Credential Access',
     "requires": [],                 # resolved at runtime across impacket flavours
     "requires_py": ["impacket"],    # the real dependency (CLI name varies)
+    "serial": True,  # in-process impacket + _portpatch swap process-global socket.connect / redirect stdout — must run ALONE or threads pollute each other's output (NO-RESULT) and un-patch mid-connection
     "ports": [("tcp", 445), ("tcp", 135)],
     "success_regex": r"aad3b435|:::|krbtgt:|Kerberos keys grabbed",
     "blocked_regex": r"timed out|Connection refused|unreachable|Errno|STATUS_",
@@ -80,6 +81,14 @@ def _run_in_process(target, ctx):
 
 
 def run(target, ctx):
+    # DCSync replicates secrets over authenticated DRSUAPI — it needs valid
+    # domain creds. With no password the impacket tool would prompt getpass
+    # (now EOFs cleanly thanks to the detached stdin) and produce noise; skip
+    # with a clear reason instead, like kerberoast/ssh_brute.
+    if not (ctx.creds.get("dc_pass") or "").strip():
+        return ("# dcsync vs %s\n\n[SKIP] no domain password configured (set "
+                "HARNESS_DC_PASS / --dc-pass / credentials.env) — DCSync needs "
+                "valid DC creds to replicate secrets." % target)
     if _portpatch.is_custom_port_target(target):
         return _run_in_process(target, ctx)
     from modules import _impacket

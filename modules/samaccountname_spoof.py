@@ -42,6 +42,7 @@ META = {
     "cwe": ['CWE-290'],
     "tactic": 'Persistence',
     "requires": [],  # runs entirely in-process (ldap3/ldapdomaindump), not a shutil.which-checkable CLI tool
+    "serial": True,  # in-process impacket + _portpatch swap process-global socket.connect; ALSO collides with nopac (both rename a machine account to the DC's name) — must run ALONE
     # preflight imports these so a shadowed/stale cryptography (breaks
     # cryptography.hazmat.asn1) is caught instead of a runtime NO-RESULT.
     "requires_py": ["impacket", "ldapdomaindump", "dns.asyncquery"],  # real runtime chain: dns.asyncquery -> cryptography.hazmat.asn1 trips a stale user-site cryptography (the actual noPac/sAMAccountName breakage)

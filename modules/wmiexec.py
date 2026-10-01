@@ -42,6 +42,7 @@ META = {
     "tactic": 'Lateral Movement',
     "requires": [],  # runs entirely in-process, not a shutil.which-checkable CLI tool
     "requires_py": ["impacket.examples.secretsdump"],  # deep import: fails if impacket is missing OR broken by a stale cryptography (asn1)
+    "serial": True,  # in-process impacket + _portpatch/_dcompatch swap process-global socket.connect — must run ALONE (see dcsync.py)
     "ports": [("tcp", 445), ("tcp", 135)],
     "success_regex": r"nt authority\\system|\\administrator\s*$",
     "blocked_regex": (

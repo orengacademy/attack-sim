@@ -17,7 +17,7 @@ def mod(mid, added=False, test_type="", family="", direction="a2b"):
 
 
 class Args:
-    only = None; original = False; added = False
+    only = None; original = False; added = False; all = False
     test_type = None; attack_sim = False; family = None; direction = None
 
 
@@ -25,8 +25,13 @@ class TestCliSelect(unittest.TestCase):
     def setUp(self):
         self.mods = [mod("a"), mod("b", added=True), mod("c")]
 
-    def test_all_default(self):
-        self.assertEqual(len(cli._select(self.mods, Args())), 3)
+    def test_default_is_original(self):
+        # no flag => the original baseline (non-added) set, matching the GUI default
+        self.assertEqual({m.META["id"] for m in cli._select(self.mods, Args())}, {"a", "c"})
+
+    def test_all(self):
+        a = Args(); a.all = True
+        self.assertEqual(len(cli._select(self.mods, a)), 3)
 
     def test_only(self):
         a = Args(); a.only = "a,c"

@@ -63,6 +63,9 @@ If the targets already exist, skip this and just point the harness at their IPs.
 - **Per-target creds** (a Linux box and a Windows DC need *different* logins) →
   set them **per target**: CLI `--domain/--dc-user/--dc-pass`, or the GUI
   Domain/User/Pass fields. Remembered per target in a `0600 .target_memory.json`.
+  **SSH creds are separate** (`--ssh-user/--ssh-pass`): a dual-role target is both
+  an SSH host *and* a DC front, and one identity can't serve both — `ssh_brute`
+  uses the SSH creds and falls back to the DC creds only when they're unset.
 - **Egress infra** (for the USS A–G modules: your VPS/domain/DoH/canary/pivot) →
   `config.json` (copy `config.json.example`). Unset keys → that module `[SKIP]`s.
 - **Cloud target** (SMB/RPC on NAT'd high ports) → GUI "Cloud target" tick, or CLI
@@ -77,11 +80,19 @@ python3 gui.py
 **CLI** (headless; one target per run, re-run per target):
 ```bash
 python3 cli.py --list                                  # all modules + scope tags
+python3 cli.py --confirm-roe                            # bare run: DEFAULTS to 127.0.0.1 + the original set
 python3 cli.py --target 127.0.0.1 --mode whitebox --original --confirm-roe   # baseline self-test
-python3 cli.py --target <ip> --attack-sim --confirm-roe        # the USS boundary scope
+python3 cli.py --target <ip> --all --confirm-roe              # run ALL 48 modules (default is the original 11)
+python3 cli.py --target <ip> --attack-sim --confirm-roe       # the USS boundary scope
 python3 cli.py --target <DC-ip> --domain lab.local --dc-user Administrator \
   --dc-pass '<pw>' --only dcsync,kerberoast,psexec --confirm-roe   # AD vs a DC (creds remembered)
+python3 cli.py --target <ip> --ssh-user labadmin --ssh-pass '<pw>' --only ssh_brute --confirm-roe   # SSH creds, separate from the DC creds
 ```
+Both the GUI and the CLI **run preflight + recon first** (tool/port/service
+health) before any attack. The CLI then shows clean numbered live results and a
+modern end-of-run **table** (verdict strip + verdict/module/category/detail);
+the full ATT&CK/CWE/CVE `report.txt` always lands in the evidence dir and is
+echoed to the console only with `--full-report`.
 Typical **Kali (behind SDWAN) → cloud target**:
 ```bash
 python3 cli.py --target <cloud-ip> --source <sdwan-foothold-ip> --cloud --attack-sim --confirm-roe
@@ -382,10 +393,14 @@ python3 cli.py --target 10.0.0.5 --original --iterations 3 --confirm-roe
 python3 cli.py --target 10.0.0.5 --port log4shell=8983,ssh_brute=2222 --confirm-roe
 ```
 
-`--confirm-roe` is required (the CLI's rules-of-engagement gate). Selection:
-`--only <ids>` / `--original` / `--added` (default: all). Output is colour-coded
-(red = passed, green = blocked, blue = no-service) and the ATT&CK/CWE/CVE
-coverage report + evidence path print at the end.
+`--confirm-roe` is required (the CLI's rules-of-engagement gate). `--target`
+defaults to `127.0.0.1`. Selection: `--only <ids>` / `--original` / `--added` /
+`--all` — **default is the original 11-module set** (same as the GUI). Output is
+colour-coded (red = passed, green = blocked, blue = no-service): a clean numbered
+live line per module, then a modern end-of-run **table** (verdict strip +
+verdict/module/category/detail columns) and the evidence path. The full
+ATT&CK/CWE/CVE `report.txt` is written to the evidence dir always and echoed to
+the console only with `--full-report`.
 
 In the GUI: type the **Target IP**, set iterations (default 3), tick the
 attacks you want, tick **Rules-of-engagement confirmed**, click **RUN**.
