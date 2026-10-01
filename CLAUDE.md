@@ -90,6 +90,15 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
   `os_supported`, `serial` (must run alone), `ports` (for recon +
   custom-port override), `port_customizable`, `added` (keeps it out of the
   "Original set" selector).
+  - **DoS modules (`icmp_flood`, `syn_flood`)** test a **boundary rate-limit**, not
+    target saturation (a single host can't saturate a remote target → the old
+    "target packet loss" model always dead-ended at NO-RESULT). They measure a
+    **differential**: normal-rate vs high-rate traffic. High-rate delivered → the
+    boundary doesn't rate-limit it → SUCCESS (finding); normal-rate works but
+    high-rate is dropped (loss delta ≥ 30 pts) or RTT-shaped (≥ 6× AND ≥ 150 ms
+    absolute — the floor stops LAN queueing being a false BLOCKED) → BLOCKED
+    (policed). `syn_flood` also flags DoS impact if real connects fail during the
+    flood. Decisive in both a bare lab (SUCCESS) and behind a policing SD-WAN (BLOCKED).
   - **`serial: True`** covers two classes: (1) DoS/brute (`icmp_flood`,
     `syn_flood`, `ssh_brute`, `stateful_evasion`) that skew each other's
     rate/latency, and (2) the in-process AD modules (`dcsync`, `psexec`,
