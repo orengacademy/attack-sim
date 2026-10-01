@@ -333,8 +333,17 @@ class Context:
 class Evidence:
     def __init__(self, base="evidence"):
         import threading
-        self.ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.ts = datetime.now().strftime("%d-%m-%H-%M")   # day-month-hour-minute
         self.root = os.path.join(base, f"run_{self.ts}")
+        # DD-MM-HH-MM has no seconds, so two runs started in the same minute
+        # collide on folder name — without this, the second run's files would
+        # silently land in / overwrite the first run's iteration_N/attack_id/
+        # dirs. Append -2, -3, ... only when that actually happens.
+        if os.path.exists(self.root):
+            n = 2
+            while os.path.exists(f"{self.root}-{n}"):
+                n += 1
+            self.root = f"{self.root}-{n}"
         self.records = []
         self.meta = {"run": self.ts, "started": datetime.now().isoformat()}
         self._log_fh = None
@@ -402,10 +411,17 @@ class Evidence:
                     lambda f: json.dump({"meta": self.meta, "results": self.records},
                                         f, indent=2, default=str))
 
+        # One row per (attack x iteration) — e.g. 10 attacks x 2 iterations =
+        # 20 rows. csv.DictWriter quotes/escapes each field per RFC4180
+        # (embedded commas, quotes, newlines) automatically; passing the raw
+        # output string straight through is correct — don't hand-escape it,
+        # that would double-escape and corrupt the file.
+        OUTPUT_CELL_LIMIT = 4000  # Excel caps a cell at 32,767 chars; stay well under it
         cols = ["iteration", "mode", "test_type", "family", "direction",
                 "category", "attack", "tactic", "mitre", "cwe",
                 "control_tested", "fix_location", "baseline_result",
-                "appliance_result", "verdict", "detected_source", "timestamp"]
+                "appliance_result", "passed", "verdict", "output",
+                "detected_source", "timestamp"]
 
         def _write_csv(f):
             w = csv.DictWriter(f, fieldnames=cols)
@@ -415,6 +431,12 @@ class Evidence:
                 for k in cols:
                     v = r.get(k, "")
                     row[k] = ", ".join(v) if isinstance(v, list) else v
+                out = row.get("output") or ""
+                if len(out) > OUTPUT_CELL_LIMIT:
+                    row["output"] = (out[:OUTPUT_CELL_LIMIT] +
+                                     f"\n...[truncated, {len(out)} chars total — "
+                                     f"full output in iteration_{r.get('iteration')}/"
+                                     f"{r.get('attack_id')}/target.log]")
                 w.writerow(row)
         _safe_write("summary.csv", _write_csv)
 
@@ -1445,14 +1467,15 @@ class Runner:
             b, a = "PREREQ-MISSING", "-"
             log(f"     target: [{b}]  -> {verdict}")
             self.on_status(meta["id"], meta["name"], it, b, verdict)
-            self._record(ev, it, meta, b, a, verdict, recon_by_id)
+            self._record(ev, it, meta, b, a, verdict, recon_by_id, output="")
             bump()
             return
 
         target_raw = self._safe_module_run(m, self.target_ip)
         ev.save_run(it, meta["id"], "target", target_raw)
-        self.on_output(meta["id"], meta["name"], target_raw)
+        self.on_output(meta["id"], meta["name"], it, target_raw)
         detected_source = ""
+        output_for_record = target_raw
 
         if self.dual:
             app_raw = self._safe_module_run(m, self.appliance_ip)
@@ -1465,6 +1488,7 @@ class Runner:
                     verdict = (f"attack passed the appliance BUT was DETECTED "
                                f"({det[1]}) — detection works, prevention did not")
             log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
+            output_for_record = target_raw + "\n\n--- through appliance ---\n\n" + app_raw
         else:
             ok = _match(target_raw, meta.get("success_regex"))
             authfail = _match(target_raw, AUTHFAIL_REGEX)
@@ -1511,10 +1535,11 @@ class Runner:
             log(f"     target: [{b}]  -> {verdict}")
 
         self.on_status(meta["id"], meta["name"], it, b, verdict)
-        self._record(ev, it, meta, b, a, verdict, recon_by_id, detected_source)
+        self._record(ev, it, meta, b, a, verdict, recon_by_id,
+                     detected_source=detected_source, output=output_for_record)
         bump()
 
-    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source=""):
+    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source="", output=""):
         ev.save_result(it, meta["id"], {
             "iteration": it,
             "mode": getattr(self, "_mode", "blackbox"),
@@ -1534,10 +1559,15 @@ class Runner:
             "tactic": meta.get("tactic", ""),
             "baseline_result": b,
             "appliance_result": a,
+            "passed": b in ("SUCCESS", "PASSED"),
             "verdict": verdict,
             "detected_source": detected_source,
             "target_ip": self.target_ip,
             "appliance_ip": self.appliance_ip if self.dual else None,
             "reachability": recon_by_id.get(meta["id"]),
             "timestamp": datetime.now().isoformat(),
+            # full raw tool output — result.json/summary.json keep it
+            # complete; finalize() truncates only the summary.csv copy (a
+            # cell this big breaks Excel's ~32k char/cell limit).
+            "output": output,
         })

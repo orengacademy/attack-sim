@@ -20,6 +20,12 @@ import loader
 _EGRESS_PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "additional", "mygovnet_egress_probe.py")
 
+# module ids unticked by default on startup (still selectable) — everything
+# else is pre-selected so a run only needs "confirm ROE" + "RUN". PetitPotam
+# needs root + Responder running; Kerberoast/noPac are the two most likely to
+# want a deliberate opt-in (noisier/slower AD exploitation chains).
+NOT_SELECTED_BY_DEFAULT = {"petitpotam", "kerberoast", "nopac"}
+
 # ---- palette (modern dark) ------------------------------------------------
 BG     = "#181a24"   # window
 PANEL  = "#20222f"   # cards / panels
@@ -256,7 +262,7 @@ class HarnessGUI:
                          font=("TkDefaultFont", 9, "bold")).grid(
                              row=r, column=0, columnspan=6, sticky="w", padx=4, pady=(9, 2))
                 r += 1
-            var = tk.BooleanVar(value=True)
+            var = tk.BooleanVar(value=meta["id"] not in NOT_SELECTED_BY_DEFAULT)
             self.vars[meta["id"]] = (var, m)
             ttk.Checkbutton(inner, text=meta["name"], variable=var,
                             style="Card.TCheckbutton").grid(row=r, column=0, sticky="w", padx=(10, 6))
@@ -343,8 +349,13 @@ class HarnessGUI:
         # red = passed undetected (finding); orange = detected; green = blocked (good)
         for tag, col in STATUS_COLORS.items():
             self.status_tree.tag_configure(tag, foreground=col)
+        # clicking a row jumps the Live output panel straight to that
+        # attack+iteration's section instead of having to scroll/hunt for it.
+        self.status_tree.bind("<<TreeviewSelect>>", self._jump_to_output)
+        self._status_row_keys = {}   # tree item id -> (attack_id, iteration)
+        self._output_marks = {}      # (attack_id, iteration) -> Text mark name
 
-        right = ttk.LabelFrame(outer, text="Live output")
+        right = ttk.LabelFrame(outer, text="Live output — click a Status row to jump to it")
         right.pack(side="left", fill="both", expand=True)
         self.log = tk.Text(right, height=14, wrap="word", bg="#12131b", fg=FG,
                            insertbackground=FG, borderwidth=0, font=MONO, padx=8, pady=6)
@@ -492,26 +503,50 @@ class HarnessGUI:
             self.log.insert("end", line + "\n", tag)
         self.log.see("end")
 
-    def _show_output(self, name, raw):
+    def _show_output(self, aid, name, it, raw):
         lines = raw.strip("\n").splitlines()
         TAIL = 40
         tail = lines[-TAIL:] if len(lines) > TAIL else lines
-        header = f"\n──── {name} — end output "
+        header = f"──── {name} — iteration {it} — end output "
         if len(lines) > TAIL:
             header += f"(last {TAIL} of {len(lines)} lines — full output in evidence/) "
         header += "────"
+
+        # a named mark at this section's start is what makes "click a Status
+        # row -> jump here" possible; re-running the same attack+iteration
+        # just moves the mark to the new section instead of accumulating
+        # stale ones.
+        mark = f"out_{aid}_{it}"
+        self.log.insert("end", "\n")
+        self.log.mark_set(mark, "end - 1c")
+        self.log.mark_gravity(mark, "left")
+        self._output_marks[(aid, it)] = mark
+
         self.log.insert("end", header + "\n", "hdr")
         self.log.insert("end", "\n".join(tail) + "\n")
         self.log.see("end")
 
-    def _add_status(self, name, it, result, direction="", mitre="", cwe=""):
+    def _add_status(self, aid, name, it, result, direction="", mitre="", cwe=""):
         m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
-        self.status_tree.insert("", "end",
-                                values=(m, direction, name, it, result, mitre, cwe),
-                                tags=(result,))
+        iid = self.status_tree.insert("", "end",
+                                      values=(m, direction, name, it, result, mitre, cwe),
+                                      tags=(result,))
+        self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
         if kids:
             self.status_tree.see(kids[-1])
+
+    def _jump_to_output(self, _event=None):
+        sel = self.status_tree.selection()
+        if not sel:
+            return
+        key = self._status_row_keys.get(sel[0])
+        if key is None:
+            return
+        mark = self._output_marks.get(key)
+        if mark is None:
+            return  # that attack's output hasn't streamed in yet
+        self.log.see(mark)
 
     def _drain(self):
         try:
@@ -520,13 +555,13 @@ class HarnessGUI:
                 if kind == "log":
                     self._log(p)
                 elif kind == "output":
-                    _aid, name, raw = p; self._show_output(name, raw)
+                    aid, name, it, raw = p; self._show_output(aid, name, it, raw)
                 elif kind == "status":
                     aid, name, it, result, _v = p
                     mod = self.vars.get(aid, (None, None))[1]
                     meta = getattr(mod, "META", {}) if mod else {}
                     self._add_status(
-                        name, it, result,
+                        aid, name, it, result,
                         direction=meta.get("direction", "a2b"),
                         mitre=", ".join(meta.get("mitre", [])),
                         cwe=", ".join(meta.get("cwe", [])))
@@ -572,13 +607,15 @@ class HarnessGUI:
         for row in self.status_tree.get_children():
             self.status_tree.delete(row)
         self.log.delete("1.0", "end")
+        self._status_row_keys.clear()
+        self._output_marks.clear()
         self._log("Starting run...")
 
         self.runner = core.Runner(
             target_ip, None,
             on_log=lambda m: self.q.put(("log", m)),
             on_progress=lambda c, t: self.q.put(("progress", (c, t))),
-            on_output=lambda aid, name, raw: self.q.put(("output", (aid, name, raw))),
+            on_output=lambda aid, name, it, raw: self.q.put(("output", (aid, name, it, raw))),
             on_status=lambda aid, name, it, b, v: self.q.put(("status", (aid, name, it, b, v))))
         self.runner.concurrency = workers
         if port_overrides:
