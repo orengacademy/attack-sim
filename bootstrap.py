@@ -50,6 +50,15 @@ def run(cmd, check=False):
     return subprocess.run(cmd, check=check)
 
 
+def _which_missing(pkgs):
+    """apt reports its own exit code, but that only tells us the *install
+    command* didn't error — not that the binaries are actually usable
+    afterwards (e.g. install succeeded but PATH/shell differs). Re-check with
+    the same apt_installed() probe used before install, so a failure here is
+    never silently swallowed."""
+    return [p for p in pkgs if not apt_installed(p)]
+
+
 def sudo(cmd):
     return cmd if os.geteuid() == 0 else ["sudo"] + cmd
 
@@ -65,10 +74,20 @@ def install_core():
     missing = [p for p in CORE_APT if not apt_installed(p)]
     if not missing:
         print("  all core APT packages already installed.")
-        return
+        return []
     print("  missing:", ", ".join(missing))
-    run(sudo(["apt-get", "update"]))
-    run(sudo(["apt-get", "install", "-y"] + missing))
+    r_update = run(sudo(["apt-get", "update"]))
+    if r_update.returncode != 0:
+        c(f"  [!] 'apt-get update' failed (exit {r_update.returncode}) — installs below "
+          f"may use a stale/broken package list.", "1;31")
+    r_install = run(sudo(["apt-get", "install", "-y"] + missing))
+    if r_install.returncode != 0:
+        c(f"  [!] 'apt-get install' exited {r_install.returncode} — see the apt output above "
+          f"for the real reason (no internet, broken repo, GPG error, etc).", "1;31")
+    still_missing = _which_missing(missing)
+    if still_missing:
+        c(f"  [!] still missing after install attempt: {', '.join(still_missing)}", "1;31")
+    return still_missing
 
 
 def ensure_impacket_module():
@@ -106,33 +125,51 @@ def ensure_impacket_module():
 
 def install_active():
     c("\nInstalling ACTIVE-establishment tooling (--with-active)...", "1;33")
-    run(sudo(["apt-get", "update"]))
+    r_update = run(sudo(["apt-get", "update"]))
+    if r_update.returncode != 0:
+        c(f"  [!] 'apt-get update' failed (exit {r_update.returncode})", "1;31")
+    still_missing = []
     for pkg in ACTIVE_APT:
         if apt_installed(pkg):
             print(f"  {pkg}: already installed")
             continue
         print(f"  installing {pkg}…")
-        r = run(sudo(["apt-get", "install", "-y", pkg]))
-        if r.returncode != 0 and pkg == "ptunnel-ng":
+        run(sudo(["apt-get", "install", "-y", pkg]))
+        ok = apt_installed(pkg)
+        if not ok and pkg == "ptunnel-ng":
             run(sudo(["apt-get", "install", "-y", "ptunnel"]))   # older name
-        if r.returncode != 0:
+            ok = apt_installed("ptunnel")
+        if not ok:
             print(f"  [!] {pkg} not available via apt — install manually if you need it.")
+            still_missing.append(pkg)
     c("\n  Active tools with no distro package (install if you need that module):", "1;33")
     for tool, where in ACTIVE_MANUAL.items():
         have = "present" if shutil.which(tool) else "MISSING"
         print(f"   - {tool:<9} [{have}] — {where}")
+    return still_missing
 
 
 def main():
     with_active = "--with-active" in sys.argv[1:]
     c("=== Harness bootstrap ===", "1;32")
-    install_core()
+    missing = install_core()
     ensure_impacket_module()
     if with_active:
-        install_active()
+        missing += install_active()
     else:
         print("\n(active-establishment tools NOT installed — re-run with --with-active "
               "if you'll use --active)")
+
+    if missing:
+        c(f"\n[FAILED] {len(missing)} package(s) still missing after install: "
+          f"{', '.join(missing)}", "1;31")
+        print("  Re-run the apt command yourself to see the real error, e.g.:")
+        print(f"    sudo apt-get install -y {' '.join(missing)}")
+        print("  Common causes: no internet, a broken/outdated repo list, a GPG key")
+        print("  error, or 'sudo' needing a password this script can't supply non-")
+        print("  interactively. Fix that, then re-run bootstrap.py.")
+        sys.exit(1)
+
     c("\nDone. Run the harness as your NORMAL user (do NOT use sudo python3 gui.py —", "1;32")
     print("  that makes sudo prompt for 'python3'). The root-needing modules")
     print("  (ICMP/SYN flood, PetitPotam, stateful_evasion) self-elevate via `sudo -n`.")
