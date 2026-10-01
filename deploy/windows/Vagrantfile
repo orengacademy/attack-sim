@@ -1,13 +1,20 @@
 # Vagrant — deliberately-vulnerable Windows AD Domain Controller for the AD/Windows
-# modules (kerberoast, kerberos_asrep, dcsync, psexec, petitpotam).  LAB ONLY.
+# modules (kerberoast, kerberos_asrep, dcsync, psexec, wmiexec, petitpotam).  LAB ONLY.
 #
 #   cd deploy/windows
-#   vagrant up
-#   vagrant reload && vagrant provision   # 2nd pass seeds AD accounts after the DC-promo reboot
+#   vagrant up        # ONE command: installs AD DS, promotes, reboots, seeds accounts
+#
+# A single `vagrant up` now does BOTH passes: provision.ps1 runs with
+# USS_PROVISION_NO_REBOOT so it does not self-reboot, Vagrant reboots the guest
+# (reboot: true) and waits, then the second provisioner runs provision.ps1 again
+# to seed the vulnerable accounts (it waits for AD DS to come up first).
 #
 # Then point the harness at the DC:
 #   export HARNESS_DOMAIN=lab.local HARNESS_DC_USER=Administrator HARNESS_DC_PASS='Passw0rd!'
-#   python3 cli.py --target 192.168.56.10 --only kerberoast,kerberos_asrep,dcsync,psexec,petitpotam --confirm-roe
+#   python3 cli.py --target 192.168.56.10 --only kerberoast,kerberos_asrep,dcsync,psexec,wmiexec,petitpotam --confirm-roe
+#
+# Needs Vagrant 2.2.0+ (for the provisioner `reboot: true` option) and a provider
+# (VirtualBox by default) on a host with hardware virtualization available.
 
 Vagrant.configure("2") do |config|
   config.vm.box = "gusztavvargadr/windows-server-2022-standard"
@@ -26,7 +33,15 @@ Vagrant.configure("2") do |config|
     vb.gui    = false
   end
 
-  # provision.ps1 is idempotent: first run installs AD-DS + promotes (then reboots);
-  # run `vagrant provision` again to seed the vulnerable accounts.
+  # Pass 1: install AD DS + promote WITHOUT self-rebooting, then let Vagrant reboot
+  # the guest and wait for it to come back.
+  config.vm.provision "shell",
+    path: "provision.ps1",
+    privileged: true,
+    reboot: true,
+    env: { "USS_PROVISION_NO_REBOOT" => "1" }
+
+  # Pass 2 (after the reboot): seed the vulnerable AD accounts. provision.ps1 waits
+  # for AD DS to finish initialising before it seeds.
   config.vm.provision "shell", path: "provision.ps1", privileged: true
 end
