@@ -124,26 +124,29 @@ def ensure_impacket_module():
 
 
 def ensure_impacket_runtime():
-    """A DEEP impacket import (impacket.examples.secretsdump) that `import impacket`
-    alone doesn't exercise. A stale USER-SITE cryptography shadowing a newer system
-    one breaks impacket's `cryptography.hazmat.asn1` use, so noPac/sAMAccountName/
-    dcsync NO-RESULT even though top-level `import impacket` SUCCEEDS. Only warns
-    when impacket is installed but its runtime path is broken (no false alarm on a
-    system that simply has an older-but-consistent cryptography)."""
-    try:
-        import impacket  # noqa: F401
-    except Exception:
-        return  # ensure_impacket_module already reported this
-    err = None
-    try:
-        import importlib
-        importlib.import_module("impacket.examples.secretsdump")
-        print("  impacket runtime (secretsdump + crypto): OK")
+    """Exercise the ACTUAL runtime import chain the in-process AD modules use —
+    which `import impacket` alone does NOT. The real noPac/sAMAccountName breakage
+    is ldapdomaindump -> dns.resolver -> dns.asyncquery -> cryptography.hazmat.asn1,
+    tripped by a stale USER-SITE cryptography shadowing a newer system one. Import
+    those leaves and, on failure, point at the fix. Skips cleanly if a lib is
+    simply not installed on this box (ensure_impacket_module covers impacket)."""
+    import importlib
+    err = failed = None
+    for mod in ("impacket.examples.secretsdump", "ldapdomaindump", "dns.asyncquery"):
+        try:
+            importlib.import_module(mod)
+        except ImportError as ex:
+            # a genuinely-absent lib is not the shadow bug — leave it to apt/pip
+            if "asn1" not in str(ex).lower() and "cryptography" not in str(ex).lower():
+                continue
+            err, failed = ex, mod; break
+        except Exception as ex:
+            err, failed = ex, mod; break
+    if err is None:
+        print("  AD runtime chain (impacket/ldapdomaindump/dns): OK")
         return
-    except Exception as ex:
-        err = ex
-    c(f"  [!] impacket is installed but a deep import FAILS ({err.__class__.__name__}: {err}) "
-      "— the AD modules (noPac/sAMAccountName/dcsync) will NO-RESULT at runtime.", "1;31")
+    c(f"  [!] AD runtime import FAILS at {failed} ({err.__class__.__name__}: {err}) "
+      "— noPac/sAMAccountName will NO-RESULT at runtime.", "1;31")
     e = err
     try:
         import site, cryptography

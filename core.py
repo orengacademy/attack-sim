@@ -635,12 +635,16 @@ def _match(raw, pat):
 # live log / verdict instead — this is what would have made the PetitPotam
 # "needs root" case obvious immediately instead of after a full 3-iteration
 # run with no clue why. Grep the raw log yourself for anything this misses.
-_ERROR_MARKER = re.compile(r"^(?:\[ERROR\].*|\S*ERROR\S*:.*)$", re.MULTILINE)
-_WARN_MARKER = re.compile(r"^\[WARN\].*$", re.MULTILINE)
+# NOT anchored to line-start: a module may legitimately put the marker at the
+# END of a line (e.g. "... no IPv6 target. [SKIP]"), and an anchored ^ missed
+# those — so a deliberate skip leaked through to blocked_regex and mis-scored as
+# BLOCKED. Match the marker anywhere on a line.
+_ERROR_MARKER = re.compile(r"(?:\[ERROR\]|\S*ERROR\S*:).*$", re.MULTILINE)
+_WARN_MARKER = re.compile(r"\[WARN\].*$", re.MULTILINE)
 # [SKIP] = a module deliberately did nothing (e.g. an active-establishment
 # module with no infra configured, or --active not set) — surface WHY so the
 # NO-RESULT verdict isn't a mystery.
-_SKIP_MARKER = re.compile(r"^\[SKIP\].*$", re.MULTILINE)
+_SKIP_MARKER = re.compile(r"\[SKIP\].*$", re.MULTILINE)
 
 
 def _error_hint(raw):
