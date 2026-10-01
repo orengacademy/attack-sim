@@ -276,11 +276,22 @@ class TestTargetMemory(unittest.TestCase):
 
     def test_remember_recall_roundtrip(self):
         core.remember_target("10.1.2.3", source="192.168.0.9", cloud=True,
-                             smb_port="4445", rpc_port="1135")
+                             smb_port="4445", rpc_port="1135",
+                             domain="lab.local", dc_user="Administrator", dc_pass="NewPass123!")
         r = core.recall_target("10.1.2.3")
         self.assertEqual(r["source"], "192.168.0.9")
         self.assertTrue(r["cloud"])
         self.assertEqual(r["smb_port"], "4445")
+        # per-target creds round-trip (one global cred set can't serve two targets)
+        self.assertEqual(r["domain"], "lab.local")
+        self.assertEqual(r["dc_user"], "Administrator")
+        self.assertEqual(r["dc_pass"], "NewPass123!")
+
+    def test_memory_file_is_owner_only(self):
+        import stat
+        core.remember_target("t", dc_pass="secret")
+        mode = stat.S_IMODE(os.stat(core._TARGET_MEM).st_mode)
+        self.assertEqual(mode & 0o077, 0)   # no group/other access (holds a password)
 
     def test_recall_unknown_is_empty(self):
         self.assertEqual(core.recall_target("9.9.9.9"), {})

@@ -215,11 +215,24 @@ class HarnessGUI:
         ttk.Label(cf, text="(445→SMB, 135→RPC for AD modules)",
                   style="Muted.TLabel").pack(side="left", padx=(6, 0))
 
+        # Per-target credentials — override credentials.env/HARNESS_DC_* for THIS
+        # target (a Linux SSH lab and a Windows DC need different creds), remembered
+        # per target. Blank = fall back to credentials.env / env.
+        crf = ttk.Frame(f); crf.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        ttk.Label(crf, text="Domain").pack(side="left")
+        self.domain_entry = ttk.Entry(crf, width=12); self.domain_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(crf, text="User").pack(side="left")
+        self.user_entry = ttk.Entry(crf, width=14); self.user_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(crf, text="Pass").pack(side="left")
+        self.pass_entry = ttk.Entry(crf, width=14, show="•"); self.pass_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(crf, text="(per-target; blank = credentials.env)",
+                  style="Muted.TLabel").pack(side="left")
+
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+        self._priv_label.grid(row=8, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
-        self._unlock_btn.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
+        self._unlock_btn.grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
         self._refresh_privilege()
 
     def _refresh_privilege(self):
@@ -504,18 +517,35 @@ class HarnessGUI:
             if rec.get("rpc_port"):
                 self.rpc_port.set(str(rec["rpc_port"]))
             self._toggle_cloud_ports()
+        # per-target credentials
+        for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
+                           ("dc_pass", self.pass_entry)):
+            if rec.get(key) and not entry.get().strip():
+                entry.insert(0, rec[key])
 
     def _save_target(self, target):
-        """Remember this target's source/cloud options for next time."""
+        """Remember this target's source/cloud/creds options for next time."""
         try:
             core.remember_target(
                 target,
                 source=self.source_entry.get().strip() or None,
                 cloud=bool(self.cloud_var.get()),
                 smb_port=(self.smb_port.get().strip() or None) if self.cloud_var.get() else None,
-                rpc_port=(self.rpc_port.get().strip() or None) if self.cloud_var.get() else None)
+                rpc_port=(self.rpc_port.get().strip() or None) if self.cloud_var.get() else None,
+                domain=self.domain_entry.get().strip() or None,
+                dc_user=self.user_entry.get().strip() or None,
+                dc_pass=self.pass_entry.get().strip() or None)
         except Exception:
             pass
+
+    def _apply_target_creds(self):
+        """Apply the per-target Domain/User/Pass fields to the runner's creds
+        (blank fields keep whatever credentials.env/env already loaded)."""
+        for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
+                           ("dc_pass", self.pass_entry)):
+            v = entry.get().strip()
+            if v:
+                self.runner.ctx.creds[key] = v
 
     def _apply_cloud_ports(self, target_ip):
         """When 'Cloud target' is ticked, register the target's NAT'd SMB/RPC
@@ -790,6 +820,7 @@ class HarnessGUI:
         if port_overrides:
             self.runner.ctx.port_overrides = port_overrides
         self.runner.ctx.allow_active = bool(self.active_var.get())
+        self._apply_target_creds()   # per-target Domain/User/Pass override credentials.env
         src = self.source_entry.get().strip()
         if src:
             self.runner.ctx.source_ip = src

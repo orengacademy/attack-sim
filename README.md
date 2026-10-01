@@ -126,7 +126,7 @@ python3 cli.py --target <DO-public-ip> --source <your-sdwan-foothold-ip> \
   --cloud --attack-sim --confirm-roe       # --cloud: SMB->4445 / RPC->1135 (cloud NAT)
 ```
 `--source`/`--cloud` are remembered per target (re-run `--target <ip>` alone next
-time). AD modules need the DC's creds (`HARNESS_DOMAIN`/`HARNESS_DC_USER`/`HARNESS_DC_PASS`).
+time). AD modules need the DC's creds (`HARNESS_DOMAIN`/`HARNESS_DC_USER`/`HARNESS_DC_PASS`). A Linux SSH lab and a Windows DC need *different* creds, so set them **per target** — CLI `--domain/--dc-user/--dc-pass` or the GUI Domain/User/Pass fields — remembered per target in a 0600 `.target_memory.json` (they override `credentials.env`).
 
 ## Install (Kali)
 

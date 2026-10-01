@@ -119,6 +119,11 @@ def main():
                     help="force cloud mode OFF (ignore any remembered --cloud for this target)")
     ap.add_argument("--smb-port", type=int, default=None, help="cloud SMB alt port (default 4445)")
     ap.add_argument("--rpc-port", type=int, default=None, help="cloud RPC alt port (default 1135)")
+    # per-target credentials (override HARNESS_DC_*/credentials.env for THIS target
+    # and are remembered for it — so a Linux target and a Windows DC can differ)
+    ap.add_argument("--domain", help="AD domain for this target (e.g. lab.local)")
+    ap.add_argument("--dc-user", help="username for this target (e.g. Administrator)")
+    ap.add_argument("--dc-pass", help="password for this target (remembered per target, file is 0600)")
     ap.add_argument("--list", action="store_true", help="list discovered modules and exit")
     ap.add_argument("--confirm-roe", action="store_true",
                     help="confirm rules-of-engagement / written authorisation (required to run)")
@@ -191,8 +196,31 @@ def main():
             print(f"[cloud{tag}] {args.target}: SMB 445->{smb}, RPC 135->{rpc}")
         except Exception as e:
             print(f"[!] could not enable cloud ports: {e}", file=sys.stderr)
+
+    # Per-target CREDENTIALS. One global HARNESS_DC_* / credentials.env can't serve
+    # both a Linux SSH lab (labadmin) and a Windows DC (Administrator) — so a flag
+    # (or the value remembered for THIS target) overrides them per target.
+    dom = args.domain or mem.get("domain")
+    usr = args.dc_user or mem.get("dc_user")
+    pw = args.dc_pass if args.dc_pass is not None else mem.get("dc_pass")
+    if dom:
+        runner.ctx.creds["domain"] = dom
+    if usr:
+        runner.ctx.creds["dc_user"] = usr
+    if pw is not None:
+        runner.ctx.creds["dc_pass"] = pw
+    if (dom or usr or pw is not None) and not (args.domain or args.dc_user or args.dc_pass is not None):
+        print(f"[recall] creds for {args.target}: {runner.ctx.creds.get('domain')}/"
+              f"{runner.ctx.creds.get('dc_user')} (remembered)")
+    # remember creds only when explicitly given this run (don't stamp the global
+    # default onto every target).
+    cred_fields = {}
+    if args.domain is not None: cred_fields["domain"] = args.domain
+    if args.dc_user is not None: cred_fields["dc_user"] = args.dc_user
+    if args.dc_pass is not None: cred_fields["dc_pass"] = args.dc_pass
     core.remember_target(args.target, source=source or None, cloud=bool(cloud),
-                         smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None))
+                         smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
+                         **cred_fields)
 
     try:
         ev = core.Evidence(base=args.evidence_dir)

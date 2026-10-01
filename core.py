@@ -186,14 +186,16 @@ def load_target_memory():
 
 
 def recall_target(target):
-    """Return the saved options dict for a target (source/cloud/smb_port/rpc_port), or {}."""
+    """Return the saved options dict for a target (source/cloud/smb_port/rpc_port
+    and per-target creds domain/dc_user/dc_pass), or {}."""
     if not target:
         return {}
     return load_target_memory().get(target.strip(), {})
 
 
 def remember_target(target, **fields):
-    """Persist per-target options; only non-None fields overwrite. Best-effort."""
+    """Persist per-target options; only non-None fields overwrite. May hold
+    per-target credentials, so the file is written 0600. Best-effort."""
     if not target:
         return
     mem = load_target_memory()
@@ -202,10 +204,21 @@ def remember_target(target, **fields):
     rec["last_used"] = datetime.now().isoformat()
     mem[target.strip()] = rec
     try:
-        with open(_TARGET_MEM, "w") as f:
+        # owner-only perms (it can contain a DC password). chmod explicitly too —
+        # O_CREAT's mode is ignored for a file that already exists.
+        fd = os.open(_TARGET_MEM, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(mem, f, indent=2)
+        try:
+            os.chmod(_TARGET_MEM, 0o600)
+        except OSError:
+            pass
     except Exception:
-        pass
+        try:
+            with open(_TARGET_MEM, "w") as f:
+                json.dump(mem, f, indent=2)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------
