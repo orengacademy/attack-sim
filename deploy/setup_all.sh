@@ -117,12 +117,33 @@ install_vagrant() {
 }
 
 windows_up() {
-  # Boot the vulnerable Windows AD DC VM (Target #2). One `vagrant up` now runs
-  # both provisioning passes (promote -> reboot -> seed).
+  # Boot the vulnerable Windows AD DC VM (Target #2). Three backends:
+  #   - libvirt/QEMU (preferred when present + a disk/ISO is given)
+  #   - VirtualBox/Vagrant (default, downloads a Windows box)
   if ! grep -qiE 'vmx|svm' /proc/cpuinfo 2>/dev/null; then
     warn "No hardware virtualization (vmx/svm) detected on this host — a Windows VM"
     warn "likely won't boot here (basic cloud instances lack nested virt). Skipping."
     return 1
+  fi
+  # Prefer QEMU/libvirt when it's installed AND the user pointed us at an image
+  # or ISO (we can't conjure Windows). Env: WIN_QEMU_DISK=<qcow2> or WIN_QEMU_ISO=<iso>.
+  if command -v virsh >/dev/null 2>&1 && command -v virt-install >/dev/null 2>&1 \
+     && { [ -n "${WIN_QEMU_DISK:-}" ] || [ -n "${WIN_QEMU_ISO:-}" ]; }; then
+    log "Using QEMU/libvirt for the Windows DC…"
+    if [ -n "${WIN_QEMU_DISK:-}" ]; then
+      bash "$HERE/windows/qemu/create-dc.sh" --disk "$WIN_QEMU_DISK" \
+        || { warn "QEMU create-dc.sh failed — see output."; return 1; }
+    else
+      bash "$HERE/windows/qemu/create-dc.sh" --iso "$WIN_QEMU_ISO" \
+        ${WIN_QEMU_VIRTIO:+--virtio "$WIN_QEMU_VIRTIO"} \
+        || { warn "QEMU create-dc.sh failed — see output."; return 1; }
+    fi
+    return 0
+  fi
+  if command -v virsh >/dev/null 2>&1; then
+    log "libvirt is present — for the QEMU path, set WIN_QEMU_DISK=<qcow2> (or"
+    log "WIN_QEMU_ISO=<windows.iso>) and re-run; see deploy/windows/qemu/README.md."
+    log "Falling back to VirtualBox/Vagrant for now…"
   fi
   install_vagrant || return 1
   log "Booting the Windows AD DC VM (first run downloads a ~5GB box; needs ~4GB RAM)…"
