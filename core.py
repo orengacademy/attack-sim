@@ -1789,7 +1789,21 @@ class Runner:
                 verdict = ("attack blocked — target port filtered / traffic dropped in "
                            "transit (likely SD-WAN / segmentation)")
             elif blocked_out:
-                b, verdict = "BLOCKED", "attack blocked/unreachable (per tool output)"
+                b = "BLOCKED"
+                # Distinguish WHERE the block came from (both are green, but the
+                # remediation owner differs): a tool-reported rejection while the
+                # attack port is OPEN means the ENDPOINT/host refused the exploit
+                # (a patch / host hardening / local ACL — e.g. a patched DC
+                # answering noPac with KDC_ERR_TGT_REVOKED), NOT the network
+                # boundary. Say so, so a reader doesn't miscredit a host patch to
+                # the SD-WAN.
+                if port_open:
+                    verdict = ("attack blocked by the ENDPOINT — the target service "
+                               "responded with a rejection while its port is open "
+                               "(host hardening / patch / local ACL, e.g. a patched "
+                               "DC), NOT a network / SD-WAN block")
+                else:
+                    verdict = "attack blocked/unreachable (per tool output)"
             else:
                 hint = _error_hint(target_raw)
                 b = "NO-RESULT"
