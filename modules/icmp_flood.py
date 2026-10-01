@@ -1,17 +1,36 @@
-"""ICMP Flood (DoS). Tests rate-limit / DoS protection.
+"""ICMP Flood (DoS) — tests ICMP rate-limit / flood protection at the boundary.
 
-Engine: hping3 `-1 --flood` is the PRIMARY flooder (raw sockets, line-rate — the
-right tool). If hping3 isn't installed, a pure-Python fallback floods ICMP echo
-from a background thread (unprivileged via SOCK_DGRAM where the kernel allows it,
-else a raw socket as root). Either way a 15-count ping samples packet loss.
+The old model asked "did I DoS the target into packet loss?" — which needs a
+volume a single host can't push over the internet, so it dead-ended at
+"0% loss → inconclusive". Wrong question for a *boundary* control.
 
-Why not Python-only? A Python loop can't match hping3's raw-socket flood rate, so
-hping3 stays primary; the fallback just means the module still runs without it.
+The right question an SD-WAN/segmentation control answers is "does the boundary
+rate-limit or drop a high-rate ICMP flood?" — and THAT is measurable from one
+host as a **differential**:
 
-DoS is a weak control to probe from a single host over the internet — one box
-rarely saturates a remote/cloud target, so "no loss" usually means "couldn't
-generate enough load", NOT "the control held". Read it that way, and only run
-inside an authorised maintenance window.
+  1. baseline  — normal-rate ICMP (`ping -i 0.2`): does ordinary ICMP work at all?
+  2. flood     — high-rate ICMP (`hping3 -1 -c N -i uX`, ~thousands of pps):
+                 how much of MY OWN high-rate stream gets through, and how much
+                 does its RTT inflate?
+
+Verdict:
+  * normal-rate ICMP works but the high-rate flood is largely dropped (or its RTT
+    balloons) -> the boundary **rate-limited / dropped the flood** = BLOCKED
+    (the control held — this is the classic signature of ICMP rate-limiting:
+    low-rate passes, high-rate is policed).
+  * the high-rate flood is delivered end-to-end -> the boundary does **NOT**
+    rate-limit/block ICMP flooding = SUCCESS (a finding: deploy ICMP
+    rate-limiting / DoS protection).
+  * can't tell (both rates fail, or the flood never ran) -> NO-RESULT.
+
+This is decisive in BOTH environments: against a lab with no ICMP policing the
+flood is delivered (SUCCESS/finding); against an SD-WAN that rate-limits ICMP the
+high-rate stream is dropped while pings still work (BLOCKED). hping3 is the
+primary engine (raw-socket line rate + a clean delivery-ratio in its stats); a
+pure-Python fallback keeps the module runnable without it (best-effort — it can
+confirm the flood had an effect but not fully characterise rate-limiting).
+
+needs_root (raw sockets / CAP_NET_RAW). Run only inside an authorised window.
 """
 import os
 import re
@@ -22,43 +41,65 @@ import subprocess
 import threading
 import time
 
-FLOOD_SECONDS = 12   # matches the manual script's `timeout 12 hping3`
-PING_COUNT = 15
-LOSS_THRESHOLD = 30  # % packet loss considered a real DoS impact
+BASELINE_COUNT = 15        # normal-rate ICMP sample
+BASELINE_INTERVAL = "0.2"  # seconds between baseline pings (5 pps)
+FLOOD_COUNT = 50000        # high-rate packets to send
+FLOOD_INTERVAL_US = 200    # microseconds between flood packets (~5000 pps target)
+FLOOD_SECONDS = 12         # wall-clock cap on the flood leg
+LOW_LOSS = 20              # <= this %: that rate is "getting through"
+RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
+# RTT shaping is a SECONDARY signal and noisy: on a fast/local link, flooding a
+# target bumps its avg RTT from queueing on ITS OWN NIC/CPU — not the boundary.
+# A sub-ms baseline makes that look like a huge multiple, so require BOTH a large
+# multiple AND a meaningful absolute latency floor before calling it shaping.
+RTT_INFLATION = 6.0        # flood avg RTT >= Nx baseline, AND ...
+RTT_ABS_FLOOR = 150.0      # ... flood avg RTT >= this many ms absolute => shaping
 
 META = {
     "id": "icmp_flood",
     "name": "ICMP Flood (DoS)",
     "category": "Network Exploitation",
     "test_type": "dos",
-    "control": "Rate-limit / DoS protection",
+    "control": "ICMP rate-limit / flood (DoS) protection",
     "fix": "SD-WAN",
     "mitre": ['T1498.001'],
     "cwe": ['CWE-400'],
     "tactic": 'Impact',
-    # hping3 is PREFERRED but no longer hard-required: without it the Python
-    # fallback runs, so it isn't listed in requires (which would make preflight
-    # skip the whole module as PREREQ-MISSING). ping is the one true dependency.
+    # hping3 is PREFERRED but not hard-required: without it the Python fallback
+    # runs, so it isn't in requires (which would PREREQ-MISSING the whole module).
+    # ping is the one true dependency (the baseline leg).
     "requires": ["ping"],
     "needs_root": True,   # a real ICMP flood needs raw sockets (root / CAP_NET_RAW)
     "serial": True,       # DoS: must run alone (don't overlap other tests)
-    "os_supported": ["Linux"],   # uses `ping -c` + hping3/raw ICMP (Linux-only)
+    "os_supported": ["Linux"],   # uses `ping -c/-i` + hping3/raw ICMP (Linux-only)
     "ports": [("icmp", None)],   # ICMP, not a TCP/UDP port
-    # attack 'worked' = meaningful packet loss during the flood (anchored so it
-    # can't match incidental words like "bypass"/"password" in tool output)
+    # SUCCESS = the high-rate flood was delivered (boundary didn't rate-limit it).
+    # Anchored (^) so it can't match incidental words elsewhere in tool output.
     "success_regex": r"^PASS",
-    # deliberately does NOT match FLOOD-PRIV-ERROR — a privilege failure means
-    # the flood never ran at all, which must NOT read as "control held".
-    # INFO/INCONCLUSIVE are NOT a control win — the module's own text says so
-    # ("usually means not enough load, NOT that the control held"). They fall to
-    # NO-RESULT. Only a genuine network-layer block counts as BLOCKED.
-    "blocked_regex": r"No route to host|Network is unreachable|host unreachable",
+    # BLOCKED = the boundary policed the flood (differential rate-limit / RTT
+    # shaping), or an outright network-layer block. A privilege/tooling failure
+    # (FLOOD-PRIV-ERROR) must NOT match here — the flood never ran, so it is not
+    # evidence the control worked; it falls to NO-RESULT instead.
+    "blocked_regex": r"^BLOCKED-|No route to host|Network is unreachable|host unreachable",
 }
 
 # markers that mean the flood never actually sent (privilege/tooling failure) —
 # NOT evidence the control worked.
 _PRIV_ERR_MARKERS = ("operation not permitted", "raw socket", "permission denied",
                      "a password is required", "a terminal is required", "sudo:")
+
+
+def _parse_loss(text):
+    """Percent packet loss from a ping/hping3 statistics block, or None."""
+    m = re.search(r"(\d+(?:\.\d+)?)% packet loss", text or "")
+    return float(m.group(1)) if m else None
+
+
+def _parse_rtt_avg(text):
+    """Average RTT (ms) from a ping ('rtt .. = a/b/c/d') or hping3
+    ('round-trip .. = a/b/c') statistics line, or None."""
+    m = re.search(r"(?:rtt|round-trip)[^=]*=\s*[\d.]+/([\d.]+)/", text or "")
+    return float(m.group(1)) if m else None
 
 
 # --------------------------------------------------------------------------
@@ -123,85 +164,129 @@ def _py_icmp_flood(target, seconds, result):
     result["sent"] = sent
 
 
-def run(target, ctx):
-    out = [f"# ICMP flood DoS vs {target}  ({FLOOD_SECONDS}s flood, "
-           f"{PING_COUNT}-count loss sample)"]
-
-    use_hping = shutil.which("hping3") is not None
-    flood = None
-    py_result = {}
-    py_thread = None
-
-    if use_hping:
-        out.append("engine: hping3 -1 --flood")
-        import core
-        # cap with `timeout` if present; elevate hping3 (not `timeout`) via sudo -n.
-        prefix = (["timeout", str(FLOOD_SECONDS)] if shutil.which("timeout") else [])
-        flood_cmd = prefix + core.sudo_prefix() + ["hping3", "-1", "--flood", target]
-        try:
-            flood = subprocess.Popen(
-                flood_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        except FileNotFoundError:
-            use_hping = False  # race: vanished between which() and Popen -> fall back
-    if not use_hping:
-        out.append("engine: python ICMP fallback (hping3 not installed)")
-        py_thread = threading.Thread(
-            target=_py_icmp_flood, args=(target, FLOOD_SECONDS, py_result), daemon=True)
-        py_thread.start()
-
-    # Sample packet loss with a normal ping while the flood runs.
+def _baseline(target):
+    """Normal-rate ICMP reference: (loss%, avg_rtt_ms, raw_text)."""
     try:
-        ping = subprocess.run(
-            ["ping", "-c", str(PING_COUNT), target],
-            capture_output=True, text=True, timeout=PING_COUNT + 10)
-        out.append(ping.stdout)
-    finally:
-        if flood is not None:
-            try:
-                flood_out, _ = flood.communicate(timeout=FLOOD_SECONDS + 5)
-            except Exception:
-                flood.kill()
-                flood_out, _ = flood.communicate()
-        else:
-            flood_out = ""
-            if py_thread is not None:
-                py_thread.join(FLOOD_SECONDS + 5)
+        p = subprocess.run(
+            ["ping", "-c", str(BASELINE_COUNT), "-i", BASELINE_INTERVAL, target],
+            capture_output=True, text=True, timeout=BASELINE_COUNT * 1 + 15,
+            stdin=subprocess.DEVNULL)
+        return _parse_loss(p.stdout), _parse_rtt_avg(p.stdout), p.stdout
+    except Exception as e:
+        return None, None, f"[baseline ping error] {e}"
 
-    # ----- did the flood actually run? (privilege/tooling failures) -----------
-    if use_hping and flood_out and any(m in flood_out.lower() for m in _PRIV_ERR_MARKERS):
-        out.append(f"hping3 output: {flood_out.strip()}")
-        out.append(
-            "FLOOD-PRIV-ERROR: hping3 could not run with the privileges it needs "
-            "— the flood never ran. This is NOT evidence the control works. Fix "
-            "any ONE of: (a) grant the capability once: sudo setcap "
-            "cap_net_raw,cap_net_admin+eip $(which hping3); (b) add a NOPASSWD "
-            "sudoers rule for hping3 (the module runs it via `sudo -n hping3`); "
-            "or (c) run the harness as root.")
-        return "\n".join(out)
-    if not use_hping:
+
+def _hping_flood(target):
+    """High-rate counted ICMP via hping3; returns (loss%, avg_rtt_ms, raw_text).
+    Counted (-c) + fast (-i uX) so hping3 prints a real delivery-ratio statistics
+    block (unlike --flood, which discards replies)."""
+    import core
+    prefix = (["timeout", str(FLOOD_SECONDS)] if shutil.which("timeout") else [])
+    cmd = prefix + core.sudo_prefix() + [
+        "hping3", "-1", "-c", str(FLOOD_COUNT), "-i", "u%d" % FLOOD_INTERVAL_US, target]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=FLOOD_SECONDS + 10, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as e:
+        txt = (e.output or "") if isinstance(e.output, str) else ""
+        return _parse_loss(txt), _parse_rtt_avg(txt), txt + "\n[flood hit wall-clock cap]"
+    out = (p.stdout or "") + (p.stderr or "")
+    return _parse_loss(out), _parse_rtt_avg(out), out
+
+
+def run(target, ctx):
+    out = [f"# ICMP flood vs {target} — boundary rate-limit test "
+           f"(baseline {BASELINE_COUNT}-ping vs {FLOOD_COUNT}-pkt high-rate flood)"]
+
+    # ---- leg 1: normal-rate baseline (does ordinary ICMP work at all?) --------
+    base_loss, base_rtt, base_txt = _baseline(target)
+    out.append("## baseline (normal-rate ICMP)")
+    out.append(base_txt.strip())
+    out.append(f"baseline: loss={base_loss}%  avg_rtt={base_rtt}ms")
+
+    # ---- leg 2: high-rate flood (how much of my stream gets through?) ---------
+    use_hping = shutil.which("hping3") is not None
+    flood_loss = flood_rtt = None
+    flood_txt = ""
+    if use_hping:
+        out.append("## high-rate flood (engine: hping3 -1, counted fast mode)")
+        flood_loss, flood_rtt, flood_txt = _hping_flood(target)
+        out.append(flood_txt.strip())
+        # privilege/tooling failure => the flood never ran (NOT a control result)
+        if any(mk in flood_txt.lower() for mk in _PRIV_ERR_MARKERS) and flood_loss is None:
+            out.append(
+                "FLOOD-PRIV-ERROR: hping3 could not run with the privileges it "
+                "needs — the flood never ran. NOT evidence the control works. Fix "
+                "ONE of: (a) sudo setcap cap_net_raw,cap_net_admin+eip $(which "
+                "hping3); (b) a NOPASSWD sudoers rule for hping3; or (c) run as root.")
+            return "\n".join(out)
+        out.append(f"flood: loss={flood_loss}%  avg_rtt={flood_rtt}ms")
+    else:
+        # Fallback: Python flood + a during-flood ping sample. Can confirm the
+        # flood had an effect, but can't fully characterise rate-limiting.
+        out.append("## high-rate flood (engine: python ICMP fallback — hping3 not installed)")
+        py_result = {}
+        th = threading.Thread(target=_py_icmp_flood,
+                              args=(target, FLOOD_SECONDS, py_result), daemon=True)
+        th.start()
+        try:
+            dp = subprocess.run(["ping", "-c", str(BASELINE_COUNT), target],
+                                capture_output=True, text=True,
+                                timeout=BASELINE_COUNT + 15, stdin=subprocess.DEVNULL)
+            flood_loss = _parse_loss(dp.stdout)
+            flood_rtt = _parse_rtt_avg(dp.stdout)
+            flood_txt = dp.stdout
+            out.append(dp.stdout.strip())
+        finally:
+            th.join(FLOOD_SECONDS + 5)
         if py_result.get("error"):
             out.append(f"python flood error: {py_result['error']}")
             out.append(
                 "FLOOD-PRIV-ERROR: the Python ICMP fallback could not send — "
-                "unprivileged ICMP is disabled and we're not root. Fix any ONE of: "
-                "(a) install hping3 (sudo apt install hping3) which self-elevates; "
-                "(b) run the harness as root; or (c) allow unprivileged ICMP: "
-                "sudo sysctl -w net.ipv4.ping_group_range='0 2147483647'.")
+                "unprivileged ICMP is disabled and we're not root. Fix ONE of: "
+                "(a) install hping3 (sudo apt install hping3); (b) run as root; or "
+                "(c) sudo sysctl -w net.ipv4.ping_group_range='0 2147483647'.")
             return "\n".join(out)
-        out.append(f"python flood: sent {py_result.get('sent', 0)} ICMP echoes "
-                   f"via {py_result.get('mode', '?')}")
+        out.append(f"python flood: sent {py_result.get('sent', 0)} ICMP echoes via "
+                   f"{py_result.get('mode', '?')}; during-flood loss={flood_loss}%")
 
-    # modern iputils prints a fractional percentage (e.g. "73.3333%"), not just
-    # "73%" — \d+ alone would silently grab only the digits after the decimal.
-    m = re.search(r"(\d+(?:\.\d+)?)% packet loss", ping.stdout)
-    loss = float(m.group(1)) if m else None
+    # ---- verdict: differential between normal-rate and high-rate ICMP ---------
+    if flood_loss is None:
+        out.append("INCONCLUSIVE: could not parse the flood's delivery ratio — review raw log.")
+        return "\n".join(out)
 
-    if loss is None:
-        out.append("INCONCLUSIVE: could not parse packet loss from ping output")
-    elif loss > LOSS_THRESHOLD:
-        out.append(f"PASS: DoS effective - {loss:.1f}% loss")
+    base_ok = base_loss is not None and base_loss <= LOW_LOSS
+    delta = (flood_loss - base_loss) if base_loss is not None else None
+    inflated = (base_rtt and flood_rtt and base_rtt > 0
+                and flood_rtt / base_rtt >= RTT_INFLATION
+                and flood_rtt >= RTT_ABS_FLOOR)   # absolute floor: ignore LAN queueing
+
+    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
+        out.append(
+            f"BLOCKED-RATELIMIT: normal-rate ICMP loss {base_loss:.1f}% but the "
+            f"high-rate flood lost {flood_loss:.1f}% (+{delta:.0f} pts) — the boundary "
+            "rate-limited/dropped the flood while letting ordinary pings through "
+            "(classic ICMP rate-limit / DoS protection — control held).")
+    elif base_ok and inflated:
+        out.append(
+            f"BLOCKED-RATELIMIT: the flood was delivered but its RTT inflated to "
+            f"{flood_rtt:.0f}ms vs {base_rtt:.1f}ms baseline ({flood_rtt / base_rtt:.1f}x, "
+            f">= {RTT_ABS_FLOOR:.0f}ms) — the boundary shaped/throttled the high-rate "
+            "ICMP (policing — control held).")
+    elif flood_loss <= LOW_LOSS:
+        out.append(
+            f"PASS: the high-rate ICMP flood was delivered end-to-end "
+            f"({flood_loss:.1f}% loss over {FLOOD_COUNT} packets) — the boundary did "
+            "NOT rate-limit or block ICMP flooding (finding: deploy ICMP "
+            "rate-limiting / DoS protection on the SD-WAN).")
+    elif not base_ok:
+        out.append(
+            f"INCONCLUSIVE: even normal-rate ICMP lost {base_loss}% — the host/path is "
+            "unreliable (down, or ICMP filtered entirely), so the high-rate "
+            f"{flood_loss:.1f}% loss isn't a clean rate-limit signal. Review raw log.")
     else:
-        out.append(f"INFO: {loss:.1f}% loss (below {LOSS_THRESHOLD}% threshold). Note: a "
-                   "single host rarely saturates a remote/cloud target, so this usually "
-                   "means 'not enough load generated', NOT 'the control held'.")
+        out.append(
+            f"INCONCLUSIVE: flood {flood_loss:.1f}% loss vs {base_loss}% baseline — "
+            "ambiguous (could be boundary rate-limiting OR insufficient single-host "
+            "load to fill the pipe). Review raw log.")
     return "\n".join(out)
