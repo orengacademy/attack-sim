@@ -24,13 +24,21 @@ egress / segmentation control validation* across 7 ATT&CK families **A–G** (se
 ## Run / test / check
 
 ```bash
-python3 gui.py                       # GUI (needs $DISPLAY); root-needing tools self-elevate via sudo -n
+python3 gui.py                       # GUI (needs $DISPLAY); defaults to the ORIGINAL set ticked
 python3 cli.py --list                # list all discovered modules + their scope tags
 python3 cli.py --target <IP> --attack-sim --confirm-roe   # headless USS run (--confirm-roe is MANDATORY)
-python3 preflight.py                 # tools/privs check (no network); --json for CI; --target <IP> adds active recon
-python3 bootstrap.py                 # install core tooling (Kali/Debian apt); --with-active adds tunnel/exec tools
+python3 fleet.py --dry-run --attack-sim                   # N-target matrix preview (no traffic); then --confirm-roe
+python3 preflight.py                 # tools + Python-package check (no network); --json for CI; --target <IP> adds recon
+python3 bootstrap.py                 # Kali/Debian apt install (degrades on non-apt); --with-active adds tunnel/exec tools
+python3 -m pip install -r requirements.txt   # the in-process AD modules' Python libs (impacket/ldap3/ldapdomaindump/dnspython)
 python3 -m unittest discover -s tests   # test suite (pure stdlib, localhost-only, offline)
 ```
+Per-target options (source IP, `--cloud` SMB/RPC ports, and `--domain/--dc-user/
+--dc-pass` creds) are **remembered per target** in a `0600 .target_memory.json`
+(CLI flags + GUI fields) — a Linux SSH lab and a Windows DC keep different creds.
+Keep the lab alive with `deploy/refresh-lab.sh --install-cron` (restarts dead
+services/containers/VM every 5 min). Engine is pure-stdlib and runs on any OS;
+tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 
 - **`--confirm-roe` (CLI) / the ROE checkbox (GUI) is required** — the tool runs
   real attacks. Never add a path that bypasses it.
@@ -48,14 +56,14 @@ python3 -m unittest discover -s tests   # test suite (pure stdlib, localhost-onl
 | `core.py` | **The engine.** `Context` (handed to each module), `Evidence` (the `run_<ts>/` tree + `finalize()` which writes summaries + the ATT&CK Navigator layer), `classify()` + `Runner` (orchestrates N iterations, preflight gating, recon, verdicts, DETECTED scoring), and all the preflight/reachability/privilege/platform helpers. **Attack logic does NOT live here.** |
 | `loader.py` | Auto-discovers `modules/*.py` that expose `META` + `run(target, ctx)`. Files starting with `_` (helpers, `_vendor/`) are skipped. No registration anywhere. |
 | `gui.py` | Tkinter dark-theme front-end. Worker thread + queue so the UI never freezes. Live log + live raw-output panel (click a status row to jump), Preflight+recon button, Egress-probe button, per-row custom port, mode/workers selectors. |
-| `cli.py` | Headless equivalent; every GUI option as a flag. Colour-coded output (red=passed, green=blocked, blue=no-service). Prints `report.txt` tail (coverage) at the end. |
+| `cli.py` | Headless equivalent; every GUI option as a flag (`--original`/`--attack-sim`/`--family`/`--cloud`/`--source`/`--domain`/`--dc-user`/`--dc-pass`/…). Prints a modern end-of-run summary (verdict-distribution bars + per-category coloured table + MITRE) then the full coverage report. |
 | `fleet.py` | **N-target front end.** Runs the same engine over a fleet of vuln servers defined in `fleet.json` (git-ignored; `fleet.json.example` committed) — a zone-to-zone matrix (`targets`×`sources`×`runs`), both directions, per-target `cloud_ports`, per-source egress binding. Reuses `cli._select` + `core.Runner` per job; evidence under `evidence/fleet_<ts>/<source>__<target>/`, plus `fleet_summary.json`. |
 | `preflight.py` | Standalone cross-platform tool/privilege/recon checker; CI gate (exit 0 only if all discovered modules are ready). |
 | `bootstrap.py` | One-shot apt installer for Kali/Debian. |
 | `modules/` | **One file per attack**, auto-discovered. See "Adding a module". |
-| `modules/_*.py` | Shared helpers (not modules): `_util.py`, `_portpatch.py` (NAT port patching), `_dcompatch.py`, `_clockskew.py`. `_vendor/` holds vendored PoCs (PetitPotam, noPac). |
+| `modules/_*.py` | Shared helpers (not modules): `_util.py`, `_portpatch.py` (NAT SMB/RPC port patching), `_dcompatch.py`, `_clockskew.py`, `_impacket.py` (resolve an impacket tool across flavours — `impacket-X`/`X.py`/the example script — so AD modules don't need the Kali CLI). `_vendor/` holds vendored PoCs (PetitPotam, noPac). |
 | `additional/` | `mygovnet_egress_probe.py` (standalone egress/segmentation probe, launched from GUI too), `reverse_runner.py` (drop-in B→A runner for a host you can't install on), the plan HTML. |
-| `deploy/` | Lab-target provisioning (⚠ lab only), **2-in-1**: `setup_all.sh`/`setup_target.sh` turn *any mainstream Linux* into the vuln target (distro-agnostic — detects apt/dnf/yum/pacman/zypper/apk + systemd/OpenRC) and `setup_target.sh` auto-writes a git-ignored `credentials.env` so `ssh_brute` works out of the box. Plus `docker-compose.yml` (Apache 41773 / Log4Shell / OpenLDAP). **Two targets:** the Linux host (Target #1, configured in place) and the Windows AD DC (Target #2, a VM) — `setup_all.sh --with-windows` boots the DC too (Vagrant+VirtualBox, needs HW virt). `windows/` = a single `vagrant up` that runs both provisioning passes (`provision.ps1` reads `USS_PROVISION_NO_REBOOT` so Vagrant drives the reboot; cloud self-reboots via a startup task). `cloud/` = Terraform AWS/Azure/GCP (ingress locked to `tester_cidrs`). ⚠ `nopac`/`samaccountname_spoof` need an **unpatched** DC; `wmiexec`/`nopac`/`dcsync` need the **`impacket` Python module** (bootstrap ensures it). |
+| `deploy/` | Lab-target provisioning (⚠ lab only), **2-in-1**: `setup_all.sh`/`setup_target.sh` turn *any mainstream Linux* into the vuln target (distro-agnostic — detects apt/dnf/yum/pacman/zypper/apk + systemd/OpenRC) and `setup_target.sh` auto-writes a git-ignored `credentials.env` so `ssh_brute` works out of the box. Plus `docker-compose.yml` (Apache 41773 / Log4Shell / OpenLDAP). **Two targets:** the Linux host (Target #1, configured in place) and the Windows AD DC (Target #2, a VM) — `setup_all.sh --with-windows` boots the DC too (Vagrant+VirtualBox, needs HW virt). `windows/` = a single `vagrant up` that runs both provisioning passes (`provision.ps1` reads `USS_PROVISION_NO_REBOOT` so Vagrant drives the reboot; cloud self-reboots via a startup task). `windows/qemu/` = a QEMU/libvirt path (`create-dc.sh`) for KVM hosts; `cloud/` = Terraform AWS/Azure/GCP (ingress locked to `tester_cidrs`). `refresh-lab.sh --install-cron` keeps the lab alive (restarts dead services/containers/VM every 5 min). ⚠ `nopac`/`samaccountname_spoof` need an **unpatched** DC; `wmiexec`/`nopac`/`dcsync` need the **`impacket` library**. |
 
 ## The module contract
 
@@ -115,6 +123,9 @@ Copy the `*.example` and fill in; env vars override the files:
 | `config.json` | `HARNESS_CFG_<KEY>` | Destinations the USS modules aim at (your VPS/domain/DoH/canary/pivot). Unset → the module `[SKIP]`s. **This is how "no live infra hardcoded" is enforced — keep it that way.** |
 | `allowlist.txt` | `HARNESS_ALLOWLIST` | Opt-in hard target allowlist. Unconfigured → any validated target allowed. |
 | `detections.json` | `HARNESS_DETECTIONS` | Blue-team confirmations that drive the DETECTED verdict. |
+| `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`, and per-target creds `domain`/`dc_user`/`dc_pass`. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted. |
+| `fleet.json` | — | N-target fleet for `fleet.py` (`targets`/`sources`/`runs`). |
+| `requirements.txt` | — | Committed; Python libs for the in-process AD modules (`pip install -r`). Engine itself needs none. |
 
 Also: `HARNESS_PORT_<ID>` (custom port), `HARNESS_SOURCE_IP` (egress bind).
 

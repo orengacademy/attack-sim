@@ -13,6 +13,107 @@ the password comes from the environment or a git-ignored `credentials.env`
 (see [Credentials & safety](#credentials--safety)). The per-command timeout
 (`DEFAULT_TIMEOUT`) lives in `core.py`.
 
+---
+
+# How to use — A to Z
+
+A linear walkthrough from a fresh clone to reading results. Each step links to
+the deeper section below.
+
+## 0. What this is / what you need
+- **Role:** this is the *attacker/tester* side. It runs real attacks from your
+  box (**Kali** is the primary operator OS; it also runs on any Linux / Windows /
+  macOS — see [Runs from any OS](#runs-from-any-os-kali--any-linux--windows--macos)).
+- **You need:** Python 3 (stdlib only — no pip deps for the engine), authorisation
+  (written RoE naming the targets/window), and one or more **targets** to attack.
+- **The engine never needs third-party Python packages;** only the *in-process AD
+  modules* need `impacket` (see `requirements.txt`).
+
+## 1. Authorisation first (non-negotiable)
+Every run requires confirming rules-of-engagement: the GUI checkbox
+**"Rules-of-engagement confirmed"**, or `--confirm-roe` on the CLI/fleet. Only
+point it at hosts you are **authorised, in writing**, to test, inside the agreed
+window. Optionally hard-restrict targets with an [allowlist](#credentials--safety).
+
+## 2. Install the tooling (operator box)
+```bash
+python3 bootstrap.py            # Kali/Debian: installs curl/snmp/hydra/impacket/ldap-utils/hping3/responder/...
+python3 -m pip install -r requirements.txt   # the in-process AD modules (impacket/ldap3/ldapdomaindump/dnspython)
+python3 preflight.py            # verify tools + Python packages are ready (exit 0 = all green); --json for CI
+```
+On a non-apt OS, `bootstrap.py` tells you to use your own package manager, and
+`preflight.py` prints the exact install command for whatever's missing. **Prep is
+"ready" when `preflight.py` is green — not when a run is all-SUCCESS** (see
+[What "success" means](#what-success-means)).
+
+## 3. Stand up the vulnerable target(s) — OR point at existing ones
+If you're providing the lab (⚠ **lab only, isolate it**):
+```bash
+sudo deploy/setup_all.sh --with-tools     # any Linux -> this host becomes the Linux target (SSH/FTP/SNMP + web CVEs + 443)
+sudo deploy/setup_all.sh --with-windows   # ALSO boot the Windows AD DC VM (Vagrant/VirtualBox or QEMU/libvirt)
+sudo deploy/refresh-lab.sh --install-cron # keep the vuln services alive (restart any that die, every 5 min)
+```
+The Windows AD DC can be a Vagrant VM, a QEMU/libvirt VM, or a cloud DC
+(Terraform) — see [Deploying the vulnerable target(s)](#deploying-the-vulnerable-targets).
+If the targets already exist, skip this and just point the harness at their IPs.
+
+## 4. Configure (git-ignored operator files)
+- **Linux target creds** → `credentials.env` (copy `credentials.env.example`);
+  `setup_target.sh` writes it for the lab SSH user automatically.
+- **Per-target creds** (a Linux box and a Windows DC need *different* logins) →
+  set them **per target**: CLI `--domain/--dc-user/--dc-pass`, or the GUI
+  Domain/User/Pass fields. Remembered per target in a `0600 .target_memory.json`.
+- **Egress infra** (for the USS A–G modules: your VPS/domain/DoH/canary/pivot) →
+  `config.json` (copy `config.json.example`). Unset keys → that module `[SKIP]`s.
+- **Cloud target** (SMB/RPC on NAT'd high ports) → GUI "Cloud target" tick, or CLI
+  `--cloud` (`--smb-port`/`--rpc-port`; defaults 4445/1135). Remembered per target.
+- **Blue-team detections** (for the DETECTED verdict) → `detections.json`.
+
+## 5. Run it
+**GUI** (defaults to the **original** module set; tick more, confirm RoE, RUN):
+```bash
+python3 gui.py
+```
+**CLI** (headless; one target per run, re-run per target):
+```bash
+python3 cli.py --list                                  # all modules + scope tags
+python3 cli.py --target 127.0.0.1 --mode whitebox --original --confirm-roe   # baseline self-test
+python3 cli.py --target <ip> --attack-sim --confirm-roe        # the USS boundary scope
+python3 cli.py --target <DC-ip> --domain lab.local --dc-user Administrator \
+  --dc-pass '<pw>' --only dcsync,kerberoast,psexec --confirm-roe   # AD vs a DC (creds remembered)
+```
+Typical **Kali (behind SDWAN) → cloud target**:
+```bash
+python3 cli.py --target <cloud-ip> --source <sdwan-foothold-ip> --cloud --attack-sim --confirm-roe
+```
+**Fleet** (N targets across zones, both directions — opt-in):
+`python3 fleet.py --dry-run --attack-sim` then `--confirm-roe`. See
+[Fleet](#fleet-n-targets-across-zones--fleetpy).
+
+## 6. Read the results
+The CLI prints a modern summary (verdict-distribution bars + a per-category table)
+then the ATT&CK/CWE/CVE coverage. Everything is also saved under
+`evidence/run_<ts>/` (JSON/CSV/TXT + an ATT&CK Navigator layer + full raw logs).
+Verdict meanings: [Verdicts](#verdicts-single-target-mode). **The raw `.log` files
+are authoritative** — automated verdicts are best-effort regex.
+
+## 7. Tear down
+```bash
+sudo deploy/setup_all.sh --teardown        # removes the Linux lab + the Windows VM
+sudo deploy/refresh-lab.sh --remove-cron   # stop the keep-alive
+```
+
+## What "success" means
+A good run is **accurate, not all-green**. A module is SUCCESS only when (a) its
+target/vuln is actually present and reachable, (b) its creds/config are set, and
+(c) the attack genuinely gets through. On a single box many modules correctly
+report SKIPPED (egress needs your infra), NO-SERVICE (service/DC not at that IP),
+NO-RESULT (DoS can't hurt loopback; a review), or PREREQ-MISSING — those are
+correct, not failures. AD modules must target a **Windows DC** (not localhost);
+DoS only "succeeds" against a real saturable remote target.
+
+---
+
 ## Credentials & safety
 
 - **Credentials** (no secrets in git): set `HARNESS_DOMAIN`, `HARNESS_DC_USER`,
