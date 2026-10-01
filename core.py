@@ -169,6 +169,46 @@ def load_detections():
 
 
 # ---------------------------------------------------------------------
+# Per-target memory — remember the last per-target options (source IP, cloud
+# SMB/RPC toggle + ports) so an engineer re-running the SAME script against the
+# next target doesn't re-type them. Git-ignored '.target_memory.json'. Keyed by
+# target IP/host. Never raises.
+# ---------------------------------------------------------------------
+_TARGET_MEM = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".target_memory.json")
+
+
+def load_target_memory():
+    try:
+        with open(_TARGET_MEM) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def recall_target(target):
+    """Return the saved options dict for a target (source/cloud/smb_port/rpc_port), or {}."""
+    if not target:
+        return {}
+    return load_target_memory().get(target.strip(), {})
+
+
+def remember_target(target, **fields):
+    """Persist per-target options; only non-None fields overwrite. Best-effort."""
+    if not target:
+        return
+    mem = load_target_memory()
+    rec = mem.get(target.strip(), {})
+    rec.update({k: v for k, v in fields.items() if v is not None})
+    rec["last_used"] = datetime.now().isoformat()
+    mem[target.strip()] = rec
+    try:
+        with open(_TARGET_MEM, "w") as f:
+            json.dump(mem, f, indent=2)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------
 # Target safety — validate the target and (optionally) enforce an allowlist so
 # the harness can't be pointed at an arbitrary host by a typo. The allowlist is
 # opt-in: env HARNESS_ALLOWLIST (comma/space separated) and/or a git-ignored

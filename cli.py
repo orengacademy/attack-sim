@@ -111,12 +111,14 @@ def main():
                          "inside the authorised window.")
     ap.add_argument("--source", help="source IP to bind egress sockets to (e.g. a DC "
                     "foothold interface / VRF); default = OS route")
-    ap.add_argument("--cloud", action="store_true",
+    ap.add_argument("--cloud", dest="cloud", action="store_const", const=True, default=None,
                     help="cloud target: SMB/RPC are on alternate ports (default 445->4445, "
-                         "135->1135). Maps them for the AD modules AND the recon, so dcsync/"
-                         "psexec/etc. and reachability hit the forwarded ports.")
-    ap.add_argument("--smb-port", type=int, default=4445, help="cloud SMB alt port (--cloud)")
-    ap.add_argument("--rpc-port", type=int, default=1135, help="cloud RPC alt port (--cloud)")
+                         "135->1135). Maps them for the AD modules AND the recon. If omitted, "
+                         "the last --cloud/--source used for this target is recalled.")
+    ap.add_argument("--no-cloud", dest="cloud", action="store_const", const=False,
+                    help="force cloud mode OFF (ignore any remembered --cloud for this target)")
+    ap.add_argument("--smb-port", type=int, default=None, help="cloud SMB alt port (default 4445)")
+    ap.add_argument("--rpc-port", type=int, default=None, help="cloud RPC alt port (default 1135)")
     ap.add_argument("--list", action="store_true", help="list discovered modules and exit")
     ap.add_argument("--confirm-roe", action="store_true",
                     help="confirm rules-of-engagement / written authorisation (required to run)")
@@ -169,17 +171,28 @@ def main():
     if overrides:
         runner.ctx.port_overrides = overrides
     runner.ctx.allow_active = bool(args.active)
-    if args.source:
-        runner.ctx.source_ip = args.source
-    if args.cloud:
-        # register the target's NAT'd SMB/RPC ports so the impacket modules AND
-        # recon use the forwarded alternates (same map as modules/_portpatch.py).
+
+    # Per-target memory: recall the last source/cloud options for this target when
+    # the flag was omitted, then persist whatever we end up using.
+    mem = core.recall_target(args.target)
+    source = args.source if args.source is not None else mem.get("source")
+    cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
+    smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
+    rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
+    if source:
+        runner.ctx.source_ip = source
+        if args.source is None:
+            print(f"[recall] source {source} (remembered for {args.target})")
+    if cloud:
         try:
             from modules import _portpatch
-            _portpatch.CUSTOM_PORT_TARGETS[args.target] = {445: args.smb_port, 135: args.rpc_port}
-            print(f"[cloud] {args.target}: SMB 445->{args.smb_port}, RPC 135->{args.rpc_port}")
+            _portpatch.CUSTOM_PORT_TARGETS[args.target] = {445: int(smb), 135: int(rpc)}
+            tag = "" if args.cloud is not None else " (recalled)"
+            print(f"[cloud{tag}] {args.target}: SMB 445->{smb}, RPC 135->{rpc}")
         except Exception as e:
             print(f"[!] could not enable cloud ports: {e}", file=sys.stderr)
+    core.remember_target(args.target, source=source or None, cloud=bool(cloud),
+                         smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None))
 
     try:
         ev = core.Evidence(base=args.evidence_dir)

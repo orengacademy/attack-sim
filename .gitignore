@@ -31,3 +31,6 @@ deploy/cloud/**/.terraform.lock.hcl
 
 # Fleet of targets (operator-specific infra / IPs)
 fleet.json
+
+# Per-target remembered options (source/cloud ports) — operator-specific
+.target_memory.json
