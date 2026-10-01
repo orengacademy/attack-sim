@@ -54,8 +54,31 @@ if (-not (Get-ADUser -Filter "SamAccountName -eq 'svc_asrep'")) {
     Write-Host "[*] Created AS-REP-roastable svc_asrep (no pre-auth)"
 }
 
+# --- alternate SMB/RPC ports for the cloud path -----------------------------
+# ISPs commonly block OUTBOUND 445 (and raw SMB/RPC shouldn't sit on a public
+# edge), so expose SMB and RPC on alternate high ports and let the client reach
+# those (the harness maps them in modules/_portpatch.py: 445->4445, 135->1135).
+# netsh portproxy forwards the alternate port to the real local service; the
+# host firewall must also allow the alternate ports (the cloud SG already does).
+# RPC/DCOM also uses a dynamic high port after 135 — that is NOT forwarded here,
+# so SMB-based modules (psexec, dcsync over the SMB pipe) work on the cloud path
+# while pure-DCOM (wmiexec) may still need direct 135 + the dynamic range.
+try {
+    netsh interface portproxy add v4tov4 listenport=4445 listenaddress=0.0.0.0 connectport=445 connectaddress=127.0.0.1 | Out-Null
+    netsh interface portproxy add v4tov4 listenport=1135 listenaddress=0.0.0.0 connectport=135 connectaddress=127.0.0.1 | Out-Null
+    foreach ($p in 4445, 1135) {
+        $n = "USS-alt-$p"
+        if (-not (Get-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName $n -Direction Inbound -Protocol TCP `
+                -LocalPort $p -Action Allow | Out-Null
+        }
+    }
+    Write-Host "[*] Alternate ports up: SMB 4445->445, RPC 1135->135 (cloud path)"
+} catch { Write-Host "[!] could not set up alternate SMB/RPC portproxy: $_" }
+
 Write-Host ""
 Write-Host "[+] AD DC ready:"
 Write-Host "      domain=$Domain  admin=Administrator  pass=$WeakPass"
 Write-Host "      kerberoast=svc_sql  asrep=svc_asrep"
+Write-Host "      cloud alt-ports: SMB 4445, RPC 1135 (also raw 445/135 locally)"
 Write-Host "    Point the harness: HARNESS_DOMAIN=$Domain HARNESS_DC_USER=Administrator HARNESS_DC_PASS='$WeakPass'"

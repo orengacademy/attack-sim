@@ -21,10 +21,13 @@ provider "azurerm" {
 }
 
 locals {
-  # AD / management ports the harness needs to the DC (see README for the ISP
-  # 139/445 caveat on the cloud path). Opened to tester_cidrs ONLY.
-  allowed_ports = ["53", "88", "135", "139", "389", "445", "636", "3268",
-  "3269", "3389", "5985", "5986"]
+  # AD / management ports the harness needs to the DC, opened to tester_cidrs
+  # ONLY. SMB/RPC are exposed on ALTERNATE high ports (RPC 1135, SMB 4445) via a
+  # netsh portproxy on the DC — NOT raw 139/445 (ISPs block those outbound, and
+  # they shouldn't be on the public edge). Client maps them in _portpatch.py;
+  # raw 135 stays for the RPC endpoint-mapper (DCOM).
+  allowed_ports = ["53", "88", "135", "1135", "389", "636", "3268",
+  "3269", "3389", "4445", "5985", "5986"]
 }
 
 resource "random_string" "sfx" {
