@@ -119,7 +119,13 @@ def _run_in_process(target, ctx):
 def run(target, ctx):
     if _portpatch.is_custom_port_target(target):
         return _run_in_process(target, ctx)
-    # Runs a single command (whoami) via a temporary service over SMB.
+    # Runs a single command (whoami) via a temporary service over SMB. Resolve the
+    # impacket tool across flavours (impacket-psexec / psexec.py / example script)
+    # so it isn't tied to the Kali CLI name.
+    from modules import _impacket
+    tool = _impacket.resolve("psexec")
+    if not tool:
+        return ("# psexec vs %s\n\n[SKIP] impacket not installed — psexec unavailable "
+                "(pip install impacket / apt python3-impacket)." % target)
     return ctx.run_cmd(
-        'impacket-psexec {domain}/{dc_user}:{dc_pass}@{target} "cmd /c whoami"',
-        target)
+        tool + ' {domain}/{dc_user}:{dc_pass}@{target} "cmd /c whoami"', target)
