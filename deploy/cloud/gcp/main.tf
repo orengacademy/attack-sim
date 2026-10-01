@@ -21,8 +21,11 @@ provider "google" {
 }
 
 locals {
-  allowed_tcp = ["53", "88", "135", "139", "389", "445", "636", "3268",
-  "3269", "3389", "5985", "5986"]
+  # SMB/RPC on ALTERNATE high ports (RPC 1135, SMB 4445) via a netsh portproxy on
+  # the DC — not raw 139/445 (blocked outbound by ISPs; off the public edge).
+  # Client maps them in _portpatch.py; raw 135 stays for the RPC EPM (DCOM).
+  allowed_tcp = ["53", "88", "135", "1135", "389", "636", "3268",
+  "3269", "3389", "4445", "5985", "5986"]
   allowed_udp = ["53", "88", "123", "389"]
   startup = templatefile("${path.module}/startup.ps1.tftpl", {
     prov_b64  = filebase64("${path.module}/../../windows/provision.ps1")

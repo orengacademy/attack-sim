@@ -29,7 +29,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^EXFIL-OK",
-    "blocked_regex": r"exfil blocked|not configured",
+    "blocked_regex": r"exfil blocked",
 }
 
 _TOKEN = ("MYGOVNET-USS-CANARY SYNTHETIC-NON-SENSITIVE MARKER "

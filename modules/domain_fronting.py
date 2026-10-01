@@ -32,7 +32,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^FRONTED ",
-    "blocked_regex": r"fronting blocked|not configured",
+    "blocked_regex": r"fronting blocked",
 }
 
 

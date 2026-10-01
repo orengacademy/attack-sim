@@ -189,6 +189,75 @@ class TestServiceVsBlocked(unittest.TestCase):
         self.assertEqual(ev.records[0]["baseline_result"], "BLOCKED")
 
 
+class TestSkipNotScoredAsBlocked(unittest.TestCase):
+    """A module that printed [SKIP] (did nothing) must NEVER score as BLOCKED —
+    otherwise an unconfigured active module fabricates a 'control worked' verdict.
+    Regression for the run_02-10 false 'OK (blocked)' on 9 egress modules."""
+
+    def _skip_mod(self):
+        m = types.SimpleNamespace()
+        # blocked_regex deliberately contains the skip phrase, as the 9 real
+        # modules used to, to prove the [SKIP] guard wins regardless.
+        m.META = {"id": "skipper", "name": "skipper", "category": "Egress / C2",
+                  "requires": [], "ports": [], "mitre": ["T1572"], "tactic": "C2",
+                  "success_regex": r"REACHABLE", "blocked_regex": r"not configured"}
+        m.run = lambda t, c: "# skipper\n\n[SKIP] attacker_vps not configured — nothing sent"
+        return m
+
+    def test_single_target_skip_is_SKIPPED_not_blocked(self):
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        root = core.Runner("127.0.0.1").run([self._skip_mod()], 1, ev,
+                                             skip_unready=False, recon=False)
+        self.assertEqual(ev.records[0]["baseline_result"], "SKIPPED")
+        # and the aggregate report must not call a uniform single bucket INCONSISTENT
+        with open(os.path.join(root, "report.txt")) as f:
+            rpt = f.read()
+        self.assertIn("SKIPPED (not run", rpt)
+        self.assertNotIn("INCONSISTENT", rpt)
+
+    def test_classify_skip_is_not_blocked(self):
+        meta = {"success_regex": r"WIN", "blocked_regex": r"not configured"}
+        b, a, v = core.classify(meta, "WIN here", "[SKIP] not configured")
+        self.assertEqual(a, "NO-RESULT")   # a skip is NOT a block through the appliance
+
+
+class TestConsistencyBuckets(unittest.TestCase):
+    def test_single_other_iteration_is_consistent(self):
+        # one iteration landing in 'other' (e.g. NO-RESULT) is a single uniform
+        # bucket -> consistent, not INCONSISTENT (the 'other'/'skipped' buckets
+        # were missing from the consistency test).
+        m = types.SimpleNamespace()
+        m.META = {"id": "noresult", "name": "noresult", "category": "Test",
+                  "requires": [], "ports": [], "success_regex": r"WIN",
+                  "blocked_regex": r"refused"}
+        m.run = lambda t, c: "nothing conclusive here"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        root = core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=False)
+        with open(os.path.join(root, "report.txt")) as f:
+            rpt = f.read()
+        self.assertNotIn("INCONSISTENT", rpt)
+
+
+class TestSourceIpBindable(unittest.TestCase):
+    def test_loopback_is_bindable(self):
+        self.assertTrue(core.source_ip_bindable("127.0.0.1"))
+
+    def test_nonlocal_is_not_bindable(self):
+        # TEST-NET-3 (RFC5737) — never a local interface address
+        self.assertFalse(core.source_ip_bindable("203.0.113.7"))
+
+    def test_empty_is_not_bindable(self):
+        self.assertFalse(core.source_ip_bindable(""))
+
+
+class TestSshBruteSkipsWithoutPassword(unittest.TestCase):
+    def test_empty_password_skips(self):
+        import modules.ssh_brute as sb
+        ctx = core.Context(credentials={"domain": "d", "dc_user": "u", "dc_pass": ""})
+        out = sb.run("127.0.0.1", ctx)
+        self.assertIn("[SKIP]", out)
+
+
 class TestProbes(unittest.TestCase):
     def test_tcp_open_then_closed(self):
         srv = socket.socket()

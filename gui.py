@@ -54,6 +54,7 @@ STATUS_COLORS = {
     "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
     "AUTH-FAILED":    WARNC,   # bad creds, not a control result
     "NO-RESULT":      WARNC,   # inconclusive — review
+    "SKIPPED":        MUTED,   # module did nothing (n/a or unconfigured) — not a result
     "PREREQ-MISSING": MUTED,   # skipped (tooling/priv)
 }
 

@@ -33,7 +33,7 @@ META = {
     "requires": [],       # tunnel tools checked at runtime only in --active mode
     "ports": [],
     "success_regex": r"^TUNNEL-|^REACHABLE ",
-    "blocked_regex": r"egress to VPS blocked|not configured",
+    "blocked_regex": r"egress to VPS blocked",
 }
 
 # client command templates by tool -> (argv, success keywords). {vps} filled in.

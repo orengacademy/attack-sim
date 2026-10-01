@@ -33,7 +33,11 @@ data "aws_ami" "win2022" {
 }
 
 locals {
-  allowed_tcp = [53, 88, 135, 139, 389, 445, 636, 3268, 3269, 3389, 5985, 5986]
+  # Cloud SMB/RPC are exposed on ALTERNATE high ports (RPC 1135, SMB 4445) via a
+  # netsh portproxy on the DC — NOT the raw 139/445, which ISPs commonly block
+  # outbound and which shouldn't be on the public edge. The client maps these in
+  # modules/_portpatch.py. Raw 135 stays open for the RPC endpoint-mapper (DCOM).
+  allowed_tcp = [53, 88, 135, 1135, 389, 636, 3268, 3269, 3389, 4445, 5985, 5986]
   user_data = templatefile("${path.module}/user_data.ps1.tftpl", {
     prov_b64  = filebase64("${path.module}/../../windows/provision.ps1")
     provc_b64 = filebase64("${path.module}/../provision_cloud.ps1")

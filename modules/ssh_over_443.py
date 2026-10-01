@@ -33,7 +33,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^SSH443-|^BANNER ",
-    "blocked_regex": r"SSH-over-443 blocked|not configured",
+    "blocked_regex": r"SSH-over-443 blocked",
 }
 
 

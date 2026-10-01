@@ -33,6 +33,7 @@ META = {
     "name": "WMI Lateral Movement",
     "category": "AD Exploitation",
     "test_type": "attack_sim",  # same segmentation/lateral-movement family as psexec, different transport (DCOM vs SVCManager)
+    "added": True,  # opt-in, not in the original baseline set (psexec is the original-set lateral module)
     "family": "D",
     "control": "Segmentation (SMB/RPC/DCOM) + IPS/EDR WMI-exec detection",
     "fix": "SD-WAN",
