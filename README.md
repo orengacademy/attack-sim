@@ -63,9 +63,12 @@ If the targets already exist, skip this and just point the harness at their IPs.
 - **Per-target creds** (a Linux box and a Windows DC need *different* logins) →
   set them **per target**: CLI `--domain/--dc-user/--dc-pass`, or the GUI
   Domain/User/Pass fields. Remembered per target in a `0600 .target_memory.json`.
-  **SSH creds are separate** (`--ssh-user/--ssh-pass`): a dual-role target is both
-  an SSH host *and* a DC front, and one identity can't serve both — `ssh_brute`
-  uses the SSH creds and falls back to the DC creds only when they're unset.
+  **SSH creds are separate** (CLI `--ssh-user/--ssh-pass`, or the GUI **SSH
+  user/SSH pass** fields): a dual-role target is both an SSH host *and* a DC
+  front, and one identity can't serve both — `ssh_brute` uses the SSH creds and
+  falls back to the DC creds only when they're unset. (If `ssh_brute` reports
+  `0 valid password found` → NO-RESULT, you gave it the DC login, not the SSH
+  login; set the SSH fields.)
 - **Egress infra** (for the USS A–G modules: your VPS/domain/DoH/canary/pivot) →
   `config.json` (copy `config.json.example`). Unset keys → that module `[SKIP]`s.
 - **Cloud target** (SMB/RPC on NAT'd high ports) → GUI "Cloud target" tick, or CLI

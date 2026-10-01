@@ -225,14 +225,25 @@ class HarnessGUI:
         self.user_entry = ttk.Entry(crf, width=14); self.user_entry.pack(side="left", padx=(4, 6))
         ttk.Label(crf, text="Pass").pack(side="left")
         self.pass_entry = ttk.Entry(crf, width=14, show="•"); self.pass_entry.pack(side="left", padx=(4, 6))
-        ttk.Label(crf, text="(per-target; blank = credentials.env)",
+        ttk.Label(crf, text="(DC/AD creds — per-target; blank = credentials.env)",
+                  style="Muted.TLabel").pack(side="left")
+
+        # SSH creds are SEPARATE from the DC creds: a dual-role target is both an
+        # SSH host and a DC front, and one identity can't serve both. ssh_brute
+        # uses these and falls back to the DC User/Pass above only when blank.
+        srf = ttk.Frame(f); srf.grid(row=8, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        ttk.Label(srf, text="SSH user").pack(side="left")
+        self.ssh_user_entry = ttk.Entry(srf, width=14); self.ssh_user_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(srf, text="SSH pass").pack(side="left")
+        self.ssh_pass_entry = ttk.Entry(srf, width=14, show="•"); self.ssh_pass_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(srf, text="(ssh_brute only; blank = fall back to the DC User/Pass)",
                   style="Muted.TLabel").pack(side="left")
 
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=8, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+        self._priv_label.grid(row=9, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
-        self._unlock_btn.grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
+        self._unlock_btn.grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
         self._refresh_privilege()
 
     def _refresh_privilege(self):
@@ -520,9 +531,10 @@ class HarnessGUI:
             if rec.get("rpc_port"):
                 self.rpc_port.set(str(rec["rpc_port"]))
             self._toggle_cloud_ports()
-        # per-target credentials
+        # per-target credentials (DC/AD + separate SSH)
         for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
-                           ("dc_pass", self.pass_entry)):
+                           ("dc_pass", self.pass_entry),
+                           ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry)):
             if rec.get(key) and not entry.get().strip():
                 entry.insert(0, rec[key])
 
@@ -537,15 +549,20 @@ class HarnessGUI:
                 rpc_port=(self.rpc_port.get().strip() or None) if self.cloud_var.get() else None,
                 domain=self.domain_entry.get().strip() or None,
                 dc_user=self.user_entry.get().strip() or None,
-                dc_pass=self.pass_entry.get().strip() or None)
+                dc_pass=self.pass_entry.get().strip() or None,
+                ssh_user=self.ssh_user_entry.get().strip() or None,
+                ssh_pass=self.ssh_pass_entry.get().strip() or None)
         except Exception:
             pass
 
     def _apply_target_creds(self):
-        """Apply the per-target Domain/User/Pass fields to the runner's creds
-        (blank fields keep whatever credentials.env/env already loaded)."""
+        """Apply the per-target DC + SSH credential fields to the runner's creds
+        (blank fields keep whatever credentials.env/env already loaded). SSH creds
+        are separate so ssh_brute can log into a dual-role target's Linux SSH
+        while the AD modules use the DC login."""
         for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
-                           ("dc_pass", self.pass_entry)):
+                           ("dc_pass", self.pass_entry),
+                           ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry)):
             v = entry.get().strip()
             if v:
                 self.runner.ctx.creds[key] = v
