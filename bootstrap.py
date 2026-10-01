@@ -190,11 +190,44 @@ def install_active():
     return still_missing
 
 
+def install_py_requirements():
+    """Ensure the in-process modules' Python libs (requirements.txt / the single
+    source of truth core.PY_PACKAGES) are importable; pip-install any that are
+    MISSING (so apt-provided ones aren't clobbered). Upgrading a user-site
+    cryptography here also clears the stale-shadow case."""
+    try:
+        import importlib
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import core
+        pkgs = core.PY_PACKAGES
+    except Exception as e:
+        print(f"  (skipping requirements check: {e})")
+        return
+    c("\nChecking Python packages (requirements.txt) for the in-process AD modules…")
+    missing = []
+    for imp, pip_name in pkgs:
+        try:
+            importlib.import_module(imp)
+            print(f"  [OK] {pip_name}")
+        except Exception as e:
+            print(f"  [missing/broken] {pip_name} (import {imp} -> {e.__class__.__name__})")
+            missing.append(pip_name)
+    missing = list(dict.fromkeys(missing))
+    if not missing:
+        return
+    print("  installing:", ", ".join(missing))
+    r = run([sys.executable, "-m", "pip", "install", "--user"] + missing)
+    if r.returncode != 0:
+        run([sys.executable, "-m", "pip", "install", "--user",
+             "--break-system-packages"] + missing)
+
+
 def main():
     with_active = "--with-active" in sys.argv[1:]
     c("=== Harness bootstrap ===", "1;32")
     missing = install_core()
     ensure_impacket_module()
+    install_py_requirements()
     ensure_impacket_runtime()
     if with_active:
         missing += install_active()

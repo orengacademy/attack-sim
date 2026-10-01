@@ -1,0 +1,20 @@
+# Python libraries the IN-PROCESS attack modules import. The egress/segmentation
+# modules are pure stdlib and need NONE of these; the other modules shell out to
+# CLI tools (impacket-scripts, hydra, snmp, ...) installed by bootstrap.py via apt.
+# So you only need these if you run the in-process AD modules (dcsync/psexec/
+# wmiexec/nopac/samaccountname_spoof) or kerberos_asrep.
+#
+#   python3 -m pip install -r requirements.txt        # (bootstrap.py does this for missing ones)
+#   python3 preflight.py                               # verifies they actually import
+#
+# cryptography is listed explicitly because a stale/shadowed one breaks
+# dns.asyncquery -> cryptography.hazmat.asn1, which is what makes noPac /
+# sAMAccountName NO-RESULT. preflight imports that exact chain to catch it.
+
+impacket
+ldap3
+ldapdomaindump
+dnspython
+cryptography
+pyasn1
+six
