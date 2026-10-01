@@ -15,8 +15,20 @@ Two target types:
 | **Windows AD DC** (Kerberos/LDAP/SMB) | kerberoast, kerberos_asrep, dcsync, psexec, petitpotam | **Vagrant** (`deploy/windows/`) |
 
 The Debian droplet can host the Linux side; the **Windows/AD attacks need a real
-Windows DC** (PsExec/PetitPotam are Windows-only) — use the Vagrant box, or point
-the harness's AD modules at a separate Windows DC IP.
+Windows DC** (PsExec/PetitPotam are Windows-only) — use the Vagrant box (local bench),
+the **[cloud/KVDC Terraform](cloud/README.md)** (Azure module reusing `provision.ps1`),
+or point the harness's AD modules at a separate Windows DC IP.
+
+## Fastest path: one command (Ubuntu/Debian)
+
+```bash
+sudo deploy/setup_all.sh              # Docker (if missing) + host services + containers
+sudo deploy/setup_all.sh --with-tools # also install the attacker tooling (bootstrap.py)
+sudo deploy/setup_all.sh --teardown   # remove everything
+```
+
+Then self-test from the box: `python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe`.
+The manual, step-by-step equivalent is below.
 
 ---
 

@@ -39,9 +39,11 @@ MONO = ("TkFixedFont", 10)
 
 # Purple-team semantics: a result that means the attack GOT THROUGH the SD-WAN is
 # a FINDING -> red; a result that means the control STOPPED it is good -> green.
+DETC = "#db6d28"               # orange — passed but detected (partial win)
 STATUS_COLORS = {
-    "SUCCESS":        ERRC,    # attack passed the SD-WAN  -> FINDING (red)
+    "SUCCESS":        ERRC,    # attack passed undetected -> FINDING (red)
     "PASSED":         ERRC,    # (dual-path) same
+    "DETECTED":       DETC,    # passed the boundary but the SOC alerted (orange)
     "BLOCKED":        OKC,     # control stopped it (filtered/dropped) -> good (green)
     "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
     "AUTH-FAILED":    WARNC,   # bad creds, not a control result
@@ -167,9 +169,20 @@ class HarnessGUI:
                   style="Muted.TLabel").grid(row=2, column=0, columnspan=7, sticky="w",
                                              padx=6, pady=(0, 2))
 
+        # USS runtime options: active establishment + egress source binding
+        of = ttk.Frame(f); of.grid(row=3, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 2))
+        self.active_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(of, text="Active establishment (build real tunnels/pivots/exfil — needs config.json)",
+                        variable=self.active_var).pack(side="left")
+        ttk.Label(of, text="Source IP").pack(side="left", padx=(12, 4))
+        self.source_entry = ttk.Entry(of, width=16)
+        self.source_entry.pack(side="left")
+        ttk.Label(of, text="(bind egress — DC foothold / VRF)",
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
+
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        self._priv_label.grid(row=4, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
         self._refresh_privilege()
 
@@ -183,7 +196,7 @@ class HarnessGUI:
         self._priv_label.configure(text=f"{icon} Privilege: {ps['how']}", style=style)
         self._priv_label.grid()
         if ps["can_unlock"]:
-            self._unlock_btn.grid(row=3, column=6, sticky="e", padx=6, pady=(0, 6))
+            self._unlock_btn.grid(row=4, column=6, sticky="e", padx=6, pady=(0, 6))
         else:
             self._unlock_btn.grid_remove()
 
@@ -212,6 +225,14 @@ class HarnessGUI:
         canvas.configure(yscrollcommand=sb.set)
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+        # mouse-wheel scrolling over the attacks list (45+ modules) — cross-platform
+        def _wheel(e):
+            delta = 1 if getattr(e, "num", None) == 5 else -1 if getattr(e, "num", None) == 4 \
+                else (-1 if e.delta > 0 else 1)
+            canvas.yview_scroll(delta, "units")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            canvas.bind_all(seq, lambda e: _wheel(e) if self._over(canvas, e) else None)
 
         # fixed grid columns so every row lines up: attack | badge | MITRE | tactic | port | fix
         for col, w in ((0, 0), (1, 46), (2, 130), (3, 130), (4, 78), (5, 90)):
@@ -286,11 +307,12 @@ class HarnessGUI:
 
         left = ttk.LabelFrame(outer, text="Status")
         left.pack(side="left", fill="y", padx=(0, 6))
-        left.pack_propagate(False); left.configure(width=350)
+        left.pack_propagate(False); left.configure(width=560)
 
         # legend (stacked so it never truncates) — colour semantics
         leg = ttk.Frame(left, style="Card.TFrame"); leg.pack(fill="x", padx=6, pady=(4, 4))
-        for dot, col, txt in ((("●"), ERRC, "PASSED — attack got through (finding)"),
+        for dot, col, txt in ((("●"), ERRC, "PASSED — got through undetected (finding)"),
+                              (("●"), DETC, "DETECTED — passed but SOC alerted"),
                               (("●"), OKC, "BLOCKED — filtered/dropped by control (good)"),
                               (("●"), BLUEC, "NO-SERVICE — port closed, not a block"),
                               (("●"), WARNC, "NO-RESULT / AUTH — review"),
@@ -300,15 +322,25 @@ class HarnessGUI:
             tk.Label(rowf, text=txt, fg=MUTED, bg=PANEL,
                      font=("TkDefaultFont", 8)).pack(side="left")
 
-        self.status_tree = ttk.Treeview(left, columns=("mode", "attack", "iter", "result"),
-                                        show="headings", height=20)
-        for c, t, w, a in (("mode", "M", 34, "center"), ("attack", "Attack", 176, "w"),
-                           ("iter", "#", 26, "center"), ("result", "Result", 104, "center")):
-            self.status_tree.heading(c, text=t); self.status_tree.column(c, width=w, anchor=a)
-        self.status_tree.pack(side="left", fill="both", expand=True)
-        sb1 = ttk.Scrollbar(left, command=self.status_tree.yview); sb1.pack(side="right", fill="y")
-        self.status_tree.configure(yscrollcommand=sb1.set)
-        # red = attack passed the SD-WAN (finding); green = blocked (control worked)
+        # tree + BOTH scrollbars in a grid frame (packing the scrollbar after an
+        # expanding tree squeezes it to zero width — the old "can't scroll" bug).
+        tf = ttk.Frame(left); tf.pack(fill="both", expand=True, padx=2, pady=2)
+        cols = ("mode", "dir", "attack", "iter", "result", "mitre", "cwe")
+        self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
+        for c, t, w, a in (("mode", "M", 32, "center"), ("dir", "Dir", 38, "center"),
+                           ("attack", "Attack", 150, "w"), ("iter", "#", 24, "center"),
+                           ("result", "Result", 96, "center"), ("mitre", "MITRE", 118, "w"),
+                           ("cwe", "CWE", 86, "w")):
+            self.status_tree.heading(c, text=t)
+            self.status_tree.column(c, width=w, anchor=a, stretch=False)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=self.status_tree.yview)
+        hsb = ttk.Scrollbar(tf, orient="horizontal", command=self.status_tree.xview)
+        self.status_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.status_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        tf.rowconfigure(0, weight=1); tf.columnconfigure(0, weight=1)
+        # red = passed undetected (finding); orange = detected; green = blocked (good)
         for tag, col in STATUS_COLORS.items():
             self.status_tree.tag_configure(tag, foreground=col)
 
@@ -326,6 +358,19 @@ class HarnessGUI:
             self.log.tag_configure(tag, foreground=col)
 
     # ----- helpers -----------------------------------------------------
+    def _over(self, widget, e):
+        """True if the pointer is over `widget` or one of its descendants (so a
+        bind_all wheel event only scrolls the list the cursor is actually on)."""
+        try:
+            w = widget.winfo_containing(e.x_root, e.y_root)
+        except Exception:
+            return False
+        while w is not None:
+            if w == widget:
+                return True
+            w = getattr(w, "master", None)
+        return False
+
     def _all(self, v):
         for var, _ in self.vars.values():
             var.set(v)
@@ -459,9 +504,11 @@ class HarnessGUI:
         self.log.insert("end", "\n".join(tail) + "\n")
         self.log.see("end")
 
-    def _add_status(self, name, it, result):
+    def _add_status(self, name, it, result, direction="", mitre="", cwe=""):
         m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
-        self.status_tree.insert("", "end", values=(m, name, it, result), tags=(result,))
+        self.status_tree.insert("", "end",
+                                values=(m, direction, name, it, result, mitre, cwe),
+                                tags=(result,))
         kids = self.status_tree.get_children()
         if kids:
             self.status_tree.see(kids[-1])
@@ -475,7 +522,14 @@ class HarnessGUI:
                 elif kind == "output":
                     _aid, name, raw = p; self._show_output(name, raw)
                 elif kind == "status":
-                    _aid, name, it, result, _v = p; self._add_status(name, it, result)
+                    aid, name, it, result, _v = p
+                    mod = self.vars.get(aid, (None, None))[1]
+                    meta = getattr(mod, "META", {}) if mod else {}
+                    self._add_status(
+                        name, it, result,
+                        direction=meta.get("direction", "a2b"),
+                        mitre=", ".join(meta.get("mitre", [])),
+                        cwe=", ".join(meta.get("cwe", [])))
                 elif kind == "progress":
                     self.progress["maximum"] = p[1]; self.progress["value"] = p[0]
                 elif kind == "done":
@@ -529,6 +583,13 @@ class HarnessGUI:
         self.runner.concurrency = workers
         if port_overrides:
             self.runner.ctx.port_overrides = port_overrides
+        self.runner.ctx.allow_active = bool(self.active_var.get())
+        src = self.source_entry.get().strip()
+        if src:
+            self.runner.ctx.source_ip = src
+        if self.active_var.get():
+            self._log("ACTIVE establishment ENABLED — live modules may build real "
+                      "tunnels/pivots/exfil to your configured infra.")
 
         mode = self._run_mode
 

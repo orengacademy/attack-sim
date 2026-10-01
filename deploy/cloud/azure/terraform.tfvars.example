@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+prefix         = "ussdc"
+location       = "southeastasia"
+
+# REQUIRED — the ONLY source IPs allowed to reach the vulnerable DC.
+# Use your tester / NOC egress IP(s). NEVER 0.0.0.0/0.
+tester_cidrs   = ["203.0.113.10/32", "198.51.100.0/28"]
+
+admin_username = "azadmin"
+admin_password = "ChangeMe-Strong-P@ssw0rd-12+"   # build-time local admin (not the lab domain pw)
+
+vm_size          = "Standard_B2ms"
+create_public_ip = false     # prefer VNet/VPN reachability

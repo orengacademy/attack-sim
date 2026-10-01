@@ -8,9 +8,11 @@ venv/
 # Runtime attack evidence (created at run time; may contain captured hashes)
 evidence/
 
-# Local secrets / target scope — never commit these
+# Local secrets / target scope / operator infra — never commit these
 credentials.env
 allowlist.txt
+config.json
+detections.json
 .env
 
 # OS / editor
@@ -19,3 +21,10 @@ desktop.ini
 Thumbs.db
 .idea/
 .vscode/
+
+# Terraform (cloud deploy) — state may hold secrets; tfvars holds infra IPs
+deploy/cloud/**/.terraform/
+deploy/cloud/**/*.tfstate
+deploy/cloud/**/*.tfstate.*
+deploy/cloud/**/terraform.tfvars
+deploy/cloud/**/.terraform.lock.hcl

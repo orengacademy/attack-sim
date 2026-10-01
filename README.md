@@ -25,6 +25,13 @@ the password comes from the environment or a git-ignored `credentials.env`
   separated) and/or a git-ignored `allowlist.txt` (see `allowlist.txt.example`) —
   the harness refuses any target not on it. With no allowlist configured,
   behaviour is unchanged (any validated target is allowed).
+- **Operator config** (git-ignored): the USS modules read the destinations they aim
+  at (your VPS/domain/DoH/canary/pivot) from `config.json` (see
+  `config.json.example`) or `HARNESS_CFG_*` — no live infra is hardcoded; unset →
+  the module `[SKIP]`s. **Detections**: `detections.json` (see
+  `detections.json.example`) / `HARNESS_DETECTIONS` feed the **DETECTED** verdict.
+- **Active establishment is off by default** — live tunnels/pivots/exfil only run
+  with `--active`; otherwise modules do non-destructive indicator checks.
 
 ## Layout
 
@@ -64,14 +71,20 @@ through the SD-WAN — rather than app-layer/WAF controls that sit at the agency
 ## Deploying the vulnerable target(s)
 
 `deploy/` provisions the lab you test against (⚠ **lab only** — isolate it):
-- **Linux services + web CVEs**: `sudo deploy/setup_target.sh` (SSH lab user, FTP
-  anon, SNMP public) then `cd deploy && docker compose up -d` (Apache CVE-2021-41773,
-  Log4Shell, anonymous OpenLDAP).
-- **Windows AD DC** (for kerberoast/asrep/dcsync/psexec/petitpotam — these need a
-  real Windows DC): `cd deploy/windows && vagrant up` provisions a DC with a
-  Kerberoastable SPN, an AS-REP-roastable account, and weak admin creds.
+- **One-shot on a fresh Ubuntu/Debian VM**: `sudo deploy/setup_all.sh` installs
+  Docker if missing, runs `setup_target.sh`, and brings up the containers — the whole
+  Linux target in one command (`--with-tools` also installs the attacker tooling;
+  `--teardown` removes it).
+- **Linux services + web CVEs** (manual): `sudo deploy/setup_target.sh` (SSH lab user,
+  FTP anon, SNMP public) then `cd deploy && docker compose up -d` (Apache
+  CVE-2021-41773, Log4Shell, anonymous OpenLDAP).
+- **Windows AD DC** — local bench: `cd deploy/windows && vagrant up` (Kerberoastable
+  SPN, AS-REP-roastable account, weak admin). **KVDC / cloud**: use
+  **[deploy/cloud/](deploy/cloud/README.md)** — Terraform (Azure module included)
+  that reuses `provision.ps1` via `provision_cloud.ps1`, locked to your tester IPs.
 
-Full steps + teardown: **[deploy/DEPLOY.md](deploy/DEPLOY.md)**.
+Full steps + teardown: **[deploy/DEPLOY.md](deploy/DEPLOY.md)** · cloud/KVDC + the
+reverse (B→A) direction: **[deploy/cloud/README.md](deploy/cloud/README.md)**.
 
 ## Install (Kali)
 
@@ -286,7 +299,11 @@ evidence/run_<ts>/
 
 ## Verdicts (single-target mode)
 
-- **SUCCESS** — attack succeeded against the target → finding.
+- **SUCCESS** — attack succeeded and was **not** detected → *passed-undetected*, the finding.
+- **DETECTED** — attack **passed the boundary but the blue team saw it** (detection
+  works, prevention didn't). Populated from an operator-supplied `detections.json`
+  (or `HARNESS_DETECTIONS`, or a module's `detected_regex`) — see
+  [Detection-aware scoring](#detection-aware-scoring-blocked--detected--passed-undetected).
 - **AUTH-FAILED** — credential error (wrong `HARNESS_DC_USER`/`HARNESS_DC_PASS`), not a control result.
 - **BLOCKED** — traffic was **filtered / dropped in transit** (port filtered, or a
   timeout) → the control (SD-WAN/segmentation) likely stopped it.
@@ -310,22 +327,72 @@ The engagement's **Attack Simulation (USS)** scope — per `additional/mygovnet-
 Each module is tagged with a `test_type` so a USS run reflects that scope and isn't
 mixed with other NPSA test types. Filter with `--attack-sim` or `--family`:
 
-| test_type | modules | in USS scope? |
-|-----------|---------|---------------|
-| **attack_sim** | egress_tunnel_brokers (A), tls_carrier (A), l7_enforce_443 (A), doh_bypass (B), covert_channel (E), segmentation_sweep (D), appid_port_mismatch (D), psexec (D) | ✅ yes |
-| pentest | apache_41773, log4shell, dcsync, kerberoast, petitpotam, kerberos_asrep | ✗ (UPT) |
-| va | snmp_brute, ssh_brute, ftp_anonymous, ldap_null_bind | ✗ (VA/ConfigA) |
-| dos | icmp_flood, syn_flood | ✗ (plan says **no DoS**) |
+All **seven** families are now modularised. `test_type` keeps the USS set separate
+from the other NPSA workstreams:
 
-Family coverage: **A** (443 tunnelling — client-named) ✔ egress-broker + TLS-carrier
-+ L7-enforcement; **B** (DNS covert) ✔ DoH + DNS tunnel; **D** (segmentation/lateral)
-✔ sweep + App-ID + PsExec; **E** (exfil) ✔ ICMP/DNS. **C** (TLS/JA3 evasion), **F**
-(WAF — agency-owned), **G** (beacon realism) are not yet modularised. Run the scoped
-set headless:
+| test_type | in USS scope? |
+|-----------|---------------|
+| **attack_sim** | ✅ yes — families A–G below |
+| pentest | ✗ (UPT): apache_41773, log4shell, dcsync, kerberoast, petitpotam, kerberos_asrep |
+| va | ✗ (VA/ConfigA): snmp_brute, ssh_brute, ftp_anonymous, ldap_null_bind |
+| dos | ✗ (plan says **no DoS**): icmp_flood, syn_flood |
+
+**Family coverage (attack_sim):**
+
+| Fam | Control validated | Modules |
+|-----|-------------------|---------|
+| **A** — 443 C2/tunnel | egress allow-list, TLS-inspect, App-ID | egress_tunnel_brokers, tls_carrier, l7_enforce_443, lots_saas_c2, domain_fronting, self_tunnel_vps\*, udp443_quic, ssh_over_443\* |
+| **B** — DNS covert | forced internal resolver, DoH/DoT block | doh_bypass, doh_multi, dns_egress_external, dot_doq_853, dns_tunnel\* |
+| **C** — TLS/proxy evasion | JA3/inspection, category, proxy, parsing | ja3_mimicry, nrd_category, proxy_bypass, http_smuggling |
+| **D** — segmentation/lateral | least-privilege ACLs, micro-seg, App-ID | segmentation_sweep, appid_port_mismatch, psexec, reverse_egress (b2a), socks_pivot\*, eastwest_lateral\*, ipv6_acl_parity, stateful_evasion, switch_mgmt |
+| **E** — exfil/DLP | DLP, volume thresholds, ICMP/DNS egress | covert_channel, dlp_canary_https, dlp_lowandslow\*, icmp_exfil\* |
+| **F** — inbound/WAF (agency-owned) | WAF, DMZ egress, mgmt surface | waf_evasion, exposed_mgmt_api |
+| **G** — realism overlay | NDR beacon analytics, UEBA | beacon_shaping\* |
+
+`* = active-establishment capable` (see [Active establishment](#active-establishment)).
+
+Run the scoped set headless:
 ```bash
-python3 cli.py --target <IP> --attack-sim --confirm-roe        # all USS families
-python3 cli.py --target <IP> --family A,B --confirm-roe        # the two client-named
+python3 cli.py --target <IP> --attack-sim --confirm-roe            # all USS families
+python3 cli.py --target <IP> --family A,B --confirm-roe            # the two client-named
+python3 cli.py --target <IP> --attack-sim --direction b2a \
+  --source <DC_ip> --confirm-roe                                    # reverse (server-initiated)
+python3 cli.py --target <IP> --attack-sim --active --confirm-roe   # allow live establishment
 ```
+
+### Detection-aware scoring (Blocked / Detected / Passed-undetected)
+
+The purple-team deliverable is three-state, not two. The harness scores block-vs-pass
+from the attacker side; to record **Detected** (passed but the SOC alerted), give it
+the blue team's confirmations: copy `detections.json.example` → `detections.json`
+(git-ignored) or point `HARNESS_DETECTIONS` at a file, listing the attack ids the SOC
+saw. Any attack that **passes** *and* is listed scores **DETECTED** (orange in the
+report / `DETECT` in the ATT&CK Navigator layer) instead of the red **SUCCESS**
+(passed-undetected finding). A module can also self-report via `detected_regex`.
+
+### Operator config (no live infra hardcoded)
+
+The USS modules aim at destinations you control — your redirector/VPS, a domain/DoH
+you own, a canary endpoint, a segmented pivot target. These are **never hardcoded**:
+copy `config.json.example` → `config.json` (git-ignored) or set `HARNESS_CFG_<KEY>`
+env vars. A module whose destination is unset degrades to a safe `[SKIP]` no-op.
+
+### Active establishment
+
+By default the live modules run **non-destructive indicator** checks (e.g. reach the
+tunnel broker, don't build the tunnel). Pass **`--active`** (needs the matching
+`config.json` infra) to let them actually establish — build the chisel/gost/wstunnel
+or SSH-over-443 tunnel, open the SOCKS pivot, run the iodine/dnscat2 DNS tunnel,
+POST the canary, or beacon — always with mandatory tear-down. Use only inside the
+authorised window.
+
+### Direction (A→B and B→A)
+
+Every module declares a `direction`: `a2b` (SDWAN/site → DC, northbound — default),
+`b2a` (DC → SDWAN/out, reverse/server-initiated), or `both`. Filter with
+`--direction`, and bind egress to a foothold interface with `--source <ip>`. For the
+reverse path from a DC/cloud host you can't install on, drop the self-contained
+`additional/reverse_runner.py`.
 
 ## BAS mappings (MITRE ATT&CK / CWE)
 

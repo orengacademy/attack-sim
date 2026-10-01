@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+project      = "my-gcp-project"
+region       = "asia-southeast1"
+zone         = "asia-southeast1-a"
+network      = "default"
+
+# REQUIRED — the ONLY source CIDRs allowed to reach the vulnerable DC. NEVER 0.0.0.0/0.
+tester_cidrs = ["203.0.113.10/32"]
+
+machine_type     = "e2-standard-2"
+create_public_ip = false

@@ -77,6 +77,97 @@ DEFAULT_CREDENTIALS = load_credentials()
 
 
 # ---------------------------------------------------------------------
+# Operator config — the DESTINATIONS/infra the attack-sim (USS) modules aim at
+# (your redirector/VPS, a domain you control, a canary endpoint, DoH providers,
+# a segmented pivot target, ...). NEVER hardcode live attacker infra inside a
+# module — read it from here so the same module works across engagements and so
+# nothing points at real infrastructure by default. Precedence:
+#   1. env  HARNESS_CFG_<KEY>   (e.g. HARNESS_CFG_ATTACKER_VPS=1.2.3.4)
+#   2. a git-ignored 'config.json' next to this file
+#   3. the (mostly empty) built-in defaults below
+# A module that needs a value which is unset degrades to a safe no-op with a
+# clear "[SKIP] ... not configured" line instead of pointing somewhere real.
+# ---------------------------------------------------------------------
+_CFG_DEFAULTS = {
+    "attacker_vps": "",            # host/ip of your redirector/VPS (443 tunnels, SSH-over-443, SOCKS)
+    "attacker_domain": "",         # a domain you are authoritative for (DNS tunnel / attacker-DoH / NRD)
+    "attacker_doh": "",            # your DoH endpoint URL (attacker-controlled-resolver test)
+    "canary_url": "",              # an HTTPS endpoint that logs a hit (DLP canary POST)
+    "canary_dns_zone": "",         # zone you control, for DNS-exfil proof (falls back to attacker_domain)
+    "internal_pivot_target": "",   # host:port of a segmented service to reach via the 443 SOCKS pivot
+    "front_domain": "",            # a frontable CDN edge domain (domain fronting SNI)
+    "front_host": "",              # the real Host to reach behind the front
+    "published_app_url": "",       # a published 443 app URL (WAF evasion / exposed-mgmt probe)
+    "external_resolver": "8.8.8.8",  # a public resolver, for the "is internal DNS forced" test
+    "doh_providers": [             # public DoH endpoints (family B multi-provider)
+        "https://cloudflare-dns.com/dns-query",
+        "https://dns.google/resolve",
+        "https://dns.quad9.net:5053/dns-query",
+    ],
+    "beacon_seconds": 60,          # family G beacon window (total)
+    "beacon_interval": 5,          # family G beacon sleep between callbacks
+}
+
+
+def _read_cfg_file():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    try:
+        with open(path) as f:
+            return json.load(f) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+def load_config():
+    """Resolve operator config from env > config.json > defaults."""
+    cfg = dict(_CFG_DEFAULTS)
+    for k, v in _read_cfg_file().items():
+        if v not in (None, ""):
+            cfg[k] = v
+    for k in list(cfg.keys()):
+        env = os.environ.get(f"HARNESS_CFG_{k.upper()}")
+        if env:
+            # comma-split list-valued keys so a list can be set from one env var
+            cfg[k] = [x.strip() for x in env.split(",")] if isinstance(cfg[k], list) else env
+    return cfg
+
+
+def load_detections():
+    """Operator-supplied blue-team detections, so an attack that PASSED the
+    boundary can be scored DETECTED (passed but the SOC alerted) rather than as a
+    silent finding — which is the purple-team deliverable (Blocked / Detected /
+    Passed-undetected). Source: env HARNESS_DETECTIONS (a path) or a git-ignored
+    'detections.json' next to this file. Accepts either mapping or list form:
+        {"egress_tunnel_brokers": true}
+        {"doh_multi": {"note": "Splunk alert TUN-014", "source": "SIEM"}}
+        [{"id": "socks_pivot", "note": "EDR flagged", "source": "CrowdStrike"}]
+    Returns {attack_id: {"note":..., "source":...}}. Never raises."""
+    path = os.environ.get("HARNESS_DETECTIONS") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "detections.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    out = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if v is True:
+                out[k] = {}
+            elif isinstance(v, dict):
+                out[k] = v
+    elif isinstance(data, list):
+        for rec in data:
+            if isinstance(rec, dict) and rec.get("id"):
+                out[rec["id"]] = rec
+    return out
+
+
+# ---------------------------------------------------------------------
 # Target safety — validate the target and (optionally) enforce an allowlist so
 # the harness can't be pointed at an arbitrary host by a typo. The allowlist is
 # opt-in: env HARNESS_ALLOWLIST (comma/space separated) and/or a git-ignored
@@ -178,13 +269,41 @@ def _run_cmd(template, target, creds, timeout):
 # Context handed to every attack module
 # ---------------------------------------------------------------------
 class Context:
-    def __init__(self, credentials=None, timeout=DEFAULT_TIMEOUT, port_overrides=None):
+    def __init__(self, credentials=None, timeout=DEFAULT_TIMEOUT, port_overrides=None,
+                 config=None, source_ip=None, allow_active=False):
         self.creds = credentials or load_credentials()
         self.timeout = timeout
         # per-module port overrides: {name: port}. Also read from env
         # HARNESS_PORT_<NAME> (e.g. HARNESS_PORT_LOG4SHELL=8983). A module calls
         # ctx.get_port("log4shell", 8080) to honour a custom port.
         self.port_overrides = dict(port_overrides or {})
+        # operator config (destinations/infra the USS modules aim at) — see
+        # load_config(). Read with ctx.cfg("attacker_vps").
+        self.config = config if config is not None else load_config()
+        # source IP to bind egress sockets to (assumed-breach foothold #2 / a
+        # specific VRF interface). None -> OS default route. Modules that build a
+        # socket should bind to this when set. From env HARNESS_SOURCE_IP or CLI.
+        self.source_ip = source_ip or os.environ.get("HARNESS_SOURCE_IP") or None
+        # ACTIVE-ESTABLISHMENT GATE. False (default) -> live modules (real
+        # tunnels / SOCKS pivots / DNS tunnels / data exfil to your infra) run in
+        # NON-DESTRUCTIVE INDICATOR mode only. True (CLI --active) -> they may
+        # actually establish. Off by default so nothing invasive runs by accident.
+        self.allow_active = bool(allow_active)
+
+    def cfg(self, key, default=None):
+        """Read an operator-config value (see load_config); empty -> default."""
+        v = self.config.get(key, default) if self.config else default
+        return v if v not in (None, "") else default
+
+    def bind_source(self, sock):
+        """Bind a socket to ctx.source_ip if configured (best-effort; a bad bind
+        is swallowed so a module still works on the default route)."""
+        if self.source_ip:
+            try:
+                sock.bind((self.source_ip, 0))
+            except OSError:
+                pass
+        return sock
 
     def get_port(self, name, default):
         """Resolve a module's target port: explicit override > env > default."""
@@ -283,9 +402,10 @@ class Evidence:
                     lambda f: json.dump({"meta": self.meta, "results": self.records},
                                         f, indent=2, default=str))
 
-        cols = ["iteration", "mode", "category", "attack", "tactic", "mitre", "cwe",
+        cols = ["iteration", "mode", "test_type", "family", "direction",
+                "category", "attack", "tactic", "mitre", "cwe",
                 "control_tested", "fix_location", "baseline_result",
-                "appliance_result", "verdict", "timestamp"]
+                "appliance_result", "verdict", "detected_source", "timestamp"]
 
         def _write_csv(f):
             w = csv.DictWriter(f, fieldnames=cols)
@@ -302,29 +422,44 @@ class Evidence:
         for r in self.records:
             a = r.get("attack", r.get("attack_id", "?"))
             s = agg.setdefault(a, {"cat": r.get("category", ""), "fix": r.get("fix_location", ""),
-                                   "blocked": 0, "passed": 0, "other": 0, "n": 0})
+                                   "blocked": 0, "passed": 0, "detected": 0, "other": 0, "n": 0})
             s["n"] += 1
             # single-target mode never sets appliance_result (always "-"), so
             # fall back to baseline_result — otherwise every attack buckets
             # into "other" and the report always reads INCONSISTENT.
             if r.get("appliance_ip") is None:
                 v = r.get("baseline_result")
-                bucket = "passed" if v == "SUCCESS" else "blocked" if v == "BLOCKED" else "other"
+                bucket = ("passed" if v == "SUCCESS" else "detected" if v == "DETECTED"
+                          else "blocked" if v == "BLOCKED" else "other")
             else:
                 v = r.get("appliance_result")
-                bucket = "blocked" if v == "BLOCKED" else "passed" if v == "PASSED" else "other"
+                bucket = ("blocked" if v == "BLOCKED" else "detected" if v == "DETECTED"
+                          else "passed" if v == "PASSED" else "other")
             s[bucket] += 1
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
                  f"  Run: {self.ts}   Mode: {self.meta.get('mode', 'blackbox').upper()}",
-                 "=" * 64, ""]
+                 "=" * 64,
+                 "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
+                 "SOC alerted · OK=blocked · REVIEW=mixed", ""]
         for a, s in agg.items():
-            tag = "consistent" if (s["blocked"] == s["n"] or s["passed"] == s["n"]) else "INCONSISTENT"
-            verdict = "OK (blocked)" if s["blocked"] == s["n"] else \
-                      "GAP (passed)" if s["passed"] == s["n"] else "REVIEW"
+            consistent = (s["blocked"] == s["n"] or s["passed"] == s["n"]
+                          or s["detected"] == s["n"])
+            tag = "consistent" if consistent else "INCONSISTENT"
+            # a single passed-undetected iteration is the finding, so GAP wins;
+            # then DETECT (passed but alerted), then OK (all blocked), else REVIEW.
+            if s["passed"]:
+                verdict = "GAP (passed-undetected)"
+            elif s["detected"] and not s["other"]:
+                verdict = "DETECT (passed but alerted)"
+            elif s["blocked"] == s["n"]:
+                verdict = "OK (blocked)"
+            else:
+                verdict = "REVIEW"
             lines += [f"[{s['cat']}] {a}",
                       f"    blocked {s['blocked']}/{s['n']}  passed {s['passed']}/{s['n']}  "
-                      f"other {s['other']}/{s['n']}  -> {verdict} ({tag})",
+                      f"detected {s['detected']}/{s['n']}  other {s['other']}/{s['n']}  "
+                      f"-> {verdict} ({tag})",
                       f"    fix: {s['fix']}", ""]
 
         # ----- BAS coverage: MITRE ATT&CK + CWE (standards-aligned reporting) --
@@ -334,6 +469,7 @@ class Evidence:
             v = r.get("appliance_result") if r.get("appliance_ip") is not None \
                 else r.get("baseline_result")
             return "PASSED" if v in ("SUCCESS", "PASSED") else \
+                   "DETECTED" if v == "DETECTED" else \
                    "BLOCKED" if v == "BLOCKED" else "OTHER"
 
         tech = {}
@@ -342,15 +478,28 @@ class Evidence:
             oc = _outcome(r)
             for t in (r.get("mitre") or ["(unmapped)"]):
                 e = tech.setdefault(t, {"tactic": r.get("tactic", ""), "attacks": set(),
-                                        "passed": 0, "blocked": 0, "other": 0})
+                                        "passed": 0, "detected": 0, "blocked": 0, "other": 0})
                 e["attacks"].add(r.get("attack", r.get("attack_id", "?")))
-                e["passed" if oc == "PASSED" else "blocked" if oc == "BLOCKED" else "other"] += 1
+                e["passed" if oc == "PASSED" else "detected" if oc == "DETECTED"
+                  else "blocked" if oc == "BLOCKED" else "other"] += 1
             for c in (r.get("cwe") or []):
                 cwe.setdefault(c, set()).add(r.get("attack", "?"))
 
+        def _status(e):
+            # GAP = something passed undetected (the finding); DETECT = passed but
+            # every pass-through was alerted; OK = all blocked; else REVIEW.
+            if e["passed"]:
+                return "GAP"
+            if e["detected"] and not e["other"] and not e["passed"]:
+                return "DETECT"
+            if e["blocked"] and not e["other"] and not e["detected"]:
+                return "OK"
+            return "REVIEW"
+
         cov = {t: {"tactic": e["tactic"], "attacks": sorted(e["attacks"]),
-                   "passed": e["passed"], "blocked": e["blocked"], "other": e["other"],
-                   "status": "GAP" if e["passed"] else "OK" if e["blocked"] and not e["other"] else "REVIEW"}
+                   "passed": e["passed"], "detected": e["detected"],
+                   "blocked": e["blocked"], "other": e["other"],
+                   "status": _status(e)}
                for t, e in tech.items()}
         self.meta["attack_coverage"] = cov
         self.meta["cwe_coverage"] = {c: sorted(v) for c, v in cwe.items()}
@@ -362,12 +511,13 @@ class Evidence:
                                         f, indent=2, default=str))
 
         # ATT&CK Navigator layer (import at attack-navigator to visualise coverage)
-        _COLOR = {"GAP": "#f85149", "OK": "#3fb950", "REVIEW": "#e3a008"}
+        _COLOR = {"GAP": "#f85149", "DETECT": "#db6d28", "OK": "#3fb950", "REVIEW": "#e3a008"}
         navigator = {
             "name": f"MyGovNet BAS {self.ts}",
             "versions": {"attack": "14", "navigator": "4.9.1", "layer": "4.5"},
             "domain": "enterprise-attack",
-            "description": "Control-validation coverage (GAP=passed, OK=blocked, REVIEW=mixed).",
+            "description": "Control-validation coverage (GAP=passed-undetected, "
+                           "DETECT=passed but alerted, OK=blocked, REVIEW=mixed).",
             "techniques": [
                 {"techniqueID": t.split(".")[0], "score": 100,
                  "color": _COLOR.get(e["status"], "#8b90a6"),
@@ -376,7 +526,8 @@ class Evidence:
                 for t, e in cov.items() if t.startswith("T")
             ],
             "gradient": {"colors": ["#3fb950", "#e3a008", "#f85149"], "minValue": 0, "maxValue": 100},
-            "legendItems": [{"label": "GAP (passed)", "color": "#f85149"},
+            "legendItems": [{"label": "GAP (passed-undetected)", "color": "#f85149"},
+                            {"label": "DETECT (passed but alerted)", "color": "#db6d28"},
                             {"label": "OK (blocked)", "color": "#3fb950"},
                             {"label": "REVIEW (mixed)", "color": "#e3a008"}],
         }
@@ -387,7 +538,8 @@ class Evidence:
         for t in sorted(cov):
             e = cov[t]
             lines.append(f"{t:<12} [{e['tactic']}]  -> {e['status']}  "
-                         f"(passed {e['passed']} / blocked {e['blocked']} / other {e['other']})")
+                         f"(passed {e['passed']} / detected {e['detected']} / "
+                         f"blocked {e['blocked']} / other {e['other']})")
             lines.append(f"    {', '.join(e['attacks'])}")
         if cwe:
             lines += ["", "  CWE COVERAGE"]
@@ -431,13 +583,17 @@ def _match(raw, pat):
 # run with no clue why. Grep the raw log yourself for anything this misses.
 _ERROR_MARKER = re.compile(r"^(?:\[ERROR\].*|\S*ERROR\S*:.*)$", re.MULTILINE)
 _WARN_MARKER = re.compile(r"^\[WARN\].*$", re.MULTILINE)
+# [SKIP] = a module deliberately did nothing (e.g. an active-establishment
+# module with no infra configured, or --active not set) — surface WHY so the
+# NO-RESULT verdict isn't a mystery.
+_SKIP_MARKER = re.compile(r"^\[SKIP\].*$", re.MULTILINE)
 
 
 def _error_hint(raw):
     # prefer an actual ERROR line (the definitive reason) over a WARN (a
     # secondary side-note) — e.g. petitpotam prints both when not root, and
     # the "RESPONDER-PRIV-ERROR: needs root" line is the one worth surfacing.
-    m = _ERROR_MARKER.search(raw) or _WARN_MARKER.search(raw)
+    m = _ERROR_MARKER.search(raw) or _WARN_MARKER.search(raw) or _SKIP_MARKER.search(raw)
     return m.group(0).strip() if m else None
 
 
@@ -1072,6 +1228,18 @@ class Runner:
                     f"— check the target/tool for a hang.")
         return box.get("out", f"# module {mid}\n\n[ERROR] module produced no output")
 
+    def _detection(self, meta, raw):
+        """Return (source, note) if this attack — which PASSED — was flagged by
+        the blue team, else None. Sources: the operator detections file (keyed by
+        attack id), or a module self-reporting via META['detected_regex']."""
+        det = getattr(self, "_detections", {}).get(meta["id"])
+        if det is not None:
+            return (det.get("source") or "detections file",
+                    det.get("note") or det.get("source") or "alerted by blue team")
+        if _match(raw, meta.get("detected_regex")):
+            return ("module", "module self-reported a detection signal")
+        return None
+
     def run(self, modules, iterations, ev, skip_unready=True, recon=True,
             mode="blackbox"):
         def log(msg):
@@ -1084,6 +1252,10 @@ class Runner:
         # Assessment posture (recorded + announced; execution is identical — the
         # operator sets the SD-WAN to allow-all for a white-box baseline run).
         self._mode = "whitebox" if str(mode).lower().startswith("w") else "blackbox"
+
+        # Blue-team detections (operator-supplied) so a passed attack can be
+        # scored DETECTED (passed but alerted) vs a silent finding.
+        self._detections = load_detections()
 
         # ----- Target safety: validate + enforce allowlist BEFORE anything -----
         for label, ip in ([("target", self.target_ip)] +
@@ -1108,6 +1280,18 @@ class Runner:
         log(f"Path: {path}")
         log(f"Target: {self.target_ip} ({areason})")
         log(f"Evidence dir: {ev.root}")
+        if getattr(self.ctx, "allow_active", False):
+            log("ACTIVE-ESTABLISHMENT: ON — live modules may build real tunnels / "
+                "SOCKS pivots / DNS tunnels / exfil to your configured infra "
+                "(ensure this is inside the authorised window).")
+        else:
+            log("ACTIVE-ESTABLISHMENT: OFF — live modules run in non-destructive "
+                "indicator mode only (pass --active to enable).")
+        if getattr(self.ctx, "source_ip", None):
+            log(f"Source IP (egress bind): {self.ctx.source_ip}")
+        if self._detections:
+            log(f"Blue-team detections loaded: {len(self._detections)} "
+                "attack id(s) will score DETECTED if they pass.")
 
         # ----- Preflight: verify tools/privileges BEFORE executing anything ---
         pf = preflight(modules)
@@ -1268,11 +1452,18 @@ class Runner:
         target_raw = self._safe_module_run(m, self.target_ip)
         ev.save_run(it, meta["id"], "target", target_raw)
         self.on_output(meta["id"], meta["name"], target_raw)
+        detected_source = ""
 
         if self.dual:
             app_raw = self._safe_module_run(m, self.appliance_ip)
             ev.save_run(it, meta["id"], "through-appliance", app_raw)
             b, a, verdict = classify(meta, target_raw, app_raw)
+            if a == "PASSED":
+                det = self._detection(meta, app_raw)
+                if det:
+                    a, detected_source = "DETECTED", det[0]
+                    verdict = (f"attack passed the appliance BUT was DETECTED "
+                               f"({det[1]}) — detection works, prevention did not")
             log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
         else:
             ok = _match(target_raw, meta.get("success_regex"))
@@ -1290,7 +1481,13 @@ class Runner:
                 s in ("filtered", "unreachable", "unresolved") for s in tcp)
 
             if ok:
-                b, verdict = "SUCCESS", "attack succeeded against target"
+                det = self._detection(meta, target_raw)
+                if det:
+                    b, detected_source = "DETECTED", det[0]
+                    verdict = (f"attack passed the boundary BUT was DETECTED "
+                               f"({det[1]}) — detection works, prevention did not")
+                else:
+                    b, verdict = "SUCCESS", "attack succeeded against target (passed-undetected)"
             elif authfail:
                 b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
             # CLOSED / refused -> the service isn't there; this is NOT a control win
@@ -1314,10 +1511,10 @@ class Runner:
             log(f"     target: [{b}]  -> {verdict}")
 
         self.on_status(meta["id"], meta["name"], it, b, verdict)
-        self._record(ev, it, meta, b, a, verdict, recon_by_id)
+        self._record(ev, it, meta, b, a, verdict, recon_by_id, detected_source)
         bump()
 
-    def _record(self, ev, it, meta, b, a, verdict, recon_by_id):
+    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source=""):
         ev.save_result(it, meta["id"], {
             "iteration": it,
             "mode": getattr(self, "_mode", "blackbox"),
@@ -1329,6 +1526,8 @@ class Runner:
             # BAS mappings — carried into evidence so results are standards-aligned
             "test_type": meta.get("test_type", ""),
             "family": meta.get("family", ""),
+            # a2b = SDWAN/site -> DC (northbound) · b2a = DC -> SDWAN/out (reverse)
+            "direction": meta.get("direction", "a2b"),
             "mitre": meta.get("mitre", []),
             "cwe": meta.get("cwe", []),
             "cve": meta.get("cve", ""),
@@ -1336,6 +1535,7 @@ class Runner:
             "baseline_result": b,
             "appliance_result": a,
             "verdict": verdict,
+            "detected_source": detected_source,
             "target_ip": self.target_ip,
             "appliance_ip": self.appliance_ip if self.dual else None,
             "reachability": recon_by_id.get(meta["id"]),

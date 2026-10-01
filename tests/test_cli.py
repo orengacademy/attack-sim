@@ -9,16 +9,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cli  # noqa: E402
 
 
-def mod(mid, added=False, test_type="", family=""):
+def mod(mid, added=False, test_type="", family="", direction="a2b"):
     m = types.SimpleNamespace()
     m.META = {"id": mid, "name": mid, "category": "T", "added": added,
-              "test_type": test_type, "family": family}
+              "test_type": test_type, "family": family, "direction": direction}
     return m
 
 
 class Args:
     only = None; original = False; added = False
-    test_type = None; attack_sim = False; family = None
+    test_type = None; attack_sim = False; family = None; direction = None
 
 
 class TestCliSelect(unittest.TestCase):
@@ -59,6 +59,22 @@ class TestCliScopeFilter(unittest.TestCase):
     def test_family(self):
         a = Args(); a.attack_sim = True; a.family = "A"
         self.assertEqual({m.META["id"] for m in cli._select(self.mods, a)}, {"t1"})
+
+
+class TestCliDirection(unittest.TestCase):
+    def setUp(self):
+        self.mods = [mod("north", test_type="attack_sim", family="A", direction="a2b"),
+                     mod("rev", test_type="attack_sim", family="D", direction="b2a"),
+                     mod("ew", test_type="attack_sim", family="D", direction="both")]
+
+    def test_a2b(self):
+        a = Args(); a.direction = "a2b"
+        # a2b matches a2b + both
+        self.assertEqual({m.META["id"] for m in cli._select(self.mods, a)}, {"north", "ew"})
+
+    def test_b2a(self):
+        a = Args(); a.direction = "b2a"
+        self.assertEqual({m.META["id"] for m in cli._select(self.mods, a)}, {"rev", "ew"})
 
 
 class TestCliPorts(unittest.TestCase):
