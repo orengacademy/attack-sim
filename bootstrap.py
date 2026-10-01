@@ -60,7 +60,10 @@ def _which_missing(pkgs):
 
 
 def sudo(cmd):
-    return cmd if os.geteuid() == 0 else ["sudo"] + cmd
+    # root check is POSIX-only; on Windows this helper is never reached (main()
+    # bails early on a non-apt OS) but guard anyway so an import/call can't crash.
+    is_root = getattr(os, "geteuid", lambda: 1)() == 0
+    return cmd if is_root else ["sudo"] + cmd
 
 
 def apt_installed(pkg):
@@ -248,6 +251,17 @@ def install_py_requirements():
 def main():
     with_active = "--with-active" in sys.argv[1:]
     c("=== Harness bootstrap ===", "1;32")
+    # bootstrap is the Kali/Debian APT setup helper. On Windows / non-apt Linux,
+    # install the tools with your own package manager — `python3 preflight.py`
+    # prints the exact winget/choco/dnf/pacman/brew command for whatever's missing.
+    # The harness ENGINE itself is pure-stdlib and runs on any OS regardless.
+    if not shutil.which("apt-get"):
+        c("This box has no apt-get. bootstrap only automates the Kali/Debian apt "
+          "setup; the harness itself runs anywhere.", "1;33")
+        print("  Install the per-module tools with your OS package manager, then:")
+        print("    python3 preflight.py      # lists exactly what's missing + the install command")
+        print("  (impacket on any OS: python3 -m pip install impacket)")
+        return
     missing = install_core()
     ensure_impacket_module()
     install_py_requirements()
