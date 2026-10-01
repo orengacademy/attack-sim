@@ -35,7 +35,7 @@ META = {
     "requires": [],
     "ports": [],
     "success_regex": r"^PIVOT-|^PIVOT-PRECONDITION",
-    "blocked_regex": r"pivot blocked|not configured",
+    "blocked_regex": r"pivot blocked",
 }
 
 _LOCAL_SOCKS = 11080

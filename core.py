@@ -223,6 +223,27 @@ def target_allowed(target):
             else f"NOT in allowlist ({len(al)} entr{'y' if len(al) == 1 else 'ies'} configured)")
 
 
+def source_ip_bindable(ip):
+    """True if `ip` is a local address we can bind egress sockets to. A source IP
+    that isn't on any local interface (e.g. a public NAT address typed by mistake)
+    can't be bound, so an egress-bind request against it would silently no-op."""
+    if not ip:
+        return False
+    try:
+        fam = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    except Exception:
+        fam = socket.AF_INET
+    try:
+        s = socket.socket(fam, socket.SOCK_DGRAM)
+        try:
+            s.bind((ip, 0))
+            return True
+        finally:
+            s.close()
+    except OSError:
+        return False
+
+
 def _redact(text, creds):
     """Strip credential VALUES (password especially) out of any text before it
     is echoed to a log — the command header and tool output can otherwise leak
@@ -444,7 +465,8 @@ class Evidence:
         for r in self.records:
             a = r.get("attack", r.get("attack_id", "?"))
             s = agg.setdefault(a, {"cat": r.get("category", ""), "fix": r.get("fix_location", ""),
-                                   "blocked": 0, "passed": 0, "detected": 0, "other": 0, "n": 0})
+                                   "blocked": 0, "passed": 0, "detected": 0,
+                                   "skipped": 0, "other": 0, "n": 0})
             s["n"] += 1
             # single-target mode never sets appliance_result (always "-"), so
             # fall back to baseline_result — otherwise every attack buckets
@@ -452,11 +474,13 @@ class Evidence:
             if r.get("appliance_ip") is None:
                 v = r.get("baseline_result")
                 bucket = ("passed" if v == "SUCCESS" else "detected" if v == "DETECTED"
-                          else "blocked" if v == "BLOCKED" else "other")
+                          else "blocked" if v == "BLOCKED" else "skipped" if v == "SKIPPED"
+                          else "other")
             else:
                 v = r.get("appliance_result")
                 bucket = ("blocked" if v == "BLOCKED" else "detected" if v == "DETECTED"
-                          else "passed" if v == "PASSED" else "other")
+                          else "passed" if v == "PASSED" else "skipped" if v == "SKIPPED"
+                          else "other")
             s[bucket] += 1
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
@@ -465,23 +489,30 @@ class Evidence:
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
         for a, s in agg.items():
-            consistent = (s["blocked"] == s["n"] or s["passed"] == s["n"]
-                          or s["detected"] == s["n"])
+            # "consistent" = every iteration landed in the SAME bucket. All five
+            # buckets must be candidates — omitting 'other'/'skipped' made a clean
+            # single-bucket run (e.g. one skipped iteration) falsely read as
+            # INCONSISTENT.
+            consistent = any(s[b] == s["n"] for b in
+                             ("blocked", "passed", "detected", "skipped", "other"))
             tag = "consistent" if consistent else "INCONSISTENT"
             # a single passed-undetected iteration is the finding, so GAP wins;
-            # then DETECT (passed but alerted), then OK (all blocked), else REVIEW.
+            # then DETECT (passed but alerted), then OK (all blocked), then SKIPPED
+            # (nothing ran — n/a or unconfigured, NOT a control result), else REVIEW.
             if s["passed"]:
                 verdict = "GAP (passed-undetected)"
-            elif s["detected"] and not s["other"]:
+            elif s["detected"] and not s["other"] and not s["skipped"]:
                 verdict = "DETECT (passed but alerted)"
             elif s["blocked"] == s["n"]:
                 verdict = "OK (blocked)"
+            elif s["skipped"] == s["n"]:
+                verdict = "SKIPPED (not run — n/a or unconfigured)"
             else:
                 verdict = "REVIEW"
             lines += [f"[{s['cat']}] {a}",
                       f"    blocked {s['blocked']}/{s['n']}  passed {s['passed']}/{s['n']}  "
-                      f"detected {s['detected']}/{s['n']}  other {s['other']}/{s['n']}  "
-                      f"-> {verdict} ({tag})",
+                      f"detected {s['detected']}/{s['n']}  skipped {s['skipped']}/{s['n']}  "
+                      f"other {s['other']}/{s['n']}  -> {verdict} ({tag})",
                       f"    fix: {s['fix']}", ""]
 
         # ----- BAS coverage: MITRE ATT&CK + CWE (standards-aligned reporting) --
@@ -642,10 +673,14 @@ def classify(meta, base_raw, app_raw):
     base_ok = _match(base_raw, succ)
     base_authfail = _match(base_raw, AUTHFAIL_REGEX)
     app_ok = _match(app_raw, succ)
-    app_blocked = _match(app_raw, blk) or "[TIMEOUT]" in app_raw
+    # A module that printed [SKIP] did nothing — never score that as BLOCKED
+    # (a win for the control). Checked before app_blocked.
+    app_skipped = not app_ok and _SKIP_MARKER.search(app_raw or "") is not None
+    app_blocked = not app_skipped and (_match(app_raw, blk) or "[TIMEOUT]" in app_raw)
 
     baseline_result = "OK" if base_ok else "AUTH-FAILED" if base_authfail else "FAIL (inconclusive)"
-    appliance_result = "PASSED" if app_ok else "BLOCKED" if app_blocked else "NO-RESULT"
+    appliance_result = ("PASSED" if app_ok else "NO-RESULT" if app_skipped
+                        else "BLOCKED" if app_blocked else "NO-RESULT")
 
     if base_authfail and not base_ok:
         verdict = "CREDENTIAL ERROR — fix core.DEFAULT_CREDENTIALS, not a control result"
@@ -1310,7 +1345,16 @@ class Runner:
             log("ACTIVE-ESTABLISHMENT: OFF — live modules run in non-destructive "
                 "indicator mode only (pass --active to enable).")
         if getattr(self.ctx, "source_ip", None):
-            log(f"Source IP (egress bind): {self.ctx.source_ip}")
+            # A source IP that isn't a local interface address can't be bound to;
+            # bind_source() swallows the failure so a module still works on the
+            # default route, which means a typo'd/NAT address silently does
+            # NOTHING. Test it up front and say so, instead of logging it as taken.
+            if source_ip_bindable(self.ctx.source_ip):
+                log(f"Source IP (egress bind): {self.ctx.source_ip}")
+            else:
+                log(f"[WARN] Source IP {self.ctx.source_ip} is NOT a bindable local "
+                    "address — egress bind will be IGNORED and the OS default route "
+                    "used. Use an IP that exists on a local interface (check `ip addr`).")
         if self._detections:
             log(f"Blue-team detections loaded: {len(self._detections)} "
                 "attack id(s) will score DETECTED if they pass.")
@@ -1504,6 +1548,13 @@ class Runner:
             port_filtered = bool(tcp) and not port_open and any(
                 s in ("filtered", "unreachable", "unresolved") for s in tcp)
 
+            # A module that deliberately did NOTHING (printed [SKIP] — e.g. an
+            # active-establishment module with no config.json infra) must NEVER be
+            # scored as a control win: nothing was ever sent. Check this BEFORE the
+            # blocked/port branches — otherwise a "[SKIP] ... not configured" line
+            # that happens to match a loose blocked_regex is mis-scored as BLOCKED
+            # (fabricating "the control worked" when the test never ran).
+            skipped = not ok and _SKIP_MARKER.search(target_raw) is not None
             if ok:
                 det = self._detection(meta, target_raw)
                 if det:
@@ -1514,6 +1565,11 @@ class Runner:
                     b, verdict = "SUCCESS", "attack succeeded against target (passed-undetected)"
             elif authfail:
                 b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
+            elif skipped:
+                hint = _error_hint(target_raw)
+                b = "SKIPPED"
+                verdict = ("module did nothing (not applicable / not configured) — "
+                           + (hint or "see raw log") + "; NOT a control result")
             # CLOSED / refused -> the service isn't there; this is NOT a control win
             elif port_closed or (refused and not timed_out and not port_filtered):
                 b = "NO-SERVICE"
