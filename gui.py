@@ -126,10 +126,7 @@ class HarnessGUI:
         self.port_vars = {}     # id -> StringVar (port_customizable modules)
 
         self._build_header()
-        self._build_config()
-        self._build_attacks()
-        self._build_controls()
-        self._build_log()
+        self._build_main_split()
         self.root.after(100, self._drain)
 
     # ----- header ------------------------------------------------------
@@ -141,11 +138,15 @@ class HarnessGUI:
                   style="Sub.TLabel").pack(anchor="w")
 
     # ----- config ------------------------------------------------------
-    def _build_config(self):
-        f = ttk.LabelFrame(self.root, text="Target & run")
+    def _build_config(self, parent):
+        f = ttk.LabelFrame(parent, text="Target & run")
         f.pack(fill="x", padx=12, pady=8)
         pad = dict(padx=6, pady=6)
 
+        # one short row of inputs; everything with its own hint/long label
+        # gets its own row below — this panel now lives in a ~70%-width
+        # column (not the full window), so packing long hints onto the same
+        # row as a field used to clip them off the edge.
         ttk.Label(f, text="Target IP / host").grid(row=0, column=0, sticky="w", **pad)
         self.target = ttk.Entry(f, width=20)
         self.target.grid(row=0, column=1, sticky="w", **pad)
@@ -155,41 +156,45 @@ class HarnessGUI:
         self.iterations.set(1)
         self.iterations.grid(row=0, column=3, sticky="w", **pad)
 
-        ttk.Label(f, text="Workers").grid(row=0, column=4, sticky="e", **pad)
+        ttk.Label(f, text="Workers").grid(row=1, column=0, sticky="w", **pad)
         self.workers = ttk.Spinbox(f, from_=1, to=16, width=5)
         self.workers.set(core.RECOMMENDED_WORKERS)
-        self.workers.grid(row=0, column=5, sticky="w", **pad)
+        self.workers.grid(row=1, column=1, sticky="w", **pad)
         ttk.Label(f, text=f"(recommended {core.RECOMMENDED_WORKERS}; DoS/brute always serial)",
-                  style="Muted.TLabel").grid(row=0, column=6, sticky="w", **pad)
+                  style="Muted.TLabel").grid(row=1, column=2, columnspan=2, sticky="w", **pad)
 
         # black-box vs white-box posture (both run everything; recorded + announced)
-        ttk.Label(f, text="Mode").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Label(f, text="Mode").grid(row=2, column=0, sticky="w", **pad)
         self.mode_var = tk.StringVar(value="blackbox")
-        mf = ttk.Frame(f); mf.grid(row=1, column=1, columnspan=4, sticky="w", padx=6)
-        ttk.Radiobutton(mf, text="Black-box (through SD-WAN)", value="blackbox",
+        mf = ttk.Frame(f); mf.grid(row=2, column=1, columnspan=3, sticky="w", padx=6)
+        ttk.Radiobutton(mf, text="Black-box (not whitelisted)", value="blackbox",
                         variable=self.mode_var).pack(side="left")
-        ttk.Radiobutton(mf, text="White-box (allow-all baseline)", value="whitebox",
+        ttk.Radiobutton(mf, text="White-box (whitelisted)", value="whitebox",
                         variable=self.mode_var).pack(side="left", padx=(12, 0))
         ttk.Label(f, text="run both, then compare: PASSED in white-box but BLOCKED "
                           "in black-box = control working",
-                  style="Muted.TLabel").grid(row=2, column=0, columnspan=7, sticky="w",
+                  style="Muted.TLabel").grid(row=3, column=0, columnspan=4, sticky="w",
                                              padx=6, pady=(0, 2))
 
         # USS runtime options: active establishment + egress source binding
-        of = ttk.Frame(f); of.grid(row=3, column=0, columnspan=7, sticky="w", padx=6, pady=(0, 2))
+        # (its own row — the checkbox label alone is long enough to clip
+        # whatever followed it on a 70%-width panel)
         self.active_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(of, text="Active establishment (build real tunnels/pivots/exfil — needs config.json)",
-                        variable=self.active_var).pack(side="left")
-        ttk.Label(of, text="Source IP").pack(side="left", padx=(12, 4))
-        self.source_entry = ttk.Entry(of, width=16)
-        self.source_entry.pack(side="left")
-        ttk.Label(of, text="(bind egress — DC foothold / VRF)",
-                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
+        ttk.Checkbutton(f, text="Active establishment (build real tunnels/pivots/exfil — needs config.json)",
+                        variable=self.active_var).grid(row=4, column=0, columnspan=4, sticky="w",
+                                                       padx=6, pady=(4, 2))
+        sf = ttk.Frame(f); sf.grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+        ttk.Label(sf, text="Source IP").pack(side="left")
+        self.source_entry = ttk.Entry(sf, width=16)
+        self.source_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(sf, text="(bind egress — DC foothold / VRF)",
+                  style="Muted.TLabel").pack(side="left")
 
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=4, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        self._priv_label.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
+        self._unlock_btn.grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
         self._refresh_privilege()
 
     def _refresh_privilege(self):
@@ -202,7 +207,7 @@ class HarnessGUI:
         self._priv_label.configure(text=f"{icon} Privilege: {ps['how']}", style=style)
         self._priv_label.grid()
         if ps["can_unlock"]:
-            self._unlock_btn.grid(row=4, column=6, sticky="e", padx=6, pady=(0, 6))
+            self._unlock_btn.grid()
         else:
             self._unlock_btn.grid_remove()
 
@@ -219,18 +224,30 @@ class HarnessGUI:
         self._refresh_privilege()
 
     # ----- attacks (aligned grid table) --------------------------------
-    def _build_attacks(self):
-        outer = ttk.LabelFrame(self.root, text="Attacks")
-        outer.pack(fill="both", expand=False, padx=12, pady=8)
-        canvas = tk.Canvas(outer, height=270, bg=PANEL, highlightthickness=0)
-        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    def _build_attacks(self, parent):
+        outer = ttk.LabelFrame(parent, text="Attacks")
+        outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, bg=PANEL, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        hsb = ttk.Scrollbar(outer, orient="horizontal", command=canvas.xview)
         inner = ttk.Frame(canvas, style="Card.TFrame")
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        # Only ever GROW the inner frame to fill extra canvas width — never
+        # shrink it below what its columns actually need. Forcing it down to
+        # canvas width unconditionally (the old behaviour) squeezed the
+        # checkbox+name column (minsize=0, the only flexible one) to ~0
+        # width whenever this panel got narrower than the fixed columns'
+        # combined width — the checkboxes visually vanished. Now a narrow
+        # panel scrolls horizontally instead of hiding them.
+        def _resize_inner(e):
+            canvas.itemconfigure(win, width=max(e.width, inner.winfo_reqwidth()))
+        canvas.bind("<Configure>", _resize_inner)
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        outer.rowconfigure(0, weight=1); outer.columnconfigure(0, weight=1)
 
         # mouse-wheel scrolling over the attacks list (45+ modules) — cross-platform
         def _wheel(e):
@@ -241,7 +258,9 @@ class HarnessGUI:
             canvas.bind_all(seq, lambda e: _wheel(e) if self._over(canvas, e) else None)
 
         # fixed grid columns so every row lines up: attack | badge | MITRE | tactic | port | fix
-        for col, w in ((0, 0), (1, 46), (2, 130), (3, 130), (4, 78), (5, 90)):
+        # column 0 (checkbox+name) gets a real floor (not 0) so it can't be
+        # squeezed invisible when this panel is narrow — see _resize_inner.
+        for col, w in ((0, 220), (1, 46), (2, 130), (3, 130), (4, 78), (5, 90)):
             inner.grid_columnconfigure(col, minsize=w, weight=(1 if col == 0 else 0))
 
         def hcell(text, c, r):
@@ -285,9 +304,9 @@ class HarnessGUI:
             r += 1
 
     # ----- controls (two rows so nothing crowds/truncates) -------------
-    def _build_controls(self):
+    def _build_controls(self, parent):
         # row 1 — selection & tools
-        f1 = ttk.Frame(self.root); f1.pack(fill="x", padx=12, pady=(4, 0))
+        f1 = ttk.Frame(parent); f1.pack(fill="x", padx=12, pady=(4, 0))
         for txt, cmd in (("Select all", lambda: self._all(True)),
                          ("Clear", lambda: self._all(False)),
                          ("Original set", lambda: self._select_group(False)),
@@ -296,7 +315,7 @@ class HarnessGUI:
                          ("Egress probe", self._egress_probe)):
             ttk.Button(f1, text=txt, command=cmd).pack(side="left", padx=(0, 6))
         # row 2 — RoE gate + RUN/STOP
-        f2 = ttk.Frame(self.root); f2.pack(fill="x", padx=12, pady=(4, 2))
+        f2 = ttk.Frame(parent); f2.pack(fill="x", padx=12, pady=(4, 2))
         self.roe = tk.BooleanVar(value=False)
         ttk.Checkbutton(f2, text="Rules-of-engagement confirmed (written authorisation on file)",
                         variable=self.roe).pack(side="left")
@@ -305,15 +324,51 @@ class HarnessGUI:
         self.stop_btn = ttk.Button(f2, text="■ STOP", style="Stop.TButton",
                                    command=self._stop, state="disabled")
         self.stop_btn.pack(side="right", padx=6)
-        self.progress = ttk.Progressbar(self.root, mode="determinate")
+        self.progress = ttk.Progressbar(parent, mode="determinate")
         self.progress.pack(fill="x", padx=12, pady=(2, 6))
 
-    def _build_log(self):
-        outer = ttk.Frame(self.root); outer.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+    def _build_main_split(self):
+        # left column (plain stack, top to bottom): Target & run, the
+        # RUN/STOP controls, then Attacks filling the rest. Right column
+        # (resizable via a draggable sash): Live output on top, Status
+        # below it — both columns start at the very top of the window, side
+        # by side, so Live output/Status aren't squeezed below the config
+        # panel the way they used to be.
+        outer = ttk.PanedWindow(self.root, orient="horizontal")
+        outer.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        left = ttk.LabelFrame(outer, text="Status")
-        left.pack(side="left", fill="y", padx=(0, 6))
-        left.pack_propagate(False); left.configure(width=560)
+        left = ttk.Frame(outer)
+        outer.add(left, weight=1)
+        self._build_config(left)
+        self._build_controls(left)
+        attacks_frame = ttk.Frame(left)
+        attacks_frame.pack(fill="both", expand=True, padx=0, pady=(4, 0))
+        self._build_attacks(attacks_frame)
+
+        right = ttk.PanedWindow(outer, orient="vertical")
+        outer.add(right, weight=1)
+
+        live_frame = ttk.Frame(right)
+        right.add(live_frame, weight=2)
+        self._build_live_output(live_frame)
+
+        status_frame = ttk.Frame(right)
+        right.add(status_frame, weight=1)
+        self._build_status(status_frame)
+
+        # PanedWindow `weight` only governs how resize *deltas* are shared —
+        # it does not set the initial sash position, so without this the
+        # first pane added (Live output) can render at ~0 height. Force a
+        # sensible starting split once real geometry is known.
+        def _set_initial_sashes():
+            self.root.update_idletasks()
+            outer.sashpos(0, int(self.root.winfo_width() * 0.70))   # left 70% / right 30%
+            right.sashpos(0, int(right.winfo_height() * 0.62))
+        self.root.after(50, _set_initial_sashes)
+
+    def _build_status(self, parent):
+        left = ttk.LabelFrame(parent, text="Status")
+        left.pack(fill="both", expand=True)
 
         # legend (stacked so it never truncates) — colour semantics
         leg = ttk.Frame(left, style="Card.TFrame"); leg.pack(fill="x", padx=6, pady=(4, 4))
@@ -355,8 +410,9 @@ class HarnessGUI:
         self._status_row_keys = {}   # tree item id -> (attack_id, iteration)
         self._output_marks = {}      # (attack_id, iteration) -> Text mark name
 
-        right = ttk.LabelFrame(outer, text="Live output — click a Status row to jump to it")
-        right.pack(side="left", fill="both", expand=True)
+    def _build_live_output(self, parent):
+        right = ttk.LabelFrame(parent, text="Live output — click a Status row to jump to it")
+        right.pack(fill="both", expand=True)
         self.log = tk.Text(right, height=14, wrap="word", bg="#12131b", fg=FG,
                            insertbackground=FG, borderwidth=0, font=MONO, padx=8, pady=6)
         self.log.pack(side="left", fill="both", expand=True)
