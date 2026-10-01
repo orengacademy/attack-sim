@@ -1,0 +1,34 @@
+{
+  "_comment": "Fleet of vulnerable servers across MyGovNet zones. Copy to fleet.json (git-ignored) and fill in. `targets` = the vuln servers you attack; `sources` = tester footholds (local interface IPs) to bind egress from, per zone; `runs` = the zone-to-zone matrix (which source zone attacks which target zones, and the direction). Omit `sources`/`runs` to just run every target from the default route. cloud_ports maps NAT'd SMB/RPC to the forwarded alternates for a cloud target.",
+
+  "targets": [
+    {"id": "do-dc1",   "ip": "167.71.222.169", "zone": "cloud", "cloud_ports": {"445": 4445, "135": 1135}, "note": "DigitalOcean vuln DC"},
+    {"id": "do-dc2",   "ip": "159.223.35.108", "zone": "cloud", "cloud_ports": {"445": 4445, "135": 1135}},
+    {"id": "kvdc-dc1", "ip": "10.10.1.10",     "zone": "kvdc"},
+    {"id": "kvdc-dc2", "ip": "10.10.1.11",     "zone": "kvdc"},
+    {"id": "ipdc-1",   "ip": "10.11.1.10",     "zone": "ipdc"},
+    {"id": "ipdc-2",   "ip": "10.11.1.11",     "zone": "ipdc"},
+    {"id": "pdsa-1",   "ip": "10.12.1.10",     "zone": "pdsa"},
+    {"id": "pdsa-2",   "ip": "10.12.1.11",     "zone": "pdsa"},
+    {"id": "global-1", "ip": "10.13.1.10",     "zone": "global"},
+    {"id": "global-2", "ip": "10.13.1.11",     "zone": "global"},
+    {"id": "pcn-01",   "ip": "10.14.1.10",     "zone": "pcn"},
+    {"id": "sdwan-01", "ip": "10.20.1.10",     "zone": "sdwan"}
+  ],
+
+  "sources": [
+    {"id": "sdwan-foothold",  "ip": "10.20.0.5", "zone": "sdwan"},
+    {"id": "pdsa-foothold",   "ip": "10.12.0.9", "zone": "pdsa"},
+    {"id": "pcn-foothold",    "ip": "10.14.0.9", "zone": "pcn"},
+    {"id": "global-foothold", "ip": "10.13.0.9", "zone": "global"}
+  ],
+
+  "runs": [
+    {"from": "sdwan",  "to": ["kvdc", "cloud", "ipdc", "pdsa"], "direction": "a2b"},
+    {"from": "pdsa",   "to": ["kvdc", "cloud"],                 "direction": "a2b"},
+    {"from": "pcn",    "to": ["kvdc", "cloud"],                 "direction": "a2b"},
+    {"from": "global", "to": ["kvdc", "cloud"],                 "direction": "a2b"},
+    {"from": "kvdc",   "to": ["sdwan", "pdsa", "pcn"],          "direction": "b2a"},
+    {"from": "cloud",  "to": ["sdwan", "pdsa"],                 "direction": "b2a"}
+  ]
+}

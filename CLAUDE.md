@@ -49,6 +49,7 @@ python3 -m unittest discover -s tests   # test suite (pure stdlib, localhost-onl
 | `loader.py` | Auto-discovers `modules/*.py` that expose `META` + `run(target, ctx)`. Files starting with `_` (helpers, `_vendor/`) are skipped. No registration anywhere. |
 | `gui.py` | Tkinter dark-theme front-end. Worker thread + queue so the UI never freezes. Live log + live raw-output panel (click a status row to jump), Preflight+recon button, Egress-probe button, per-row custom port, mode/workers selectors. |
 | `cli.py` | Headless equivalent; every GUI option as a flag. Colour-coded output (red=passed, green=blocked, blue=no-service). Prints `report.txt` tail (coverage) at the end. |
+| `fleet.py` | **N-target front end.** Runs the same engine over a fleet of vuln servers defined in `fleet.json` (git-ignored; `fleet.json.example` committed) — a zone-to-zone matrix (`targets`×`sources`×`runs`), both directions, per-target `cloud_ports`, per-source egress binding. Reuses `cli._select` + `core.Runner` per job; evidence under `evidence/fleet_<ts>/<source>__<target>/`, plus `fleet_summary.json`. |
 | `preflight.py` | Standalone cross-platform tool/privilege/recon checker; CI gate (exit 0 only if all discovered modules are ready). |
 | `bootstrap.py` | One-shot apt installer for Kali/Debian. |
 | `modules/` | **One file per attack**, auto-discovered. See "Adding a module". |

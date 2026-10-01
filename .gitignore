@@ -28,3 +28,6 @@ deploy/cloud/**/*.tfstate
 deploy/cloud/**/*.tfstate.*
 deploy/cloud/**/terraform.tfvars
 deploy/cloud/**/.terraform.lock.hcl
+
+# Fleet of targets (operator-specific infra / IPs)
+fleet.json
