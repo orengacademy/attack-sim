@@ -409,6 +409,42 @@ Every module declares a `direction`: `a2b` (SDWAN/site → DC, northbound — de
 reverse path from a DC/cloud host you can't install on, drop the self-contained
 `additional/reverse_runner.py`.
 
+## Fleet (N targets across zones) — `fleet.py`
+
+`cli.py` runs one target; **`fleet.py` runs a whole fleet of vuln servers** across
+MyGovNet zones (DO/KVDC/IPDC/PDSA/Global/PCN/SDWAN) as a **zone-to-zone matrix,
+both directions**, with per-target NAT'd SMB/RPC ports and per-source egress
+binding — the same engine, N times. Define the fleet in `fleet.json` (copy
+`fleet.json.example`, git-ignored):
+
+```jsonc
+{
+  "targets": [ {"id":"do-dc1","ip":"167.71.222.169","zone":"cloud",
+                "cloud_ports":{"445":4445,"135":1135}}, ... ],   // the N vuln servers
+  "sources": [ {"id":"sdwan-fh","ip":"10.20.0.5","zone":"sdwan"}, ... ], // tester footholds
+  "runs":    [ {"from":"sdwan","to":["kvdc","cloud"],"direction":"a2b"},
+               {"from":"kvdc","to":["sdwan"],"direction":"b2a"} ]  // the matrix
+}
+```
+
+Each `run` expands to **(source foothold in `from` zone) → (every target in `to`
+zones)** in the given direction. Omit `sources`/`runs` to just run every target
+from the default route.
+
+```bash
+python3 fleet.py --list-targets                     # show the fleet
+python3 fleet.py --dry-run --attack-sim             # preview the job matrix (no traffic)
+python3 fleet.py --attack-sim --confirm-roe         # run the whole matrix (USS scope)
+python3 fleet.py --to kvdc,cloud --direction a2b --confirm-roe   # scope by zone/direction
+python3 fleet.py --from sdwan --only dcsync,psexec --confirm-roe
+```
+
+Evidence lands per job under `evidence/fleet_<ts>/<source>__<target>/run_<ts>/`,
+with a top-level `fleet_summary.json` (per-job verdict counts) and a roll-up of
+every target where an attack **PASSED** (a finding). Module selection (`--only`/
+`--original`/`--attack-sim`/`--family`) and `--active`/`--workers`/`--iterations`/
+`--mode` work exactly as in `cli.py`.
+
 ## BAS mappings (MITRE ATT&CK / CWE)
 
 Every module declares its **MITRE ATT&CK** technique(s) (`mitre`), **tactic**
