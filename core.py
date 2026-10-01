@@ -542,6 +542,46 @@ class Evidence:
                  "=" * 64,
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
+
+        # ---- modern per-module results: verdict distribution + a grouped table ----
+        _VORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
+                   "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
+        permod = {}
+        for r in self.records:
+            mid = r.get("attack_id") or r.get("attack")
+            v = (r.get("appliance_result") if r.get("appliance_ip") is not None
+                 else r.get("baseline_result")) or "?"
+            d = permod.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
+                                        "mitre": ", ".join(r.get("mitre", []) or []),
+                                        "dir": r.get("direction", ""), "vs": []})
+            d["vs"].append(v)
+        for d in permod.values():
+            d["v"] = next((x for x in _VORDER if x in d["vs"]), d["vs"][0] if d["vs"] else "?")
+        dist = {}
+        for d in permod.values():
+            dist[d["v"]] = dist.get(d["v"], 0) + 1
+        total = len(permod) or 1
+        mxd = max(dist.values()) if dist else 1
+        lines += ["  VERDICT DISTRIBUTION  (%d modules)" % total]
+        for v in _VORDER:
+            if v in dist:
+                meter = "#" * (int(round(24 * dist[v] / mxd)) or 1)
+                lines.append(f"    {v:<16} {meter:<24} {dist[v]:>2}/{total}")
+        findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+        lines += ["    " + "-" * 44,
+                  f"    => {findings} got through (finding) · {dist.get('DETECTED', 0)} detected "
+                  f"· {dist.get('BLOCKED', 0)} blocked", "",
+                  "  RESULTS BY MODULE", "  " + "-" * 62]
+        cur = None
+        for d in sorted(permod.values(),
+                        key=lambda x: (x["cat"], _VORDER.index(x["v"]) if x["v"] in _VORDER else 9, x["name"])):
+            if d["cat"] != cur:
+                cur = d["cat"]
+                lines.append("  [%s]" % cur)
+            dirn = (" %s" % d["dir"]) if d["dir"] else ""
+            lines.append(f"    {d['v']:<15} {d['name']:<40} {d['mitre']}{dirn}")
+        lines += ["", "=" * 64, "  PER-ATTACK CONSISTENCY", "=" * 64, ""]
+
         for a, s in agg.items():
             # "consistent" = every iteration landed in the SAME bucket. All five
             # buckets must be candidates — omitting 'other'/'skipped' made a clean

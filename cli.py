@@ -16,9 +16,25 @@ BLOCKED (control worked), BLUE = NO-SERVICE (port closed, not a block).
 import argparse
 import os
 import sys
+import time
 
 import core
 import loader
+
+# verdict -> (ANSI colour, icon) for the modern summary
+_VERDICT_STYLE = {
+    "SUCCESS":        ("\033[31m", "●"),   # red    — got through undetected (finding)
+    "PASSED":         ("\033[31m", "●"),
+    "DETECTED":       ("\033[38;5;208m", "◐"),  # orange — passed but SOC alerted
+    "BLOCKED":        ("\033[32m", "■"),   # green  — control worked
+    "NO-SERVICE":     ("\033[34m", "○"),   # blue   — port closed, not a block
+    "AUTH-FAILED":    ("\033[33m", "▲"),   # amber  — bad creds
+    "NO-RESULT":      ("\033[33m", "?"),   # amber  — review
+    "SKIPPED":        ("\033[90m", "–"),   # grey   — did nothing
+    "PREREQ-MISSING": ("\033[90m", "–"),
+}
+_VERDICT_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
+                  "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
 
 _ANSI = {
     "SUCCESS": "\033[31m", "PASSED": "\033[31m",   # red — got through undetected (finding)
@@ -69,6 +85,67 @@ def _select(modules, args):
         sel = [m for m in sel
                if m.META.get("direction", "a2b").lower() in (d, "both")]
     return sel
+
+
+def _c(s, color, no_color):
+    return s if no_color or not sys.stdout.isatty() else f"{color}{s}{_RESET}"
+
+
+def _print_summary(ev, args, no_color, elapsed):
+    """Modern, detailed end-of-run summary from the evidence records: a verdict
+    distribution with bars and a per-category table of every module's result."""
+    DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"
+    recs = getattr(ev, "records", []) or []
+    # aggregate per module across iterations (most-significant verdict wins)
+    by_mod = {}
+    for r in recs:
+        mid = r.get("attack_id") or r.get("attack")
+        d = by_mod.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
+                                    "mitre": ", ".join(r.get("mitre", []) or []),
+                                    "dir": r.get("direction", ""), "vs": []})
+        d["vs"].append(r.get("baseline_result", "?"))
+    for d in by_mod.values():
+        d["v"] = next((v for v in _VERDICT_ORDER if v in d["vs"]), (d["vs"] or ["?"])[0])
+
+    dist = {}
+    for d in by_mod.values():
+        dist[d["v"]] = dist.get(d["v"], 0) + 1
+    n = len(by_mod)
+    W = 72
+    bar = "═" * W
+    print()
+    print(_c(f"╔{bar}╗", ACC, no_color))
+    title = f" RESULTS — {args.target}   mode={args.mode}   {n} module(s) × {args.iterations} iter   {elapsed:.0f}s"
+    print(_c("║", ACC, no_color) + _c(f"{title:<{W}}", BOLD, no_color) + _c("║", ACC, no_color))
+    print(_c(f"╚{bar}╝", ACC, no_color))
+
+    # distribution bars
+    mx = max(dist.values()) if dist else 1
+    for v in _VERDICT_ORDER:
+        if v not in dist:
+            continue
+        col, icon = _VERDICT_STYLE.get(v, ("", "•"))
+        blocks = int(round(20 * dist[v] / mx)) or 1
+        meter = _c("█" * blocks, col, no_color) + _c("░" * (20 - blocks), DIM, no_color)
+        print(f"  {_c(icon, col, no_color)} {_c(v, col, no_color):<22} {meter} {dist[v]}/{n}")
+
+    # per-category table
+    cats = {}
+    for d in by_mod.values():
+        cats.setdefault(d["cat"], []).append(d)
+    for cat in sorted(cats):
+        print("\n  " + _c(cat.upper(), ACC, no_color))
+        for d in sorted(cats[cat], key=lambda x: (_VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9, x["name"])):
+            col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
+            mitre = _c(d["mitre"], DIM, no_color) if d["mitre"] else ""
+            print(f"    {_c(icon, col, no_color)} {_c(d['v'], col, no_color):<22} "
+                  f"{d['name']:<38} {mitre}")
+    findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+    detected = dist.get("DETECTED", 0)
+    print()
+    print(_c(f"  → {findings} finding(s) got through"
+             + (f", {detected} detected" if detected else "")
+             + f"; {dist.get('BLOCKED', 0)} blocked.", BOLD, no_color))
 
 
 def _parse_ports(spec):
@@ -222,6 +299,7 @@ def main():
                          smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
                          **cred_fields)
 
+    t0 = time.time()
     try:
         ev = core.Evidence(base=args.evidence_dir)
         root = runner.run(selected, max(1, args.iterations), ev,
@@ -234,13 +312,18 @@ def main():
         print("\n[!] interrupted", file=sys.stderr)
         return 130
 
-    # print the report tail (coverage) and where the evidence is
+    # modern per-module summary (from the evidence records)
+    try:
+        _print_summary(ev, args, args.no_color, time.time() - t0)
+    except Exception as e:
+        print(f"[!] summary error (non-fatal): {e}", file=sys.stderr)
+    # full ATT&CK/CWE/CVE coverage report + evidence path
     try:
         with open(os.path.join(root, "report.txt")) as f:
             print("\n" + f.read())
     except Exception:
         pass
-    print(f"Evidence: {root}")
+    print(_c(f"Evidence: {root}", "\033[36m", args.no_color))
     return 0
 
 

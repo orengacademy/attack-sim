@@ -319,7 +319,10 @@ class HarnessGUI:
                          font=("TkDefaultFont", 9, "bold")).grid(
                              row=r, column=0, columnspan=6, sticky="w", padx=4, pady=(9, 2))
                 r += 1
-            var = tk.BooleanVar(value=meta["id"] not in NOT_SELECTED_BY_DEFAULT)
+            # default selection = the ORIGINAL baseline set (added:false); the
+            # opt-in/USS modules (added:true) start unticked. Use the "Added" /
+            # "All" buttons to widen.
+            var = tk.BooleanVar(value=not meta.get("added"))
             self.vars[meta["id"]] = (var, m)
             ttk.Checkbutton(inner, text=meta["name"], variable=var,
                             style="Card.TCheckbutton").grid(row=r, column=0, sticky="w", padx=(10, 6))
