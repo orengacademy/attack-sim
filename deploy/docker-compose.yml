@@ -30,7 +30,7 @@ services:
 
   openldap:
     # Anonymous bind enabled so ldap_null_bind can read namingContexts.
-    image: bitnami/openldap:latest
+    image: bitnamilegacy/openldap:latest
     container_name: bas-openldap
     environment:
       LDAP_ROOT: "dc=mygov,dc=local"
@@ -43,19 +43,28 @@ services:
   https-lab:
     # A real HTTPS listener on 443 so the boundary/443 modules have a target to
     # exercise instead of NO-SERVICE. Stock nginx:alpine; a self-signed lab cert
-    # is generated in-container on first start (no host openssl, no key in git).
+    # cert: setup_all.sh generates one on the HOST into ./nginx/certs (openssl is
+    # near-universal on a host); the container just uses it. If it's absent AND the
+    # container has internet it apk-adds openssl and self-signs — but the host cert
+    # is preferred so this works on an air-gapped / egress-filtered droplet (where
+    # the Alpine CDN is unreachable and the apk path fails).
     image: nginx:alpine
     container_name: bas-https-lab
     ports: ["443:443"]
     volumes:
       - ./nginx/https-lab.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs
     command:
       - /bin/sh
       - -c
       - |
         set -e
         if [ ! -s /etc/nginx/certs/lab.crt ]; then
-          apk add --no-cache openssl >/dev/null
+          echo "no host cert mounted — trying in-container openssl (needs internet)…"
+          apk add --no-cache openssl >/dev/null 2>&1 || {
+            echo "ERROR: no cert and cannot fetch openssl. Generate on the host:"
+            echo "  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \\"
+            echo "    -keyout deploy/nginx/certs/lab.key -out deploy/nginx/certs/lab.crt -subj /CN=lab"; exit 1; }
           mkdir -p /etc/nginx/certs
           openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
             -keyout /etc/nginx/certs/lab.key -out /etc/nginx/certs/lab.crt \

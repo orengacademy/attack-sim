@@ -34,3 +34,6 @@ fleet.json
 
 # Per-target remembered options (source/cloud ports) — operator-specific
 .target_memory.json
+
+# Generated lab TLS cert for the https-lab container (never commit keys)
+deploy/nginx/certs/

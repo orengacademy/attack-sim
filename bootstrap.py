@@ -69,9 +69,30 @@ def apt_installed(pkg):
     return r.returncode == 0
 
 
+# Some CORE packages are Kali names; on Debian/Ubuntu fall back to these.
+# impacket-scripts -> python3-impacket (which ships the impacket-* wrappers on
+# Debian). responder has no Debian package (Kali-only) -> None (reported, non-fatal).
+APT_ALIASES = {"impacket-scripts": "python3-impacket", "responder": None}
+
+
+def _apt_install_one(pkg):
+    """Install one apt package; if apt can't locate it, try a known distro alias.
+    Returns True if the package or its alias ends up installed."""
+    if apt_installed(pkg):
+        return True
+    if run(sudo(["apt-get", "install", "-y", pkg])).returncode == 0 and apt_installed(pkg):
+        return True
+    alias = APT_ALIASES.get(pkg)
+    if alias:
+        print(f"  {pkg} unavailable via apt — trying {alias}")
+        return run(sudo(["apt-get", "install", "-y", alias])).returncode == 0 and apt_installed(alias)
+    return False
+
+
 def install_core():
     c("Checking CORE APT packages...")
-    missing = [p for p in CORE_APT if not apt_installed(p)]
+    missing = [p for p in CORE_APT if not apt_installed(p)
+               and not (APT_ALIASES.get(p) and apt_installed(APT_ALIASES[p]))]
     if not missing:
         print("  all core APT packages already installed.")
         return []
@@ -80,10 +101,12 @@ def install_core():
     if r_update.returncode != 0:
         c(f"  [!] 'apt-get update' failed (exit {r_update.returncode}) — installs below "
           f"may use a stale/broken package list.", "1;31")
-    r_install = run(sudo(["apt-get", "install", "-y"] + missing))
-    if r_install.returncode != 0:
-        c(f"  [!] 'apt-get install' exited {r_install.returncode} — see the apt output above "
-          f"for the real reason (no internet, broken repo, GPG error, etc).", "1;31")
+    # Install INDIVIDUALLY so one package apt can't locate (e.g. the Kali-only
+    # 'responder' on Debian) doesn't abort the whole batch — the old `install -y
+    # <all>` left hydra/ldap-utils/hping3/dnsutils uninstalled because of it.
+    for pkg in missing:
+        if not _apt_install_one(pkg):
+            print(f"  [!] {pkg} not installable here (Kali-only? no usable alias)")
     still_missing = _which_missing(missing)
     if still_missing:
         c(f"  [!] still missing after install attempt: {', '.join(still_missing)}", "1;31")
