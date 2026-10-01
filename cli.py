@@ -129,8 +129,9 @@ def _print_summary(ev, args, no_color, elapsed):
         mid = r.get("attack_id") or r.get("attack")
         d = by_mod.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
                                     "mitre": ", ".join(r.get("mitre", []) or []),
-                                    "dir": r.get("direction", ""), "vs": []})
+                                    "dir": r.get("direction", ""), "vs": [], "verdicts": {}})
         d["vs"].append(r.get("baseline_result", "?"))
+        d["verdicts"][r.get("baseline_result", "?")] = r.get("verdict", "")
     for d in by_mod.values():
         d["v"] = next((v for v in _VERDICT_ORDER if v in d["vs"]), (d["vs"] or ["?"])[0])
 
@@ -189,7 +190,12 @@ def _print_summary(ev, args, no_color, elapsed):
         col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
         cat = d["cat"] if d["cat"] != prev_cat else ""
         prev_cat = d["cat"]
-        print(row([str(i), f"{icon} {d['v']}", d["name"], cat, _VERDICT_GLOSS.get(d["v"], "")],
+        detail = _VERDICT_GLOSS.get(d["v"], "")
+        # surface the endpoint-vs-network distinction for BLOCKED (a host
+        # patch/ACL isn't a network/SD-WAN block — see classify()).
+        if d["v"] == "BLOCKED" and "ENDPOINT" in (d["verdicts"].get("BLOCKED", "") or ""):
+            detail = "endpoint block (host patch/ACL, not network)"
+        print(row([str(i), f"{icon} {d['v']}", d["name"], cat, detail],
                   [DIM, col, None, ACC, DIM]))
     print(rule("└", "┴", "┘"))
 

@@ -825,6 +825,7 @@ class HarnessGUI:
             workers = 1
         port_overrides = self._collect_port_overrides()
         self._apply_cloud_ports(target_ip)
+        self._run_target_ip = target_ip   # cleared from _portpatch at run-end
         self._save_target(target_ip)   # remember source/cloud for next run vs this target
         self._run_mode = self.mode_var.get()
 
@@ -874,6 +875,16 @@ class HarnessGUI:
 
     def _finish(self, root):
         self.run_btn["state"] = "normal"; self.stop_btn["state"] = "disabled"
+        # Clear this run's cloud SMB/RPC remap so a long-lived GUI session can't
+        # carry a stale port redirect into a later run against the same IP (the
+        # cloud-off toggle also clears it; this covers the run-end case too).
+        tip = getattr(self, "_run_target_ip", None)
+        if tip:
+            try:
+                from modules import _portpatch
+                _portpatch.CUSTOM_PORT_TARGETS.pop(tip, None)
+            except Exception:
+                pass
         if root:
             self._log(f"\nDONE. Evidence: {root}")
             self._log("  summary.json / summary.csv / report.txt (+ ATT&CK coverage) "
