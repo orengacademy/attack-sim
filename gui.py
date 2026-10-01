@@ -510,6 +510,8 @@ class HarnessGUI:
         if tgt:
             ok, why = core.validate_target(tgt)
             if ok:
+                # honour the Cloud tick so recon probes the NAT'd SMB/RPC alt ports
+                self._apply_cloud_ports(tgt)
                 try:
                     recon = "\n\n" + core.format_reachability_report(
                         core.reachability(tgt, selected))
