@@ -54,6 +54,10 @@ META = {
     "name": "PetitPotam NTLM Coercion",
     "category": "AD Exploitation",
     "test_type": "pentest",
+    # Not in the "original" baseline set: needs root + a running Responder + an
+    # inbound coercion path (hard to land, esp. against a cloud DC). The original
+    # AD-coercion slot is filled by samaccountname_spoof (in-process, no root).
+    "added": True,
     "control": "SMB signing / NTLM relay & outbound-auth protections",
     "fix": "Server",
     "mitre": ['T1187'],

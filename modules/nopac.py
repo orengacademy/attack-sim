@@ -53,6 +53,7 @@ META = {
     "name": "noPac (CVE-2021-42278 + CVE-2021-42287)",
     "category": "AD Exploitation",
     "test_type": "pentest",  # AD exploitation chain, not the USS attack-sim scope (see README)
+    "added": True,  # opt-in, not in the original baseline set
     "control": "ms-DS-MachineAccountQuota / KDC PAC validation",
     "fix": "Nov 2021 cumulative update (patches CVE-2021-42287); set ms-DS-MachineAccountQuota=0 as a mitigating control",
     "mitre": ['T1068', 'T1078'],

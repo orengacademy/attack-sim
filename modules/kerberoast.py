@@ -4,6 +4,7 @@ META = {
     "name": "Kerberoast",
     "category": "AD Exploitation",
     "test_type": "pentest",
+    "added": True,  # opt-in, not in the original baseline set
     "control": "AD hardening (NOT SD-WAN)",
     "fix": "Server",
     "mitre": ['T1558.003'],
