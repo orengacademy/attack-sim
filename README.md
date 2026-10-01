@@ -77,17 +77,21 @@ at `127.0.0.1` for a self-test).
 - **One-shot on any mainstream Linux**: `sudo deploy/setup_all.sh` installs Docker
   if missing (apt / `get.docker.com` / native pacman·zypper·apk), runs
   `setup_target.sh`, and brings up the containers — the whole Linux target in one
-  command (`--with-tools` also installs the attacker tooling; `--teardown` removes
-  it). If Docker can't be installed, host SSH/FTP/SNMP are still configured and the
-  web containers are skipped with a warning.
+  command (`--with-tools` also installs the attacker tooling; `--with-windows` also
+  boots the Windows AD DC VM via Vagrant+VirtualBox when the host supports it;
+  `--teardown` removes everything). If Docker can't be installed, host SSH/FTP/SNMP
+  are still configured and the web containers are skipped with a warning. **Two
+  targets:** the Linux host is Target #1 (configured in place); the Windows DC is
+  Target #2, a separate VM (needs hardware virtualization).
 - **Linux services + web CVEs** (manual): `sudo deploy/setup_target.sh` (SSH lab user,
   FTP anon, SNMP public — distro-agnostic: apt/dnf/yum/pacman/zypper/apk) then
   `cd deploy && docker compose up -d` (Apache CVE-2021-41773, Log4Shell, anonymous
   OpenLDAP). `setup_target.sh` also drops a git-ignored `credentials.env` pointing at
   the lab SSH user, so `ssh_brute` succeeds out of the box (it tests one known
   credential, `HARNESS_DC_USER`/`PASS`, not a wordlist).
-- **Windows AD DC** — local bench: `cd deploy/windows && vagrant up` (Kerberoastable
-  SPN, AS-REP-roastable account, weak admin). ⚠ `nopac` / `samaccountname_spoof`
+- **Windows AD DC** — local bench: `cd deploy/windows && vagrant up` — one command
+  installs AD DS, promotes, reboots, and seeds the accounts (Kerberoastable SPN,
+  AS-REP-roastable account, weak admin). ⚠ `nopac` / `samaccountname_spoof`
   (CVE-2021-42278/42287) additionally need an **unpatched** DC — a current patched
   build makes those two correctly fail; the other AD modules still land. **KVDC /
   cloud**: use

@@ -13,21 +13,30 @@
 #   3. docker compose up -d    (Apache 41773 :80, Log4Shell :8080, OpenLDAP :389)
 #   4. (optional) bootstrap.py to install the ATTACKER tooling too, so one box can
 #      be both target and tester for a self-test.
-#   5. prints the ready-to-run cli.py self-test.
+#   5. (optional, --with-windows) install Vagrant + VirtualBox and boot the
+#      vulnerable Windows AD DC VM (deploy/windows) — Target #2, in one command.
+#   6. prints the ready-to-run cli.py self-test.
+#
+# TWO targets: this Linux HOST becomes Target #1 (SSH/FTP/SNMP + web CVE
+# containers, configured in place — no VM). The Windows AD DC is Target #2, a
+# SEPARATE VM brought up by Vagrant (needs a provider + hardware virtualization).
 #
 # Usage:
-#   sudo deploy/setup_all.sh              # target services only
-#   sudo deploy/setup_all.sh --with-tools # also install attacker tooling (bootstrap.py)
-#   sudo deploy/setup_all.sh --teardown   # remove everything
+#   sudo deploy/setup_all.sh                 # Linux target services only
+#   sudo deploy/setup_all.sh --with-tools    # also install attacker tooling (bootstrap.py)
+#   sudo deploy/setup_all.sh --with-windows  # ALSO boot the Windows AD DC VM (Vagrant+VirtualBox)
+#   sudo deploy/setup_all.sh --teardown      # remove everything (incl. the Windows VM)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 WITH_TOOLS=0
+WITH_WINDOWS=0
 ACTION=setup
 for a in "$@"; do
   case "$a" in
     --with-tools) WITH_TOOLS=1 ;;
+    --with-windows) WITH_WINDOWS=1 ;;
     --teardown|-d) ACTION=teardown ;;
     *) echo "unknown arg: $a"; exit 2 ;;
   esac
@@ -89,11 +98,47 @@ install_docker() {
   start_docker
 }
 
+install_vagrant() {
+  # Vagrant + VirtualBox for the Windows DC VM. apt is the common case; other
+  # distros vary too much to auto-install reliably, so point the user at docs.
+  if command -v vagrant >/dev/null 2>&1 && command -v VBoxManage >/dev/null 2>&1; then
+    log "Vagrant + VirtualBox already present."; return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    log "Installing Vagrant + VirtualBox (apt)…"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y -q
+    apt-get install -y -q virtualbox vagrant || return 1
+  else
+    warn "Auto-install of Vagrant+VirtualBox is only wired for apt. Install them"
+    warn "manually (vagrantup.com + virtualbox.org), then: cd deploy/windows && vagrant up"
+    return 1
+  fi
+}
+
+windows_up() {
+  # Boot the vulnerable Windows AD DC VM (Target #2). One `vagrant up` now runs
+  # both provisioning passes (promote -> reboot -> seed).
+  if ! grep -qiE 'vmx|svm' /proc/cpuinfo 2>/dev/null; then
+    warn "No hardware virtualization (vmx/svm) detected on this host — a Windows VM"
+    warn "likely won't boot here (basic cloud instances lack nested virt). Skipping."
+    return 1
+  fi
+  install_vagrant || return 1
+  log "Booting the Windows AD DC VM (first run downloads a ~5GB box; needs ~4GB RAM)…"
+  ( cd "$HERE/windows" && vagrant up ) || { warn "vagrant up failed — see output."; return 1; }
+  log "Windows DC VM up at 192.168.56.10 (domain lab.local, Administrator/Passw0rd!)."
+}
+
 teardown() {
   need_root
   warn "Tearing down lab…"
   ( cd "$HERE" && compose down -v 2>/dev/null || true )
   bash "$HERE/setup_target.sh" --teardown || true
+  if command -v vagrant >/dev/null 2>&1 && [ -d "$HERE/windows/.vagrant" ]; then
+    warn "Destroying the Windows AD DC VM…"
+    ( cd "$HERE/windows" && vagrant destroy -f 2>/dev/null || true )
+  fi
   log "Done. (Docker Engine left installed; remove with: apt-get remove --purge docker.io)"
 }
 
@@ -122,16 +167,34 @@ BANNER
   fi
   log "Waiting for containers to settle…"; sleep 5
   ( cd "$HERE" && compose ps || true )
+
+  WIN_NOTE="  Windows AD DC (Target #2): not requested. Add --with-windows, or:
+    cd deploy/windows && vagrant up"
+  if [ "$WITH_WINDOWS" -eq 1 ]; then
+    log "Bringing up the Windows AD DC VM (Target #2)…"
+    if windows_up; then
+      WIN_NOTE="  Windows AD DC (Target #2): UP at 192.168.56.10 (lab.local, Administrator/Passw0rd!).
+    Test it: cd \"$REPO\" && HARNESS_DOMAIN=lab.local HARNESS_DC_USER=Administrator \\
+      HARNESS_DC_PASS='Passw0rd!' python3 cli.py --target 192.168.56.10 \\
+      --only kerberoast,kerberos_asrep,dcsync,psexec,wmiexec,petitpotam --confirm-roe"
+    else
+      WIN_NOTE="  Windows AD DC (Target #2): NOT started (see warnings above). Retry on a host
+    with hardware virtualization: cd deploy/windows && vagrant up"
+    fi
+  fi
+
   cat <<EOF
 
 $(log "Lab ready.")
-  Self-test from THIS box (white-box baseline — confirms the lab works):
+  Linux target (Target #1) — self-test from THIS box (confirms the lab works):
     cd "$REPO" && python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe
 
   USS scope only (the attack-simulation boundary set):
     cd "$REPO" && python3 cli.py --target 127.0.0.1 --attack-sim --confirm-roe
 
-  Teardown:
+$WIN_NOTE
+
+  Teardown (incl. the Windows VM):
     sudo deploy/setup_all.sh --teardown
 EOF
 }

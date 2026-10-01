@@ -25,10 +25,20 @@ Distro-agnostic — detects apt/dnf/yum/pacman/zypper/apk (and installs Docker v
 the native package or `get.docker.com`):
 
 ```bash
-sudo deploy/setup_all.sh              # Docker (if missing) + host services + containers
-sudo deploy/setup_all.sh --with-tools # also install the attacker tooling (bootstrap.py)
-sudo deploy/setup_all.sh --teardown   # remove everything
+sudo deploy/setup_all.sh                # Linux target: Docker (if missing) + host services + containers
+sudo deploy/setup_all.sh --with-tools   # also install the attacker tooling (bootstrap.py)
+sudo deploy/setup_all.sh --with-windows # ALSO boot the Windows AD DC VM (Vagrant+VirtualBox)
+sudo deploy/setup_all.sh --teardown     # remove everything (incl. the Windows VM)
 ```
+
+**Two targets, two mechanisms.** The **Linux host itself** becomes Target #1 —
+`setup_all.sh` configures SSH/FTP/SNMP and the web-CVE containers *in place* (no
+VM). The **Windows AD DC** is Target #2, a *separate VM*: `--with-windows` (or `cd
+deploy/windows && vagrant up`) uses **Vagrant + VirtualBox** to download a Windows
+Server 2022 box (~5 GB) and boot a 4 GB VM on a host-only net (`192.168.56.10`) —
+so the host needs hardware virtualization (VT-x/AMD-V); `--with-windows` checks for
+it and skips with a warning if absent (e.g. a basic cloud instance without nested
+virt — use the cloud Terraform there instead).
 
 Then self-test from the box: `python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe`.
 The manual, step-by-step equivalent is below.
@@ -63,8 +73,12 @@ On a host with Vagrant + a provider (VirtualBox/libvirt/Hyper-V):
 
 ```bash
 cd deploy/windows
-vagrant up            # provisions Windows Server, promotes to a DC, seeds vulnerable accounts
+vagrant up            # ONE command: install AD DS, promote, reboot, seed accounts
 ```
+
+A single `vagrant up` now runs both provisioning passes automatically (Vagrant
+reboots the guest between them; `provision.ps1` waits for AD DS to come up before
+seeding). Needs Vagrant 2.2.0+ and a provider (VirtualBox by default).
 
 It creates a domain with a **Kerberoastable** SPN account, an **AS-REP-roastable**
 (no-preauth) account, weak admin creds for DCSync/PsExec/WMIExec, and sets
