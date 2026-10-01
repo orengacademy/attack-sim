@@ -1130,12 +1130,34 @@ def _probe_one(target, proto, port, timeout):
     return "unknown"
 
 
+def _cloud_port_map(target):
+    """The cloud SMB/RPC alternate-port map for a target, if it's registered as a
+    NAT'd cloud target (modules/_portpatch.py: e.g. {445:4445, 135:1135}). The GUI
+    'Cloud target' tick and the CLI register these, so recon probes the forwarded
+    ports the AD modules will actually hit — not the dead raw 445/135."""
+    try:
+        from modules import _portpatch
+        return dict(_portpatch.CUSTOM_PORT_TARGETS.get(target) or {})
+    except Exception:
+        return {}
+
+
 def reachability(target, modules, timeout=2.0, workers=32):
     """Probe the port(s) each module targets (tcp connect / best-effort udp /
     icmp ping), CONCURRENTLY (each distinct (proto,port) once). Returns {target,
     probes:[[proto,port,status]...], modules:[{id,name,probes,reachable,category,
-    notes}]}. category is suggested|unreachable|indeterminate|noport. Advisory."""
+    notes}]}. category is suggested|unreachable|indeterminate|noport. Advisory.
+
+    For a cloud target with NAT'd SMB/RPC (see _cloud_port_map), a tcp port that is
+    forwarded (445/135) is probed at its ALTERNATE (4445/1135) so reachability
+    reflects where the service really is."""
     from concurrent.futures import ThreadPoolExecutor
+
+    pmap = _cloud_port_map(target)
+
+    def eff(proto, port):
+        # only tcp SMB/RPC are NAT-forwarded; everything else is unchanged
+        return pmap[port] if (proto == "tcp" and port in pmap) else port
 
     # collect the distinct probes needed across all modules, then run them in
     # parallel so filtered ports (each costing a full timeout) don't serialise.
@@ -1144,9 +1166,10 @@ def reachability(target, modules, timeout=2.0, workers=32):
     for m in modules:
         for spec in m.META.get("ports", []):
             proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
-            if (proto, port) not in seen:
-                seen.add((proto, port))
-                keys.append((proto, port))
+            key = (proto, eff(proto, port))
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
 
     cache = {}
     if keys:
@@ -1167,9 +1190,13 @@ def reachability(target, modules, timeout=2.0, workers=32):
     for m in modules:
         meta = m.META
         probes = []
+        notes = []
         for spec in meta.get("ports", []):
             proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
-            probes.append([proto, port, cache.get((proto, port), "unknown")])
+            ep = eff(proto, port)
+            probes.append([proto, ep, cache.get((proto, ep), "unknown")])
+            if ep != port:
+                notes.append(f"cloud NAT: {proto}/{port}->{ep}")
         reachable = any(p[2] in _OPEN_STATES for p in probes)
         if not probes:
             category = "noport"
@@ -1180,7 +1207,7 @@ def reachability(target, modules, timeout=2.0, workers=32):
         else:
             category = "indeterminate"   # e.g. UDP open|filtered — can't tell
         results.append({"id": meta["id"], "name": meta["name"], "probes": probes,
-                        "reachable": reachable, "category": category, "notes": []})
+                        "reachable": reachable, "category": category, "notes": notes})
     flat = [[proto, port, st] for (proto, port), st in cache.items()]
     return {"target": target, "probes": flat, "modules": results}
 
