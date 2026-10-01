@@ -333,7 +333,7 @@ from the other NPSA workstreams:
 | test_type | in USS scope? |
 |-----------|---------------|
 | **attack_sim** | ✅ yes — families A–G below |
-| pentest | ✗ (UPT): apache_41773, log4shell, dcsync, kerberoast, petitpotam, kerberos_asrep |
+| pentest | ✗ (UPT): apache_41773, log4shell, dcsync, kerberoast, petitpotam, kerberos_asrep, nopac, samaccountname_spoof |
 | va | ✗ (VA/ConfigA): snmp_brute, ssh_brute, ftp_anonymous, ldap_null_bind |
 | dos | ✗ (plan says **no DoS**): icmp_flood, syn_flood |
 
@@ -344,7 +344,7 @@ from the other NPSA workstreams:
 | **A** — 443 C2/tunnel | egress allow-list, TLS-inspect, App-ID | egress_tunnel_brokers, tls_carrier, l7_enforce_443, lots_saas_c2, domain_fronting, self_tunnel_vps\*, udp443_quic, ssh_over_443\* |
 | **B** — DNS covert | forced internal resolver, DoH/DoT block | doh_bypass, doh_multi, dns_egress_external, dot_doq_853, dns_tunnel\* |
 | **C** — TLS/proxy evasion | JA3/inspection, category, proxy, parsing | ja3_mimicry, nrd_category, proxy_bypass, http_smuggling |
-| **D** — segmentation/lateral | least-privilege ACLs, micro-seg, App-ID | segmentation_sweep, appid_port_mismatch, psexec, reverse_egress (b2a), socks_pivot\*, eastwest_lateral\*, ipv6_acl_parity, stateful_evasion, switch_mgmt |
+| **D** — segmentation/lateral | least-privilege ACLs, micro-seg, App-ID | segmentation_sweep, appid_port_mismatch, psexec, wmiexec, reverse_egress (b2a), socks_pivot\*, eastwest_lateral\*, ipv6_acl_parity, stateful_evasion, switch_mgmt |
 | **E** — exfil/DLP | DLP, volume thresholds, ICMP/DNS egress | covert_channel, dlp_canary_https, dlp_lowandslow\*, icmp_exfil\* |
 | **F** — inbound/WAF (agency-owned) | WAF, DMZ egress, mgmt surface | waf_evasion, exposed_mgmt_api |
 | **G** — realism overlay | NDR beacon analytics, UEBA | beacon_shaping\* |
