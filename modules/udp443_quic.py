@@ -41,21 +41,28 @@ def run(target, ctx):
     vps = ctx.cfg("attacker_vps")
     dests = [vps] if vps else _DEFAULT_QUIC
     out = ["# UDP/443 (QUIC) egress test (Family A)"]
-    egress = []
+    replied, noreply = [], []
     for host in dests:
         st = U.udp_egress(host, 443, ctx, payload=_QUIC_PROBE, timeout=4)
         out.append(f"{host}:443/udp — {st}")
-        # 'reply' = definite; 'sent (no reply)' = the local stack egressed it
-        # (UDP is connectionless; a boundary that dropped it would still show this,
-        # so we treat a reply as strong and no-reply as "permitted for egress").
-        if st in ("reply", "sent (no reply)"):
-            egress.append(f"{host} ({st})")
+        if st == "reply":
+            replied.append(host)
+        elif st == "sent (no reply)":
+            noreply.append(host)
     out.append("")
-    if egress:
-        out.append(f"UDP443-OPEN — UDP/443 egress permitted to: {', '.join(egress)}. "
-                   "A QUIC tunnel (cloudflared) can use this path even if TCP/443 is "
-                   "controlled. [FINDING if a 'reply' was seen; verify no-reply cases "
-                   "against firewall logs — UDP has no handshake.]")
+    # Only a real REPLY proves the datagram traversed and a QUIC server answered.
+    # "sent (no reply)" is ambiguous — a silently-dropping firewall looks identical
+    # to a permitted-but-unanswered path over connectionless UDP — so it is NOT
+    # scored as open (that was a false-positive source); it reports INCONCLUSIVE.
+    if replied:
+        out.append(f"UDP443-OPEN — a QUIC server replied over UDP/443 from: "
+                   f"{', '.join(replied)}. A QUIC tunnel (cloudflared) can use this path "
+                   "even if TCP/443 is controlled. [FINDING]")
+    elif noreply:
+        out.append(f"UDP/443: datagram(s) sent to {', '.join(noreply)} but no reply — "
+                   "INCONCLUSIVE. UDP has no handshake, so a dropping firewall and a "
+                   "permitted-but-unanswered path are indistinguishable here; not scored "
+                   "as open. Confirm against firewall logs or a known-responsive endpoint.")
     else:
         out.append("UDP/443 egress blocked — datagrams refused/blocked (default-deny holding)")
     return "\n".join(out)

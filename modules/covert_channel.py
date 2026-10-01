@@ -59,19 +59,36 @@ def run(target, ctx):
         out.append(f"ICMP: error {e}")
 
     # --- DNS egress / tunnelling precondition ---
-    label = f"exfil-{uuid.uuid4().hex[:12]}.{ZONE}"
+    # HONEST SCOPE: proving DNS tunnelling needs a zone you are AUTHORITATIVE for —
+    # then a query for a unique label under it reaching your NS is the real signal.
+    # Querying a zone you DON'T control (the old default example.com) is useless:
+    # a recursive resolver answers NXDOMAIN for a random example.com label, which
+    # only proves "DNS resolves", not "arbitrary-domain egress / tunnelling". So we
+    # only claim a channel when an operator zone is configured.
+    cfg_zone = ctx.cfg("canary_dns_zone") or ctx.cfg("attacker_domain")
+    zone = cfg_zone or ZONE
+    # "operator-controlled" = a zone was set in config.json, OR HARNESS_DNS_ZONE was
+    # pointed at something other than the useless example.com default.
+    operator_controlled = bool(cfg_zone) or ZONE != "example.com"
+    label = f"exfil-{uuid.uuid4().hex[:12]}.{zone}"
     try:
         d = subprocess.run(["dig", "+time=3", "+tries=1", label],
                            capture_output=True, text=True, timeout=10)
-        egressed = ("ANSWER SECTION" in d.stdout
+        resolved = ("ANSWER SECTION" in d.stdout
                     or "status: NXDOMAIN" in d.stdout
                     or "status: NOERROR" in d.stdout)
-        if egressed:
-            out.append(f"CHANNEL-OPEN DNS — query for {label} egressed "
-                       "(DNS to arbitrary domains permitted)")
+        if not operator_controlled:
+            out.append(f"DNS: queried {label} ({'answered' if resolved else 'no answer'}) — "
+                       "INDICATOR ONLY: no attacker-controlled zone configured "
+                       "(set canary_dns_zone / attacker_domain). A reply for a random "
+                       "label under a zone you don't own only shows DNS works, NOT "
+                       "tunnelling, so this is not scored as a covert channel.")
+        elif resolved:
+            out.append(f"CHANNEL-OPEN DNS — a query for {label} (your zone) egressed "
+                       "toward your authoritative NS (DNS-tunnel precondition met)")
             open_ch.append("DNS")
         else:
-            out.append(f"DNS: query did not egress/resolve ({label})")
+            out.append(f"DNS: query under your zone did not egress/resolve ({label})")
     except FileNotFoundError:
         out.append("[ERROR] dig not found (install dnsutils)")
     except Exception as e:

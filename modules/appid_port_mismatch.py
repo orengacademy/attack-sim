@@ -65,6 +65,14 @@ def run(target, ctx):
             out.append(f"MISMATCH-ALLOWED {label} — flow established through the "
                        f"SD-WAN; resp: {resp!r}")
             allowed.append(label)
+        except (ConnectionResetError, BrokenPipeError) as e:
+            # the App-ID / firewall RESET the mismatched flow — the control WORKING.
+            # Without this, the reset propagated out of run() -> recorded as a module
+            # crash (NO-RESULT) instead of a block.
+            out.append(f"{label}: {e.__class__.__name__} — the mismatched protocol was "
+                       "reset (App-ID/L7 enforcing, good)")
+        except OSError as e:
+            out.append(f"{label}: send/recv error ({e.__class__.__name__})")
         finally:
             s.close()
     out.append("")

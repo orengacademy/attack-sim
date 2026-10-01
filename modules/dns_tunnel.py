@@ -6,8 +6,9 @@ when only the internal resolver is reachable, because the internal resolver does
 the recursion out to your NS.
 
   * INDICATOR (default): fire a uniquely-labelled query under your zone
-    (canary_dns_zone / attacker_domain) through the SYSTEM resolver. If it egresses
-    (your authoritative NS / logs would see it), the DNS-tunnel precondition holds.
+    (canary_dns_zone / attacker_domain) at the configured resolver (external_resolver,
+    default 8.8.8.8; set it to the internal/forced resolver to test that path). If it
+    egresses (your authoritative NS / logs would see it), the precondition holds.
   * ACTIVE (--active): run a real tunnel client (iodine / dnscat2) against your NS
     for a few seconds and confirm the tunnel comes up, then tear it down. Needs the
     matching server on your authoritative NS.
@@ -53,10 +54,12 @@ def run(target, ctx):
 
     # ---- indicator: does a unique label under your zone egress? ---------------
     label = f"t{uuid.uuid4().hex[:16]}.{zone}"
-    egressed, detail = U.dns_query(label, ctx.cfg("external_resolver", "8.8.8.8"), ctx, timeout=4)
-    # also try the system resolver path via a plain getaddrinfo-style query to 127-less;
-    # dns_query above goes direct — for the recursive path, query the configured resolver.
-    out.append(f"unique label {label} — {detail}")
+    # query goes to the CONFIGURED resolver (external_resolver, default 8.8.8.8). To
+    # test the realistic "internal resolver recurses out to your NS" path, point
+    # external_resolver at the internal/forced resolver IP in config.json.
+    resolver = ctx.cfg("external_resolver", "8.8.8.8")
+    egressed, detail = U.dns_query(label, resolver, ctx, timeout=4)
+    out.append(f"unique label {label} via resolver {resolver} — {detail}")
     if egressed:
         out.append(f"CHANNEL-OPEN DNS — a query under your zone {zone} egressed; the "
                    "recursive path to your authoritative NS is open (DNS-tunnel "

@@ -45,8 +45,19 @@ def run(target, ctx):
         s.settimeout(8)
         try:
             data = s.recv(64)
-            out.append(f"L7-NOT-ENFORCED: peer answered non-TLS bytes on {port} "
-                       f"({len(data)}B) — port-based only, tunnelable")
+            if data[:1] in (b"\x15", b"\x16"):
+                # 0x15 = TLS alert, 0x16 = TLS handshake: the peer answered as a TLS
+                # endpoint (rejecting/negotiating TLS), NOT a raw-TCP passthrough — a
+                # conformant HTTPS server does exactly this. The old code scored this
+                # as L7-NOT-ENFORCED (false finding).
+                out.append(f"L7-ENFORCED: peer answered with a TLS record "
+                           f"(0x{data[:1].hex()}) on {port} — treating 443 as TLS, not a "
+                           "raw-TCP passthrough (good)")
+            elif data:
+                out.append(f"L7-NOT-ENFORCED: peer answered NON-TLS bytes on {port} "
+                           f"({len(data)}B, 0x{data[:8].hex()}) — port-based only, tunnelable")
+            else:
+                out.append(f"L7-ENFORCED: peer closed without answering non-TLS bytes on {port}")
         except socket.timeout:
             out.append(f"L7-NOT-ENFORCED: non-TLS session held open on {port} "
                        "(no L7 reset) — tunnelable")

@@ -82,6 +82,14 @@ def run(target, ctx):
         for port, name in SENSITIVE:
             results[port] = _probe(target, port)
 
+    # A target that doesn't resolve makes EVERY port "unresolved" -> with no OPEN
+    # ports the old code concluded "segmentation holding" (a false CONTROL-WORKING).
+    # Flag it as an error instead so a typo'd/bad target isn't credited to the control.
+    if results and all(v == "unresolved" for v in results.values()):
+        out.append(f"[ERROR] target '{target}' did not resolve — cannot sweep "
+                   "(this is NOT 'segmentation holding'; fix the target).")
+        return "\n".join(out)
+
     opened = []
     for port, name in SENSITIVE:            # preserve declared order in output
         st = results.get(port, "error")

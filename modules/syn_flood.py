@@ -56,6 +56,16 @@ def run(target, ctx):
     out = [f"# SYN flood DoS vs {target}:{port}  "
            f"({FLOOD_SECONDS}s flood, {SAMPLES} connect samples)"]
 
+    # BASELINE: the DoS signal is "connects that WORKED before now fail during the
+    # flood". If nothing is listening on the port to begin with, every sample would
+    # fail for a reason that has nothing to do with the flood -> a false "DoS
+    # effective (100%)". So require the port open at baseline before measuring.
+    if not _connect_ok(target, port):
+        out.append(f"INCONCLUSIVE: no service listening on {target}:{port} at baseline "
+                   "— cannot measure SYN-flood impact (connect failures wouldn't be "
+                   "caused by the flood). Pick an open service port (HARNESS_PORT_SYN / GUI).")
+        return "\n".join(out)
+
     # elevate hping3 via `sudo -n` (never prompts) when not root, so a per-command
     # NOPASSWD rule for hping3 works without running the whole harness as root.
     import core
