@@ -2,6 +2,10 @@
 #   apache  : CVE-2021-41773 path traversal / RCE  -> :80   (apache_41773)
 #   log4shell: CVE-2021-44228 vulnerable app        -> :8080 (log4shell)
 #   openldap: anonymous bind exposes namingContexts -> :389  (ldap_null_bind)
+#   https-lab: TLS + exposed mgmt surface on 443     -> :443  (tls_carrier,
+#             ja3_mimicry, l7_enforce_443, http_smuggling, waf_evasion,
+#             exposed_mgmt_api) — so the 443 boundary modules have a real target
+#             instead of reporting NO-SERVICE.
 #
 #   cd deploy && docker compose up -d      # start
 #            docker compose down -v        # stop + remove
@@ -34,4 +38,28 @@ services:
       LDAP_ADMIN_PASSWORD: "adminpass"
       LDAP_ALLOW_ANON_BINDING: "yes"
     ports: ["389:1389"]
+    restart: unless-stopped
+
+  https-lab:
+    # A real HTTPS listener on 443 so the boundary/443 modules have a target to
+    # exercise instead of NO-SERVICE. Stock nginx:alpine; a self-signed lab cert
+    # is generated in-container on first start (no host openssl, no key in git).
+    image: nginx:alpine
+    container_name: bas-https-lab
+    ports: ["443:443"]
+    volumes:
+      - ./nginx/https-lab.conf:/etc/nginx/conf.d/default.conf:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ ! -s /etc/nginx/certs/lab.crt ]; then
+          apk add --no-cache openssl >/dev/null
+          mkdir -p /etc/nginx/certs
+          openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+            -keyout /etc/nginx/certs/lab.key -out /etc/nginx/certs/lab.crt \
+            -subj "/CN=mygovnet-bas-lab"
+        fi
+        exec nginx -g 'daemon off;'
     restart: unless-stopped
