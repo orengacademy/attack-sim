@@ -1005,10 +1005,37 @@ def install_suggestions(missing_binaries, pm=None):
     return commands, notes
 
 
+# Python libraries the in-process modules import — (import-to-test, pip-name).
+# Single source of truth for requirements.txt / bootstrap / preflight. The
+# import name is a DEEP one so it exercises the real chain (e.g. dns.asyncquery
+# and cryptography.hazmat.asn1, which a stale/shadowed cryptography breaks).
+PY_PACKAGES = [
+    ("impacket.examples.secretsdump", "impacket"),
+    ("ldap3", "ldap3"),
+    ("ldapdomaindump", "ldapdomaindump"),
+    ("dns.asyncquery", "dnspython"),
+    ("cryptography.hazmat.asn1", "cryptography"),
+]
+
+
+def check_python_packages():
+    """Import each in-process dependency and report status — the 'are the Python
+    packages prepared?' gate. [{import, pip, ok, error}]. Never raises."""
+    out = []
+    for imp, pip_name in PY_PACKAGES:
+        try:
+            importlib.import_module(imp)
+            out.append({"import": imp, "pip": pip_name, "ok": True, "error": ""})
+        except Exception as e:
+            out.append({"import": imp, "pip": pip_name, "ok": False,
+                        "error": f"{e.__class__.__name__}: {e}"})
+    return out
+
+
 def preflight(modules, want_versions=False):
     """Check every module's declared requirements. Returns:
-      {platform, privileged, package_manager, modules: [ per-module dict ]}
-    where each per-module dict has ready/missing/missing_files/priv_ok/tools."""
+      {platform, privileged, package_manager, python_packages, modules: [...]}
+    where each per-module dict has ready/missing/missing_files/missing_py/priv_ok."""
     priv = is_privileged()
     pm = detect_package_manager()
     out = []
@@ -1058,7 +1085,8 @@ def preflight(modules, want_versions=False):
                      and priv_ok and os_ok,
         })
     return {"platform": platform_info(), "privileged": priv,
-            "package_manager": pm, "modules": out}
+            "package_manager": pm, "python_packages": check_python_packages(),
+            "modules": out}
 
 
 def format_preflight_report(pf):
@@ -1071,8 +1099,21 @@ def format_preflight_report(pf):
     L += [f"Platform : {plat}",
           f"Arch/Py  : {p['machine']} · Python {p['python']}",
           f"Privilege: {'root/admin' if pf['privileged'] else 'unprivileged'}",
-          f"Pkg mgr  : {pf['package_manager'] or 'not detected'}",
-          "", f"Modules ready: {ready_n}/{len(pf['modules'])}", ""]
+          f"Pkg mgr  : {pf['package_manager'] or 'not detected'}"]
+    # Python packages (requirements.txt) — the in-process AD modules need these.
+    pyp = pf.get("python_packages") or []
+    if pyp:
+        ok_n = sum(1 for d in pyp if d["ok"])
+        L += ["", f"Python packages: {ok_n}/{len(pyp)} importable (for in-process AD modules)"]
+        for d in pyp:
+            if d["ok"]:
+                L.append(f"  [OK] {d['pip']}")
+            else:
+                L.append(f"  [XX] {d['pip']} — import {d['import']} FAILS ({d['error']})")
+        if ok_n < len(pyp):
+            L.append("  fix: python3 -m pip install -r requirements.txt  "
+                     "(a stale user-site cryptography? rm -rf <usersite>/cryptography*)")
+    L += ["", f"Modules ready: {ready_n}/{len(pf['modules'])}", ""]
     all_missing = set()
     for r in pf["modules"]:
         mark = "OK" if r["ready"] else "XX"
