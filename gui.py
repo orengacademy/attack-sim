@@ -191,11 +191,30 @@ class HarnessGUI:
         ttk.Label(sf, text="(bind egress — DC foothold / VRF)",
                   style="Muted.TLabel").pack(side="left")
 
+        # Cloud target: SMB/RPC are DNAT'd to alternate high ports (ISPs block
+        # outbound 445). Ticking this maps 445->SMB and 135->RPC for the entered
+        # target so the impacket modules (dcsync/psexec/wmiexec/nopac/sama/petit)
+        # reach the forwarded ports (same as modules/_portpatch.py, but per-run).
+        cf = ttk.Frame(f); cf.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        self.cloud_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cf, text="Cloud target (NAT'd SMB/RPC)", variable=self.cloud_var,
+                        command=self._toggle_cloud_ports).pack(side="left")
+        ttk.Label(cf, text="SMB").pack(side="left", padx=(8, 2))
+        self.smb_port = tk.StringVar(value="4445")
+        self._smb_entry = ttk.Entry(cf, textvariable=self.smb_port, width=6, state="disabled")
+        self._smb_entry.pack(side="left")
+        ttk.Label(cf, text="RPC").pack(side="left", padx=(8, 2))
+        self.rpc_port = tk.StringVar(value="1135")
+        self._rpc_entry = ttk.Entry(cf, textvariable=self.rpc_port, width=6, state="disabled")
+        self._rpc_entry.pack(side="left")
+        ttk.Label(cf, text="(445→SMB, 135→RPC for AD modules)",
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
+
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+        self._priv_label.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
-        self._unlock_btn.grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
+        self._unlock_btn.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
         self._refresh_privilege()
 
     def _refresh_privilege(self):
@@ -378,7 +397,7 @@ class HarnessGUI:
                               (("●"), OKC, "BLOCKED — filtered/dropped by control (good)"),
                               (("●"), BLUEC, "NO-SERVICE — port closed, not a block"),
                               (("●"), WARNC, "NO-RESULT / AUTH — review"),
-                              (("●"), MUTED, "PREREQ-MISSING — skipped")):
+                              (("●"), MUTED, "SKIPPED / PREREQ-MISSING — not run")):
             rowf = ttk.Frame(leg, style="Card.TFrame"); rowf.pack(anchor="w", fill="x")
             tk.Label(rowf, text=dot, fg=col, bg=PANEL).pack(side="left")
             tk.Label(rowf, text=txt, fg=MUTED, bg=PANEL,
@@ -387,13 +406,16 @@ class HarnessGUI:
         # tree + BOTH scrollbars in a grid frame (packing the scrollbar after an
         # expanding tree squeezes it to zero width — the old "can't scroll" bug).
         tf = ttk.Frame(left); tf.pack(fill="both", expand=True, padx=2, pady=2)
-        cols = ("mode", "dir", "attack", "iter", "result", "mitre", "cwe")
+        cols = ("no", "mode", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
         self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
-        for c, t, w, a in (("mode", "M", 32, "center"), ("dir", "Dir", 38, "center"),
-                           ("attack", "Attack", 150, "w"), ("iter", "#", 24, "center"),
-                           ("result", "Result", 96, "center"), ("mitre", "MITRE", 118, "w"),
-                           ("cwe", "CWE", 86, "w")):
-            self.status_tree.heading(c, text=t)
+        self._sort_state = {}   # col -> last sort was descending
+        # click any heading to sort by that column (toggles asc/desc)
+        for c, t, w, a in (("no", "#", 34, "center"), ("mode", "M", 30, "center"),
+                           ("dir", "Dir", 38, "center"), ("cat", "Category", 118, "w"),
+                           ("attack", "Attack", 150, "w"), ("iter", "It", 26, "center"),
+                           ("result", "Result", 96, "center"), ("mitre", "MITRE", 110, "w"),
+                           ("cwe", "CWE", 80, "w")):
+            self.status_tree.heading(c, text=t, command=lambda cc=c: self._sort_tree(cc))
             self.status_tree.column(c, width=w, anchor=a, stretch=False)
         vsb = ttk.Scrollbar(tf, orient="vertical", command=self.status_tree.yview)
         hsb = ttk.Scrollbar(tf, orient="horizontal", command=self.status_tree.xview)
@@ -454,6 +476,27 @@ class HarnessGUI:
             if v.isdigit():
                 out[mid] = int(v)
         return out
+
+    def _toggle_cloud_ports(self):
+        state = "normal" if self.cloud_var.get() else "disabled"
+        self._smb_entry.configure(state=state)
+        self._rpc_entry.configure(state=state)
+
+    def _apply_cloud_ports(self, target_ip):
+        """When 'Cloud target' is ticked, register the target's NAT'd SMB/RPC
+        ports so the impacket modules reach the forwarded alternates (same
+        mechanism as modules/_portpatch.py, applied per run for this target)."""
+        if not self.cloud_var.get():
+            return
+        try:
+            from modules import _portpatch
+            smb = int((self.smb_port.get() or "4445").strip())
+            rpc = int((self.rpc_port.get() or "1135").strip())
+            _portpatch.CUSTOM_PORT_TARGETS[target_ip] = {445: smb, 135: rpc}
+            self._log(f"Cloud target: SMB 445->{smb}, RPC 135->{rpc} for {target_ip} "
+                      "(AD modules will use the alternates).")
+        except Exception as e:
+            self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
 
     def _preflight(self):
         selected = [m for (var, m) in self.vars.values() if var.get()] or self.modules
@@ -583,15 +626,43 @@ class HarnessGUI:
         self.log.insert("end", "\n".join(tail) + "\n")
         self.log.see("end")
 
-    def _add_status(self, aid, name, it, result, direction="", mitre="", cwe=""):
+    def _add_status(self, aid, name, it, result, direction="", mitre="", cwe="", category=""):
         m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
-        iid = self.status_tree.insert("", "end",
-                                      values=(m, direction, name, it, result, mitre, cwe),
-                                      tags=(result,))
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
+        iid = self.status_tree.insert(
+            "", "end",
+            values=(self._status_seq, m, direction, category, name, it, result, mitre, cwe),
+            tags=(result,))
         self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
         if kids:
             self.status_tree.see(kids[-1])
+
+    def _sort_tree(self, col):
+        """Sort the status table by a clicked column heading (toggles asc/desc).
+        '#'/'It' sort numerically; everything else case-insensitively."""
+        rows = [(self.status_tree.set(k, col), k) for k in self.status_tree.get_children("")]
+        numeric = col in ("no", "iter")
+
+        def key(item):
+            v = item[0]
+            if numeric:
+                try:
+                    return (0, float(v))
+                except ValueError:
+                    return (1, 0.0)
+            return (0, str(v).lower())
+
+        reverse = self._sort_state.get(col, False)
+        rows.sort(key=key, reverse=reverse)
+        for idx, (_, k) in enumerate(rows):
+            self.status_tree.move(k, "", idx)
+        self._sort_state[col] = not reverse
+        # show a direction arrow on the active column only
+        for c in self.status_tree["columns"]:
+            base = self.status_tree.heading(c, "text").rstrip(" ▲▼")
+            arrow = (" ▼" if reverse else " ▲") if c == col else ""
+            self.status_tree.heading(c, text=base + arrow)
 
     def _jump_to_output(self, _event=None):
         sel = self.status_tree.selection()
@@ -621,7 +692,8 @@ class HarnessGUI:
                         aid, name, it, result,
                         direction=meta.get("direction", "a2b"),
                         mitre=", ".join(meta.get("mitre", [])),
-                        cwe=", ".join(meta.get("cwe", [])))
+                        cwe=", ".join(meta.get("cwe", [])),
+                        category=meta.get("category", ""))
                 elif kind == "progress":
                     self.progress["maximum"] = p[1]; self.progress["value"] = p[0]
                 elif kind == "done":
@@ -657,12 +729,14 @@ class HarnessGUI:
         except (ValueError, TypeError):
             workers = 1
         port_overrides = self._collect_port_overrides()
+        self._apply_cloud_ports(target_ip)
         self._run_mode = self.mode_var.get()
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
         self.progress["value"] = 0
         for row in self.status_tree.get_children():
             self.status_tree.delete(row)
+        self._status_seq = 0
         self.log.delete("1.0", "end")
         self._status_row_keys.clear()
         self._output_marks.clear()
