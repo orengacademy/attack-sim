@@ -71,6 +71,9 @@ _CANON = {
     # Forcepoint NGFW/SMC + Web spellings
     "dst addr": "Dst IP", "src addr": "Src Address", "rule tag": "Policy Name",
     "category": "Attack Type", "sender domain": "Dst IP",
+    "destination address": "Dst IP", "source address": "Src Address",
+    "dst svc": "Service", "service port": "Dst Port", "event": "Attack Type",
+    "rule": "Policy Name", "severity level": "Threat Level", "ip proto": "Protocol",
 }
 
 # Action VALUES differ by vendor too (Sangfor Allow/Deny; Forcepoint NGFW

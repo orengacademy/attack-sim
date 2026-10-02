@@ -30,7 +30,7 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^WAF-EVADED",
-    "blocked_regex": r"WAF blocked all variants|unreachable",
+    "blocked_regex": r"WAF blocked all variants|unreachable|Connection reset|reset by peer|Broken pipe",
 }
 
 _XSS = "<script>alert(1)</script>"
