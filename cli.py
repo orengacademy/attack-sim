@@ -398,7 +398,7 @@ def main():
     _cats = {m.META.get("category", "") for m in selected}
     _iters = max(1, args.iterations)
 
-    def _run_one_target(target):
+    def _run_one_target(target, label=None):
         """Prepare + run the selected modules against ONE target, applying that
         target's own recalled source/cloud/creds/site. Returns (root, exit_code).
         Called once per --target so a single scan can hit A->B (kvdc, direct
@@ -508,7 +508,7 @@ def main():
 
         t0 = time.time()
         try:
-            ev = core.Evidence(base=args.evidence_dir)
+            ev = core.Evidence(base=args.evidence_dir, label=label)
             root = runner.run(selected, _iters, ev, skip_unready=not args.force,
                               recon=not args.no_recon, mode=args.mode, site_id=site_id or None)
         except ValueError as e:               # invalid target / allowlist refusal
@@ -544,7 +544,7 @@ def main():
             print(_c(f"\n{'═' * 64}", ACC, args.no_color))
             print(_c(f" TARGET {i}/{len(targets)}:  {tgt}", "\033[1m", args.no_color))
             print(_c(f"{'═' * 64}", ACC, args.no_color))
-        root, rc = _run_one_target(tgt)
+        root, rc = _run_one_target(tgt, label=(tgt if multi else None))
         worst = max(worst, rc)
         if root:
             roots.append((tgt, root))

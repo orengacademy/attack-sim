@@ -453,10 +453,21 @@ class Context:
 # Evidence logger
 # ---------------------------------------------------------------------
 class Evidence:
-    def __init__(self, base="evidence"):
+    @staticmethod
+    def _slug(label):
+        """Filesystem-safe tag from a target (keep it readable: dots/colons -> _)."""
+        s = re.sub(r"[^A-Za-z0-9._-]", "_", str(label))
+        return s.strip("_")[:40]
+
+    def __init__(self, base="evidence", label=None):
         import threading
         self.ts = datetime.now().strftime("%d-%m-%H-%M")   # day-month-hour-minute
-        self.root = os.path.join(base, f"run_{self.ts}")
+        # In a multi-target scan each target gets its own Evidence; a bare
+        # run_<ts> would make them run_<ts> / run_<ts>-2 — collision-safe but you
+        # can't tell WHICH target is which. A label (the target) names the dir
+        # run_<ts>__<target> so it's self-describing.
+        name = f"run_{self.ts}" + (f"__{self._slug(label)}" if label else "")
+        self.root = os.path.join(base, name)
         # DD-MM-HH-MM has no seconds, so two runs started in the same minute
         # collide on folder name — without this, the second run's files would
         # silently land in / overwrite the first run's iteration_N/attack_id/
