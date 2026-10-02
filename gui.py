@@ -403,7 +403,8 @@ class HarnessGUI:
                          ("Original set", lambda: self._select_group(False)),
                          ("Added set", lambda: self._select_group(True)),
                          ("Preflight + recon", self._preflight),
-                         ("Egress probe", self._egress_probe)):
+                         ("Egress probe", self._egress_probe),
+                         ("Appliance log…", self._appliance_log)):
             ttk.Button(f1, text=txt, command=cmd).pack(side="left", padx=(0, 6))
         # row 2 — RoE gate + RUN/STOP
         f2 = ttk.Frame(parent); f2.pack(fill="x", padx=12, pady=(4, 2))
@@ -720,6 +721,40 @@ class HarnessGUI:
                       f"{target_ip} (AD modules + ssh_brute use the alternates).")
         except Exception as e:
             self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
+
+    def _appliance_log(self):
+        """Pick an SD-WAN/firewall log (Sangfor/Forcepoint, .xlsx/.csv) and show the
+        per-module Allow/Deny + signature correlation for the current target (runs
+        additional/sangfor_ingest.py; dry-run — apply with --write via the CLI)."""
+        from tkinter import filedialog
+        import subprocess as _sp, sys as _sys
+        path = filedialog.askopenfilename(
+            title="Select SD-WAN / firewall log (xlsx or csv)",
+            filetypes=[("Appliance logs", "*.xlsx *.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "additional", "sangfor_ingest.py")
+        cmd = [_sys.executable, script, "--log", path, "--ips", path, "--model", "appliance (GUI)"]
+        tgt = self.target.get().strip()
+        if tgt:
+            cmd += ["--target", tgt]
+        try:
+            p = _sp.run(cmd, capture_output=True, text=True, timeout=120)
+            out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
+        except Exception as e:
+            messagebox.showerror("Ingest failed", str(e)); return
+        win = tk.Toplevel(self.root)
+        win.title(f"Appliance-log correlation — {os.path.basename(path)}")
+        win.geometry("900x620"); win.configure(bg=BG)
+        hint = ttk.Label(win, style="Muted.TLabel",
+                         text="Dry-run. To score SEEN-but-allowed attacks as DETECTED, apply via CLI:  "
+                              f"python3 additional/sangfor_ingest.py --log <f> --ips <f> --target {tgt or '<ip>'} --write")
+        hint.pack(anchor="w", padx=8, pady=(6, 0))
+        txt = tk.Text(win, wrap="none", bg="#12131b", fg=FG, borderwidth=0, font=MONO, padx=8, pady=6)
+        txt.insert("1.0", out or "(no output)")
+        txt.configure(state="disabled")
+        txt.pack(fill="both", expand=True, padx=6, pady=6)
 
     def _preflight(self):
         selected = [m for (var, m) in self.vars.values() if var.get()] or self.modules

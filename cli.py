@@ -244,6 +244,33 @@ def _parse_ports(spec):
     return out
 
 
+def _list_suspect(evidence_dir):
+    """List modules whose BLOCKED was flagged SUSPECT (source blacklisted) in a
+    past run, and print the command to re-run just those (after whitelisting)."""
+    import json
+    path = os.path.join(evidence_dir, "summary.json") if os.path.isdir(evidence_dir) else evidence_dir
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[!] could not read {path}: {e}", file=sys.stderr)
+        return 2
+    susp = {}
+    for r in data.get("results", []):
+        if "SUSPECT" in (r.get("verdict") or ""):
+            susp.setdefault(r.get("target_ip", ""), set()).add(r.get("attack_id"))
+    if not susp:
+        print("No SUSPECT (blacklist-contaminated) verdicts in that run — nothing to re-run.")
+        return 0
+    print("Blacklist-contaminated modules (their BLOCKED may be the ban, not a real control):\n")
+    for tgt, ids in susp.items():
+        idlist = ",".join(sorted(i for i in ids if i))
+        print(f"  Target {tgt}: {len(ids)} suspect module(s).")
+        print("  After whitelisting the tester source on the appliance, re-run just these:")
+        print(f"    python3 cli.py --target {tgt} --only {idlist} --confirm-roe\n")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Headless control-validation harness runner.")
     ap.add_argument("-t", "--target", default="127.0.0.1",
@@ -308,6 +335,10 @@ def main():
     ap.add_argument("--ssh-user", help="SSH username for this target (ssh_brute; falls back to --dc-user)")
     ap.add_argument("--ssh-pass", help="SSH password for this target (remembered per target, 0600)")
     ap.add_argument("--list", action="store_true", help="list discovered modules and exit")
+    ap.add_argument("--suspect", metavar="EVIDENCE_DIR",
+                    help="read a past run's summary.json and list the modules whose BLOCKED was "
+                         "flagged SUSPECT (source-blacklist contamination), with a ready-to-paste "
+                         "re-run command (do this after whitelisting the tester source)")
     ap.add_argument("--confirm-roe", action="store_true",
                     help="confirm rules-of-engagement / written authorisation (required to run)")
     ap.add_argument("--evidence-dir", default="evidence")
@@ -318,6 +349,9 @@ def main():
     args = ap.parse_args()
 
     modules = loader.discover()
+
+    if args.suspect:
+        return _list_suspect(args.suspect)
 
     if args.list:
         print(f"{len(modules)} modules:")
