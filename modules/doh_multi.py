@@ -39,12 +39,14 @@ def _doh(url, ctx):
     cloudflare dns-json) shape by asking for application/dns-json."""
     sep = "&" if "?" in url else "?"
     full = f"{url}{sep}name={_QNAME}&type=A"
-    argv = ["curl", "-s", "-S", "-m", "10", "-H", "accept: application/dns-json"]
+    # retry a one-off transient blip so the egress verdict doesn't flap run-to-run
+    argv = ["curl", "-s", "-S", "-m", "10", "--retry", "2", "--retry-connrefused",
+            "--retry-delay", "1", "-H", "accept: application/dns-json"]
     if ctx.source_ip:
         argv += ["--interface", ctx.source_ip]
     argv.append(full)
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=40)  # room for --retry 2
         body = (p.stdout or "") + (p.stderr or "")
         if '"Answer"' in body or '"data"' in body or '"Status"' in body:
             return True, "answer returned"
