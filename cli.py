@@ -57,6 +57,19 @@ def _colorize(text, no_color):
     return text
 
 
+# Target-INDEPENDENT "egress" modules test the attacker's own egress path (to the
+# internet / your infra), not the named target — so in a multi-target scan they
+# run ONCE (on the first target), not repeated per target where only Kali's egress
+# state would vary. No target port, excluding the few no-port modules that still
+# probe the target/internal.
+_TARGET_TOUCHING_NO_PORTS = {"stateful_evasion", "segmentation_sweep", "switch_mgmt",
+                             "appid_port_mismatch", "ipv6_acl_parity"}
+
+
+def _is_egress(m):
+    return not (m.META.get("ports") or []) and m.META["id"] not in _TARGET_TOUCHING_NO_PORTS
+
+
 def _select(modules, args):
     if args.only:
         want = {x.strip() for x in args.only.split(",") if x.strip()}
@@ -398,13 +411,14 @@ def main():
     _cats = {m.META.get("category", "") for m in selected}
     _iters = max(1, args.iterations)
 
-    def _run_one_target(target, label=None):
+    def _run_one_target(target, label=None, mods=None):
+        run_set = mods if mods is not None else selected
         """Prepare + run the selected modules against ONE target, applying that
         target's own recalled source/cloud/creds/site. Returns (root, exit_code).
         Called once per --target so a single scan can hit A->B (kvdc, direct
         ports/creds) AND A->C (cloud DO, NAT'd ports/creds) — each target pulls
         its OWN remembered config, so the two don't clash."""
-        _total = len(selected) * _iters
+        _total = len(run_set) * _iters
         _prog = {"n": 0}
 
         def _on_log(m):
@@ -509,7 +523,7 @@ def main():
         t0 = time.time()
         try:
             ev = core.Evidence(base=args.evidence_dir, label=label)
-            root = runner.run(selected, _iters, ev, skip_unready=not args.force,
+            root = runner.run(run_set, _iters, ev, skip_unready=not args.force,
                               recon=not args.no_recon, mode=args.mode, site_id=site_id or None)
         except ValueError as e:               # invalid target / allowlist refusal
             print(f"[!] {e}", file=sys.stderr)
@@ -540,11 +554,19 @@ def main():
     multi = len(targets) > 1
     worst, roots = 0, []
     for i, tgt in enumerate(targets, 1):
+        # egress/target-independent modules run ONCE (on the first target); later
+        # targets run only the target-dependent set, so the same egress test isn't
+        # repeated per target (where only Kali's egress state would differ).
+        mods = selected if i == 1 else [m for m in selected if not _is_egress(m)]
         if multi:
             print(_c(f"\n{'═' * 64}", ACC, args.no_color))
             print(_c(f" TARGET {i}/{len(targets)}:  {tgt}", "\033[1m", args.no_color))
             print(_c(f"{'═' * 64}", ACC, args.no_color))
-        root, rc = _run_one_target(tgt, label=(tgt if multi else None))
+            dropped = len(selected) - len(mods)
+            if dropped:
+                print(_c(f"  ({dropped} egress/target-independent module(s) already run "
+                         f"against {targets[0]} — not repeated here)", DIM, args.no_color))
+        root, rc = _run_one_target(tgt, label=(tgt if multi else None), mods=mods)
         worst = max(worst, rc)
         if root:
             roots.append((tgt, root))
