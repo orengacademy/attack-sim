@@ -66,12 +66,39 @@ remove_cron() {
     rm -f "$CRON" && echo "[*] removed $CRON"
 }
 
+endpoint_up() {
+    # Keep the attacker-infra sink running so the egress/C2/exfil modules (pointed
+    # at this box via config.json) reach a live endpoint. Ports via
+    # HARNESS_ENDPOINT_PORTS="http=8000,tcp=9001:9443,udp=5353"; empty = skip.
+    local spec="${HARNESS_ENDPOINT_PORTS-http=8000,tcp=9001:9443,udp=5353}"
+    [ -n "$spec" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local http="" tcp="" udp="" hport=""
+    for part in ${spec//,/ }; do
+        case "$part" in
+            http=*) hport="${part#http=}"; http="--http $hport" ;;
+            tcp=*)  tcp="--tcp ${part#tcp=}"; tcp="${tcp//:/,}" ;;
+            udp=*)  udp="--udp ${part#udp=}"; udp="${udp//:/,}" ;;
+        esac
+    done
+    # already running? probe the HTTP canary port (avoids pgrep matching self)
+    if [ -n "$hport" ] && timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/$hport" 2>/dev/null; then
+        return 0
+    fi
+    nohup python3 "$HERE/attacker_endpoint.py" $http $tcp $udp \
+        --log /var/log/mygovnet-endpoint.log >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    ENDPOINT_NOTE=" + endpoint($spec)"
+}
+
 refresh() {
     ts="$(date '+%F %T')"
+    ENDPOINT_NOTE=""
     # 1) host services
     svc_up ssh sshd
     svc_up vsftpd
     svc_up snmpd
+    endpoint_up
     # 2) docker web/dir containers — recreate any that exited
     if command -v docker >/dev/null 2>&1; then
         if docker compose version >/dev/null 2>&1; then
@@ -88,7 +115,7 @@ refresh() {
         state="$(virsh -c qemu:///system domstate "$WIN_VM" 2>/dev/null || true)"
         [ "$state" = "shut off" ] && virsh -c qemu:///system start "$WIN_VM" >/dev/null 2>&1 || true
     fi
-    echo "$ts refreshed (host svc + containers${state:+ + win=$state})${HEALTH_NOTE}"
+    echo "$ts refreshed (host svc + containers${state:+ + win=$state})${HEALTH_NOTE}${ENDPOINT_NOTE}"
 }
 
 case "${1:-refresh}" in
