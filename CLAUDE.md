@@ -86,6 +86,12 @@ tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
 (returns the **full raw output**, which becomes evidence). Key `META` keys:
 
+> **Per-module docs:** `docs/MODULES.md` (what each attack tests / why / needs /
+> how to block) is **generated** from `META` + the module docstring by
+> `additional/gen_module_docs.py` — never hand-edit it; rerun the generator after
+> changing or adding a module so the reference can't drift. The `control` field is
+> the remediation and `fix` is the owner, so keep both meaningful.
+
 - **Identity/report:** `id`, `name`, `category`, `control`, `fix`.
 - **Classification regexes:** `success_regex` (a hit), `blocked_regex` (a block),
   optional `detected_regex` (module self-reports a blue-team detection).
