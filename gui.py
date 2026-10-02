@@ -404,7 +404,8 @@ class HarnessGUI:
                          ("Added set", lambda: self._select_group(True)),
                          ("Preflight + recon", self._preflight),
                          ("Egress probe", self._egress_probe),
-                         ("Appliance log…", self._appliance_log)):
+                         ("Appliance log…", self._appliance_log),
+                         ("Infra config…", self._infra_config)):
             ttk.Button(f1, text=txt, command=cmd).pack(side="left", padx=(0, 6))
         # row 2 — RoE gate + RUN/STOP
         f2 = ttk.Frame(parent); f2.pack(fill="x", padx=12, pady=(4, 2))
@@ -721,6 +722,60 @@ class HarnessGUI:
                       f"{target_ip} (AD modules + ssh_brute use the alternates).")
         except Exception as e:
             self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
+
+    def _infra_config(self):
+        """Edit config.json (the attacker infra the egress/C2/exfil modules aim at)
+        from the GUI — prefilled from the current resolved config — so those
+        modules stop SKIPping without hand-editing JSON. Saved to the git-ignored
+        config.json (env HARNESS_CFG_* still overrides per the same precedence)."""
+        import json as _json
+        cfg = core.load_config()                 # env > config.json > defaults
+        defaults = getattr(core, "_CFG_DEFAULTS", {})
+        path = os.path.join(os.path.dirname(os.path.abspath(core.__file__)), "config.json")
+        keys = sorted(set(list(defaults) + list(cfg)))
+        win = tk.Toplevel(self.root); win.title("Infra config (config.json)")
+        win.geometry("680x560"); win.configure(bg=BG)
+        ttk.Label(win, style="Muted.TLabel", wraplength=640,
+                  text="Attacker infra the egress/C2/exfil modules aim at. Blank = that module "
+                       "stays [SKIP] (never points anywhere real). Lists are comma-separated. "
+                       "Saved to config.json (git-ignored).").pack(anchor="w", padx=10, pady=(8, 4))
+        canvas = tk.Canvas(win, bg=BG, highlightthickness=0)
+        inner = ttk.Frame(canvas)
+        vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y"); canvas.pack(side="top", fill="both", expand=True, padx=8)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        entries = {}
+        for i, k in enumerate(keys):
+            ttk.Label(inner, text=k, width=22).grid(row=i, column=0, sticky="w", padx=4, pady=2)
+            e = ttk.Entry(inner, width=52)
+            v = cfg.get(k, defaults.get(k, ""))
+            e.insert(0, ", ".join(map(str, v)) if isinstance(v, list) else ("" if v is None else str(v)))
+            e.grid(row=i, column=1, sticky="w", padx=4, pady=2)
+            entries[k] = e
+
+        def _save():
+            out = {}
+            for k, e in entries.items():
+                raw = e.get().strip()
+                dflt = defaults.get(k)
+                if isinstance(dflt, list):
+                    out[k] = [x.strip() for x in raw.split(",") if x.strip()]
+                elif isinstance(dflt, int) and not isinstance(dflt, bool):
+                    try: out[k] = int(raw)
+                    except ValueError: out[k] = dflt
+                else:
+                    out[k] = raw
+            try:
+                with open(path, "w") as f:
+                    _json.dump(out, f, indent=2)
+                messagebox.showinfo("Saved", f"config.json written:\n{path}")
+                win.destroy()
+            except Exception as ex:
+                messagebox.showerror("Save failed", str(ex))
+        ttk.Button(win, text="Save config.json", style="Accent.TButton",
+                   command=_save).pack(side="bottom", pady=8)
 
     def _appliance_log(self):
         """Pick an SD-WAN/firewall log (Sangfor/Forcepoint, .xlsx/.csv) and show the
