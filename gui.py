@@ -239,6 +239,22 @@ class HarnessGUI:
         ttk.Label(srf, text="(ssh_brute only; blank = fall back to the DC User/Pass)",
                   style="Muted.TLabel").pack(side="left")
 
+        # Pre-fill from the RESOLVED defaults (env > credentials.env > the
+        # non-secret built-ins: lab.local / Administrator). This is why Domain and
+        # User are populated out of the box; the password shows ONLY if the
+        # operator configured one via HARNESS_DC_PASS / credentials.env — we never
+        # bake a secret into source. A per-target value (remembered in
+        # .target_memory.json) overrides these in _recall_target().
+        try:
+            dflt = core.load_credentials()
+            for ent, k in ((self.domain_entry, "domain"), (self.user_entry, "dc_user"),
+                           (self.pass_entry, "dc_pass"), (self.ssh_user_entry, "ssh_user"),
+                           (self.ssh_pass_entry, "ssh_pass")):
+                if dflt.get(k):
+                    ent.insert(0, dflt[k])
+        except Exception:
+            pass
+
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
         self._priv_label.grid(row=9, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
@@ -531,11 +547,15 @@ class HarnessGUI:
             if rec.get("rpc_port"):
                 self.rpc_port.set(str(rec["rpc_port"]))
             self._toggle_cloud_ports()
-        # per-target credentials (DC/AD + separate SSH)
+        # per-target credentials (DC/AD + separate SSH) — a remembered per-target
+        # value WINS over the default prefill, so switching to a known target loads
+        # that target's creds (incl. its password). Targets with nothing remembered
+        # keep whatever is in the field (the resolved defaults).
         for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
                            ("dc_pass", self.pass_entry),
                            ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry)):
-            if rec.get(key) and not entry.get().strip():
+            if rec.get(key):
+                entry.delete(0, "end")
                 entry.insert(0, rec[key])
 
     def _save_target(self, target):
