@@ -1785,6 +1785,13 @@ class Runner:
                 log(f"[WARN] Source IP {self.ctx.source_ip} is NOT a bindable local "
                     "address — egress bind will be IGNORED and the OS default route "
                     "used. Use an IP that exists on a local interface (check `ip addr`).")
+                # Make that promise TRUE for every module, not just the socket ones.
+                # bind_source() already swallows a bad bind, but curl-based modules
+                # pass `--interface <ip>` and would HARD-FAIL ("curl: (45) Failed
+                # binding local address") — which previously made e.g. doh_multi
+                # report NO-SERVICE while doh_bypass (no bind) scored SUCCESS on the
+                # SAME egress path. Clearing it here keeps those verdicts consistent.
+                self.ctx.source_ip = None
         if self._detections:
             log(f"Blue-team detections loaded: {len(self._detections)} "
                 "attack id(s) will score DETECTED if they pass.")
