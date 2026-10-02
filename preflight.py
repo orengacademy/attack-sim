@@ -37,9 +37,10 @@ def main():
     ap.add_argument("--versions", action="store_true",
                     help="also probe tool versions (best-effort; skips tools "
                          "that need root or have side effects)")
-    ap.add_argument("--target", metavar="IP",
-                    help="ALSO recon this target's ports (active — needs "
-                         "authorisation, same as running the exploits)")
+    ap.add_argument("--target", metavar="IP[,IP...]",
+                    help="ALSO recon these target(s)' ports — comma-separate for several "
+                         "(e.g. the on-prem DC + the cloud DC). Active — needs "
+                         "authorisation, same as running the exploits.")
     args = ap.parse_args()
 
     modules = loader.discover()
@@ -48,15 +49,38 @@ def main():
         return 1
 
     pf = core.preflight(modules, want_versions=args.versions)
-    rc = core.reachability(args.target, modules) if args.target else None
+
+    # recon each target (comma list). Apply each target's remembered cloud SMB/RPC/
+    # SSH map first so recon probes the SAME ports the run will hit.
+    targets = [t.strip() for t in (args.target or "").split(",") if t.strip()]
+    recon = {}
+    for tgt in targets:
+        try:
+            mem = core.recall_target(tgt)
+            if mem.get("cloud"):
+                from modules import _portpatch
+                _portpatch.CUSTOM_PORT_TARGETS[tgt] = {
+                    445: int(mem.get("smb_port") or 4445),
+                    135: int(mem.get("rpc_port") or 1135),
+                    22: int(mem.get("ssh_port") or 2222)}
+            recon[tgt] = core.reachability(tgt, modules)
+        except Exception as e:
+            recon[tgt] = {"error": str(e)}
 
     if args.json:
-        print(json.dumps({"preflight": pf, "recon": rc}, indent=2))
+        out = {"preflight": pf, "recon": (recon if len(targets) != 1 else recon.get(targets[0]))}
+        print(json.dumps(out, indent=2))
     else:
         print(core.format_preflight_report(pf))
-        if rc is not None:
+        for tgt in targets:
             print()
-            print(core.format_reachability_report(rc))
+            rc = recon.get(tgt)
+            if isinstance(rc, dict) and "error" in rc:
+                print(f"[recon error for {tgt}: {rc['error']}]")
+            elif rc is not None:
+                if len(targets) > 1:
+                    print(f"───── recon: {tgt} ─────")
+                print(core.format_reachability_report(rc))
 
     return 0 if all(r["ready"] for r in pf["modules"]) else 1
 
