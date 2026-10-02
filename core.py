@@ -144,6 +144,28 @@ def load_config():
     return cfg
 
 
+_ROE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".roe_accepted")
+
+
+def roe_accepted():
+    """Rules-of-engagement confirmed WITHOUT the per-run flag — a durable, explicit
+    opt-in (the operator did it once). This is not a silent bypass: it still
+    requires a deliberate `--accept-roe` / HARNESS_CONFIRM_ROE=1, just once."""
+    if os.environ.get("HARNESS_CONFIRM_ROE", "").lower() in ("1", "true", "yes"):
+        return True
+    return os.path.exists(_ROE_FILE)
+
+
+def accept_roe():
+    """Record a durable ROE opt-in (git-ignored .roe_accepted). Returns the path."""
+    try:
+        with open(_ROE_FILE, "w") as f:
+            f.write(datetime.now().isoformat() + " rules-of-engagement accepted\n")
+        return _ROE_FILE
+    except Exception:
+        return None
+
+
 def load_detections():
     """Operator-supplied blue-team detections, so an attack that PASSED the
     boundary can be scored DETECTED (passed but the SOC alerted) rather than as a

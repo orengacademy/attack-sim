@@ -409,7 +409,9 @@ class HarnessGUI:
             ttk.Button(f1, text=txt, command=cmd).pack(side="left", padx=(0, 6))
         # row 2 — RoE gate + RUN/STOP
         f2 = ttk.Frame(parent); f2.pack(fill="x", padx=12, pady=(4, 2))
-        self.roe = tk.BooleanVar(value=False)
+        # pre-ticked when a durable ROE opt-in is on file (--accept-roe /
+        # HARNESS_CONFIRM_ROE=1) so you don't re-tick every launch.
+        self.roe = tk.BooleanVar(value=core.roe_accepted())
         ttk.Checkbutton(f2, text="Rules-of-engagement confirmed (written authorisation on file)",
                         variable=self.roe).pack(side="left")
         self.run_btn = ttk.Button(f2, text="▶ RUN", style="Accent.TButton", command=self._start)

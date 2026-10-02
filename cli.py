@@ -353,13 +353,24 @@ def main():
                          "flagged SUSPECT (source-blacklist contamination), with a ready-to-paste "
                          "re-run command (do this after whitelisting the tester source)")
     ap.add_argument("--confirm-roe", action="store_true",
-                    help="confirm rules-of-engagement / written authorisation (required to run)")
+                    help="confirm rules-of-engagement for THIS run (or set it once with "
+                         "--accept-roe / HARNESS_CONFIRM_ROE=1 and never pass it again)")
+    ap.add_argument("--accept-roe", action="store_true",
+                    help="record a DURABLE rules-of-engagement opt-in (.roe_accepted) so no "
+                         "run needs --confirm-roe again, then exit")
     ap.add_argument("--evidence-dir", default="evidence")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--full-report", action="store_true",
                     help="also print the full ATT&CK/CWE/CVE report.txt to the console "
                          "(it is always written to the evidence dir regardless)")
     args = ap.parse_args()
+
+    if args.accept_roe:
+        p = core.accept_roe()
+        print(f"[roe] durable rules-of-engagement opt-in recorded ({p}). Runs no longer need "
+              "--confirm-roe. Remove that file (or this is per-repo) to require it again."
+              if p else "[!] could not write the ROE opt-in file", file=sys.stderr if not p else sys.stdout)
+        return 0 if p else 2
 
     modules = loader.discover()
 
@@ -392,10 +403,11 @@ def main():
     if target_defaulted:
         print(f"[default] no --target given → using {args.target} (the local lab). "
               "Pass --target <ip> for a remote target.")
-    if not args.confirm_roe:
-        print("[!] refusing to run without --confirm-roe (rules-of-engagement / written "
-              "authorisation). This tool runs REAL attacks against the target.\n"
-              f"    Re-run:  python3 cli.py --target {args.target} --confirm-roe",
+    if not (args.confirm_roe or core.roe_accepted()):
+        print("[!] refusing to run without rules-of-engagement confirmation (this tool runs "
+              "REAL attacks). Confirm ONCE and you won't need the flag again:\n"
+              "    python3 cli.py --accept-roe          # durable opt-in (writes .roe_accepted)\n"
+              "  or set HARNESS_CONFIRM_ROE=1 in your env, or pass --confirm-roe per run.",
               file=sys.stderr)
         return 2
 

@@ -48,3 +48,6 @@ devices/**/*.jpeg
 devices/**/*.jpg
 devices/**/*.png
 devices/**/*.pdf
+
+# durable rules-of-engagement opt-in (operator-local, never commit)
+.roe_accepted
