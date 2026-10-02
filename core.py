@@ -1768,6 +1768,20 @@ class Runner:
                 else:
                     serial.append(m)
 
+            # run_last: a module whose SIDE EFFECT persists and would contaminate
+            # OTHER modules' verdicts — brute-force (trips an IP blacklist) and DoS
+            # floods (trip anti-DoS rate-limits). Sort them to the very end of the
+            # serial batch (which itself runs after the parallel batch) so a
+            # blacklist/rate-limit they trigger can't turn later attacks into false
+            # BLOCKEDs. Stable sort: everything else keeps its order. (Across
+            # multiple iterations a persisted blacklist can still bleed into the
+            # next iteration — single-iteration runs are unaffected.)
+            serial.sort(key=lambda m: bool(m.META.get("run_last")))
+            if any(m.META.get("run_last") for m in serial):
+                lastnames = ", ".join(m.META["name"] for m in serial if m.META.get("run_last"))
+                log(f"  (deferring to run LAST so a triggered blacklist/rate-limit "
+                    f"doesn't contaminate other results: {lastnames})")
+
             if parallel:
                 log(f"  running {len(parallel)} module(s) with {conc} workers")
                 with ThreadPoolExecutor(max_workers=min(conc, len(parallel))) as ex:

@@ -71,6 +71,9 @@ META = {
     "requires": ["ping"],
     "needs_root": True,   # a real ICMP flood needs raw sockets (root / CAP_NET_RAW)
     "serial": True,       # DoS: must run alone (don't overlap other tests)
+    "run_last": True,     # a flood can trip anti-DoS rate-limiting/blacklist of the
+                          # source — run after everything else so it can't contaminate
+                          # other modules' verdicts
     "os_supported": ["Linux"],   # uses `ping -c/-i` + hping3/raw ICMP (Linux-only)
     "ports": [("icmp", None)],   # ICMP, not a TCP/UDP port
     # SUCCESS = the high-rate flood was delivered (boundary didn't rate-limit it).

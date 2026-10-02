@@ -62,6 +62,8 @@ META = {
     "requires": ["hping3", "timeout"],
     "needs_root": True,           # hping3 needs a raw socket (root or CAP_NET_RAW)
     "serial": True,               # DoS: must run alone
+    "run_last": True,             # a flood can trip anti-DoS rate-limiting/blacklist of
+                                  # the source — run after everything else (see icmp_flood)
     "os_supported": ["Linux"],
     "ports": [("tcp", SYN_PORT)],
     "port_customizable": True,

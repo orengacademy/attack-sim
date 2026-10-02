@@ -108,6 +108,12 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     would, under `--workers > 1`, pollute each other's output (→ NO-RESULT) or
     un-patch mid-connection. `nopac`+`samaccountname_spoof` additionally collide
     (both rename a machine account to the DC's name). Serial ⇒ deterministic.
+  - **`run_last: True`** (`ssh_brute`, `icmp_flood`, `syn_flood`): a module whose
+    SIDE EFFECT persists and would contaminate OTHERS — brute-force trips an IP
+    **blacklist**, DoS floods trip **anti-DoS rate-limiting** of the source. The
+    engine sorts these to the end of the serial batch so a blacklist/rate-limit
+    they trigger can't turn later attacks into **false BLOCKEDs**. (A persisted
+    blacklist can still bleed into a *subsequent iteration*; one iteration is clean.)
 - **USS scope:** `test_type` (`attack_sim` | `pentest` | `va` | `dos`), `family`
   (`A`–`G`), `direction` (`a2b` default | `b2a` | `both`), `active` (advertises
   active-establishment capability).
