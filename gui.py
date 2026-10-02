@@ -195,6 +195,16 @@ class HarnessGUI:
         self.source_entry.pack(side="left", padx=(4, 6))
         ttk.Label(sf, text="(bind egress — DC foothold / VRF)",
                   style="Muted.TLabel").pack(side="left")
+        # Site ID (engagement/site tag → recorded in evidence + headers) and a
+        # Debug toggle (verbose tool trace + full raw output + per-module timing).
+        ttk.Label(sf, text="   Site ID").pack(side="left")
+        self.site_entry = ttk.Entry(sf, width=14)
+        self.site_entry.pack(side="left", padx=(4, 6))
+        import os as _os
+        if _os.environ.get("HARNESS_SITE_ID"):
+            self.site_entry.insert(0, _os.environ["HARNESS_SITE_ID"])
+        self.debug_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sf, text="Debug", variable=self.debug_var).pack(side="left", padx=(8, 0))
 
         # Cloud target: SMB/RPC are DNAT'd to alternate high ports (ISPs block
         # outbound 445). Ticking this maps 445->SMB and 135->RPC for the entered
@@ -574,13 +584,14 @@ class HarnessGUI:
             if rec.get("rpc_port"):
                 self.rpc_port.set(str(rec["rpc_port"]))
             self._toggle_cloud_ports()
-        # per-target credentials (DC/AD + separate SSH) — a remembered per-target
-        # value WINS over the default prefill, so switching to a known target loads
-        # that target's creds (incl. its password). Targets with nothing remembered
-        # keep whatever is in the field (the resolved defaults).
+        # per-target credentials (DC/AD + separate SSH) + Site ID — a remembered
+        # per-target value WINS over the default prefill, so switching to a known
+        # target loads that target's creds (incl. its password). Targets with
+        # nothing remembered keep whatever is in the field (the resolved defaults).
         for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
                            ("dc_pass", self.pass_entry),
-                           ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry)):
+                           ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry),
+                           ("site_id", self.site_entry)):
             if rec.get(key):
                 entry.delete(0, "end")
                 entry.insert(0, rec[key])
@@ -598,7 +609,8 @@ class HarnessGUI:
                 dc_user=self.user_entry.get().strip() or None,
                 dc_pass=self.pass_entry.get().strip() or None,
                 ssh_user=self.ssh_user_entry.get().strip() or None,
-                ssh_pass=self.ssh_pass_entry.get().strip() or None)
+                ssh_pass=self.ssh_pass_entry.get().strip() or None,
+                site_id=self.site_entry.get().strip() or None)
         except Exception:
             pass
 
@@ -896,6 +908,7 @@ class HarnessGUI:
         if port_overrides:
             self.runner.ctx.port_overrides = port_overrides
         self.runner.ctx.allow_active = bool(self.active_var.get())
+        self.runner.ctx.debug = bool(self.debug_var.get())   # verbose tool trace + full raw output
         self._apply_target_creds()   # per-target Domain/User/Pass override credentials.env
         src = self.source_entry.get().strip()
         if src:
@@ -903,13 +916,17 @@ class HarnessGUI:
         if self.active_var.get():
             self._log("ACTIVE establishment ENABLED — live modules may build real "
                       "tunnels/pivots/exfil to your configured infra.")
+        if self.debug_var.get():
+            self._log("DEBUG mode ON — tools run verbose (curl -v / ldapsearch -v / "
+                      "hydra -d / impacket -debug); full raw output + timing in evidence.")
 
         mode = self._run_mode
+        site_id = self.site_entry.get().strip() or None
 
         def work():
             try:
                 ev = core.Evidence()
-                root = self.runner.run(selected, iters, ev, mode=mode)
+                root = self.runner.run(selected, iters, ev, mode=mode, site_id=site_id)
                 self.q.put(("done", root))
             except Exception as e:
                 self.q.put(("error", str(e)))

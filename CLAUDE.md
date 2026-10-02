@@ -30,6 +30,7 @@ python3 cli.py --confirm-roe         # bare run: DEFAULTS to target 127.0.0.1 + 
 python3 cli.py --target <IP> --attack-sim --confirm-roe   # headless USS run (--confirm-roe is MANDATORY)
 python3 cli.py --target <IP> --all --confirm-roe          # run ALL 48 modules (default is the original set)
 python3 cli.py --target <IP> --full-report --confirm-roe  # also echo report.txt (default: clean table only)
+python3 cli.py --target <IP> --site-id ORG2026-70 --debug --confirm-roe  # tag the run + verbose tool trace/timing
 python3 fleet.py --dry-run --attack-sim                   # N-target matrix preview (no traffic); then --confirm-roe
 python3 preflight.py                 # tools + Python-package check (no network); --json for CI; --target <IP> adds recon
 python3 bootstrap.py                 # Kali/Debian apt install (degrades on non-apt); --with-active adds tunnel/exec tools
@@ -155,11 +156,19 @@ Copy the `*.example` and fill in; env vars override the files:
 | `config.json` | `HARNESS_CFG_<KEY>` | Destinations the USS modules aim at (your VPS/domain/DoH/canary/pivot). Unset → the module `[SKIP]`s. **This is how "no live infra hardcoded" is enforced — keep it that way.** |
 | `allowlist.txt` | `HARNESS_ALLOWLIST` | Opt-in hard target allowlist. Unconfigured → any validated target allowed. |
 | `detections.json` | `HARNESS_DETECTIONS` | Blue-team confirmations that drive the DETECTED verdict. |
-| `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`, per-target creds `domain`/`dc_user`/`dc_pass`, and **separate `ssh_user`/`ssh_pass`**. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted. |
+| `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`, per-target creds `domain`/`dc_user`/`dc_pass`, **separate `ssh_user`/`ssh_pass`**, and `site_id`. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted (the GUI also resumes the last-used target + its saved values on launch). |
 | `fleet.json` | — | N-target fleet for `fleet.py` (`targets`/`sources`/`runs`). |
 | `requirements.txt` | — | Committed; Python libs for the in-process AD modules (`pip install -r`). Engine itself needs none. |
 
-Also: `HARNESS_PORT_<ID>` (custom port), `HARNESS_SOURCE_IP` (egress bind).
+Also: `HARNESS_PORT_<ID>` (custom port), `HARNESS_SOURCE_IP` (egress bind),
+`HARNESS_SITE_ID` (engagement/site tag), `HARNESS_DEBUG` (verbose tool trace).
+
+**`--debug` / Debug checkbox** (`ctx.debug`): injects a verbose flag into an
+allowlisted set of tools (curl `-v`, ldapsearch `-v`, hydra `-d`, impacket
+`-debug`), streams each module's full raw output live on the console, and shows a
+per-module **TIME** column + `duration_s` in every `result.json`. **Site ID**
+(`--site-id` / GUI field / `HARNESS_SITE_ID`) is recorded in `summary.json` meta,
+`run.log`, and the CLI header. Both opt-in; normal runs stay clean.
 
 ## Active establishment (`--active`)
 

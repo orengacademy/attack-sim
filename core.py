@@ -26,6 +26,7 @@ import socket
 import platform
 import ipaddress
 import importlib
+import time
 import subprocess
 from datetime import datetime
 
@@ -317,20 +318,49 @@ def _redact(text, creds):
     return text
 
 
-def _run_cmd(template, target, creds, timeout):
+# --debug: inject a verbose flag into a SMALL allowlist of tools so the raw logs
+# carry the tool's own debug trace. Opt-in only (ctx.debug); kept conservative so
+# an injected flag can't break an unrelated command.
+_DEBUG_TOOL_FLAGS = {"curl": "-v", "ldapsearch": "-v", "hydra": "-d"}
+
+
+def _inject_debug_flag(argv):
+    if not argv:
+        return argv
+    base = os.path.basename(argv[0]).lower()
+    flag = _DEBUG_TOOL_FLAGS.get(base)
+    if flag and flag not in argv:
+        return [argv[0], flag] + argv[1:]
+    # impacket CLIs/examples accept a global -debug (impacket-X / X.py / the
+    # "python3 .../X.py" resolver form). Insert it right after the script.
+    joined = " ".join(argv).lower()
+    if ("-debug" not in argv and ("impacket" in joined or re.search(
+            r"(secretsdump|getuserspns|getnpusers|psexec|wmiexec)\.py", joined))):
+        idx = 2 if base in ("python", "python3") else 1
+        return argv[:idx] + ["-debug"] + argv[idx:]
+    return argv
+
+
+def _run_cmd(template, target, creds, timeout, debug=False):
     try:
         cmd = template.format(target=target, **creds)
     except (KeyError, IndexError, ValueError) as e:
         # a bad template placeholder / missing credential key must not crash
         # the run — report it as an ERROR the classifier surfaces.
         return f"# target: {target}\n\n[ERROR] bad command template ({e!r})"
-    # header/logs use a redacted copy — never write the cleartext password out.
-    header = f"# command: {_redact(cmd, creds)}\n# target: {target}\n\n"
+    # posix=False on Windows so backslash paths/quoting aren't mangled.
     try:
-        # posix=False on Windows so backslash paths/quoting aren't mangled.
         argv = shlex.split(cmd, posix=(os.name != "nt"))
-        if not argv:
-            return header + "[ERROR] empty command after parsing"
+    except ValueError as e:
+        return (f"# command: {_redact(cmd, creds)}\n# target: {target}\n\n"
+                f"[ERROR] could not parse command ({e})")
+    if debug:
+        argv = _inject_debug_flag(argv)
+    # header/logs use a redacted copy — never write the cleartext password out.
+    header = f"# command: {_redact(' '.join(argv), creds)}\n# target: {target}\n\n"
+    if not argv:
+        return header + "[ERROR] empty command after parsing"
+    try:
         # stdin=DEVNULL + start_new_session: detach from the controlling
         # terminal so a tool that prompts for a password (impacket/hydra call
         # getpass, which otherwise opens /dev/tty and prints "Password:" into
@@ -344,8 +374,6 @@ def _run_cmd(template, target, creds, timeout):
         return header + "[TIMEOUT] command exceeded time limit (likely blocked/filtered)"
     except FileNotFoundError:
         return header + "[ERROR] tool not found — is it installed (see preflight.py)?"
-    except ValueError as e:
-        return header + f"[ERROR] could not parse command ({e})"
     except OSError as e:
         return header + f"[ERROR] could not execute command ({e})"
     except Exception as e:
@@ -357,9 +385,13 @@ def _run_cmd(template, target, creds, timeout):
 # ---------------------------------------------------------------------
 class Context:
     def __init__(self, credentials=None, timeout=DEFAULT_TIMEOUT, port_overrides=None,
-                 config=None, source_ip=None, allow_active=False):
+                 config=None, source_ip=None, allow_active=False, debug=False):
         self.creds = credentials or load_credentials()
         self.timeout = timeout
+        # --debug / HARNESS_DEBUG: ask tools for their own verbose trace (curl -v,
+        # ldapsearch -v, hydra -d, impacket -debug) and keep the full per-module
+        # stream on the console. Modules can also read ctx.debug themselves.
+        self.debug = bool(debug) or os.environ.get("HARNESS_DEBUG", "").lower() in ("1", "true", "yes")
         # per-module port overrides: {name: port}. Also read from env
         # HARNESS_PORT_<NAME> (e.g. HARNESS_PORT_LOG4SHELL=8983). A module calls
         # ctx.get_port("log4shell", 8080) to honour a custom port.
@@ -411,7 +443,8 @@ class Context:
         """Run an external command (curl/hydra/impacket/etc.); returns full
         raw output. Template may use {target} and any credential key
         (domain, dc_user, dc_pass)."""
-        return _run_cmd(template, target, self.creds, self.timeout)
+        return _run_cmd(template, target, self.creds, self.timeout,
+                        debug=getattr(self, "debug", False))
 
 
 # ---------------------------------------------------------------------
@@ -1494,7 +1527,7 @@ class Runner:
         return None
 
     def run(self, modules, iterations, ev, skip_unready=True, recon=True,
-            mode="blackbox"):
+            mode="blackbox", site_id=None):
         def log(msg):
             try:
                 self.on_log(msg)
@@ -1527,8 +1560,15 @@ class Runner:
                   "the attack/service works)" if self._mode == "whitebox"
                   else "BLACKBOX (through the SD-WAN as-is — what gets blocked)")
         ev.meta["mode"] = self._mode
+        # Site ID: an operator-supplied engagement/site tag recorded in the
+        # evidence meta (and echoed by the CLI/GUI headers + report).
+        site = site_id or os.environ.get("HARNESS_SITE_ID") or ""
+        if site:
+            ev.meta["site_id"] = site
         log("=" * 60)
         log(f"MODE: {banner}")
+        if site:
+            log(f"SITE ID: {site}")
         log("=" * 60)
         log(f"Path: {path}")
         log(f"Target: {self.target_ip} ({areason})")
@@ -1715,7 +1755,9 @@ class Runner:
             bump()
             return
 
+        _t0 = time.time()
         target_raw = self._safe_module_run(m, self.target_ip)
+        duration = round(time.time() - _t0, 2)   # local: thread-safe under parallel workers
         ev.save_run(it, meta["id"], "target", target_raw)
         self.on_output(meta["id"], meta["name"], it, target_raw)
         detected_source = ""
@@ -1813,10 +1855,11 @@ class Runner:
 
         self.on_status(meta["id"], meta["name"], it, b, verdict)
         self._record(ev, it, meta, b, a, verdict, recon_by_id,
-                     detected_source=detected_source, output=output_for_record)
+                     detected_source=detected_source, output=output_for_record,
+                     duration=duration)
         bump()
 
-    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source="", output=""):
+    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source="", output="", duration=0.0):
         ev.save_result(it, meta["id"], {
             "iteration": it,
             "mode": getattr(self, "_mode", "blackbox"),
@@ -1834,6 +1877,7 @@ class Runner:
             "cwe": meta.get("cwe", []),
             "cve": meta.get("cve", ""),
             "tactic": meta.get("tactic", ""),
+            "duration_s": duration,
             "baseline_result": b,
             "appliance_result": a,
             "passed": b in ("SUCCESS", "PASSED"),
