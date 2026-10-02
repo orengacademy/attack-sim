@@ -28,7 +28,7 @@ python3 gui.py                       # GUI (needs $DISPLAY); defaults to the ORI
 python3 cli.py --list                # list all discovered modules + their scope tags
 python3 cli.py --confirm-roe         # bare run: DEFAULTS to target 127.0.0.1 + the ORIGINAL 11-module set
 python3 cli.py --target <IP> --attack-sim --confirm-roe   # headless USS run (--confirm-roe is MANDATORY)
-python3 cli.py --target <IP> --all --confirm-roe          # run ALL 48 modules (default is the original set)
+python3 cli.py --target <IP> --all --confirm-roe          # run ALL modules (default is the original set)
 python3 cli.py --target <IP> --full-report --confirm-roe  # also echo report.txt (default: clean table only)
 python3 cli.py --target <IP> --site-id ORG2026-70 --debug --confirm-roe  # tag the run + verbose tool trace/timing
 python3 fleet.py --dry-run --attack-sim                   # N-target matrix preview (no traffic); then --confirm-roe
@@ -175,6 +175,38 @@ allowlisted set of tools (curl `-v`, ldapsearch `-v`, hydra `-d`, impacket
 per-module **TIME** column + `duration_s` in every `result.json`. **Site ID**
 (`--site-id` / GUI field / `HARNESS_SITE_ID`) is recorded in `summary.json` meta,
 `run.log`, and the CLI header. Both opt-in; normal runs stay clean.
+
+## Multi-target scans & appliance (SD-WAN/IPS) testing
+
+- **One scan, several targets:** CLI `--target B,C` (comma list) and the GUI's
+  2nd-target field run the selected modules against each target with its OWN
+  remembered config (on-prem DC on direct 445/135/22; cloud DC on NAT'd
+  4445/1135/2222). Each target gets its own `run_<ts>__<target>` evidence dir; the
+  GUI tags rows with a **Target** column. `preflight.py --target B,C` and the GUI
+  Preflight button recon each target too.
+- **Blacklist-contamination guard:** running from ONE source through a
+  blacklisting appliance, an early attack can get the source banned so later
+  attacks show a false BLOCKED. The engine picks a benign OPEN canary port at
+  recon and, on any BLOCKED, re-probes it — if it went unreachable it latches,
+  warns, and tags that and later BLOCKEDs `[SUSPECT: source blacklisted]`.
+  `cli.py --suspect <evidence_dir>` lists them + the re-run command. Standard fix:
+  whitelist the tester source on the appliance. `run_last` (ssh_brute/icmp_flood/
+  syn_flood) + `--cooldown`/`HARNESS_COOLDOWN` keep the blacklisters from
+  contaminating the rest.
+- **Appliance-log correlation:** `additional/sangfor_ingest.py` (vendor-agnostic:
+  Sangfor **and** Forcepoint, `.xlsx`/`.csv`, synonym column + action-value
+  mapping) turns an appliance's per-port Allow/Deny (session log) and signature
+  hits (IPS log, `--ips`) into a `detections.json`, so attacks the appliance SAW
+  score **DETECTED**. GUI: "Appliance log…" button.
+- **Zero-config IPS-signature modules** (no creds/infra, just `curl` + a web
+  port — grade the appliance's IPS/WAF): `apache_41773`, `log4shell`,
+  `web_ips_sigs` (SQLi/XSS/cmd-inj/webshell/Shellshock battery → NGWAF),
+  `struts2_ognl` (CVE-2017-5638 → NGWAF "struts2 injection"). The lab appliance is
+  a Sangfor **NGAF** (NGFW+NGWAF+Botnet+gateway-AV+Anti-DoS); map any new IPS
+  module to a real engine before adding it (e.g. EICAR-over-HTTP is NOT added —
+  gateway AV scans responses, not our inbound request).
+- Every run also writes a shareable **`report.html`**, and the preflight result is
+  stored in `summary.json` (`ev.meta["preflight"]`), not just `run.log`.
 
 ## Active establishment (`--active`)
 

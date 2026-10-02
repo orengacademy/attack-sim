@@ -85,7 +85,7 @@ python3 gui.py
 python3 cli.py --list                                  # all modules + scope tags
 python3 cli.py --confirm-roe                            # bare run: DEFAULTS to 127.0.0.1 + the original set
 python3 cli.py --target 127.0.0.1 --mode whitebox --original --confirm-roe   # baseline self-test
-python3 cli.py --target <ip> --all --confirm-roe              # run ALL 48 modules (default is the original 11)
+python3 cli.py --target <ip> --all --confirm-roe              # run ALL modules (default is the original 11)
 python3 cli.py --target <ip> --attack-sim --confirm-roe       # the USS boundary scope
 python3 cli.py --target <DC-ip> --domain lab.local --dc-user Administrator \
   --dc-pass '<pw>' --only dcsync,kerberoast,psexec --confirm-roe   # AD vs a DC (creds remembered)
@@ -219,7 +219,7 @@ reverse (B→A) direction: **[deploy/cloud/README.md](deploy/cloud/README.md)**.
 ## Runs from any OS (Kali · any Linux · Windows · macOS)
 
 The **engine is pure-stdlib Python 3** (no third-party deps) and runs anywhere;
-`loader` auto-discovers all 48 modules on every OS. What differs is only which
+`loader` auto-discovers all modules on every OS. What differs is only which
 *per-module* tools are present:
 
 - **Kali** (the primary operator OS) — `bootstrap.py` installs everything; all
