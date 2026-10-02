@@ -52,8 +52,12 @@ Keep the lab alive with `deploy/refresh-lab.sh --install-cron` (restarts dead
 services/containers/VM every 5 min). Engine is pure-stdlib and runs on any OS;
 tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 
-- **`--confirm-roe` (CLI) / the ROE checkbox (GUI) is required** — the tool runs
-  real attacks. Never add a path that bypasses it.
+- **Rules-of-engagement confirmation is required** — the tool runs real attacks.
+  Satisfied by `--confirm-roe` (per run), a DURABLE explicit opt-in via
+  `--accept-roe` (writes git-ignored `.roe_accepted`) or `HARNESS_CONFIRM_ROE=1`,
+  or the GUI checkbox (pre-ticked when the durable opt-in is on file). Keep it an
+  explicit opt-in — never make real attacks run with NO confirmation at all
+  (a durable opt-in the operator chose is fine; a silent default-on is not).
 - Tests are **pure-stdlib, cross-platform, localhost-only, and must stay offline.**
   They cover the classifier, preflight, reachability, credential/redaction,
   allowlist, the socket modules, and robustness (crashing/hanging/bad-regex
