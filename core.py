@@ -573,10 +573,10 @@ class Evidence:
         # that would double-escape and corrupt the file.
         OUTPUT_CELL_LIMIT = 4000  # Excel caps a cell at 32,767 chars; stay well under it
         cols = ["iteration", "mode", "test_type", "family", "direction",
-                "category", "attack", "tactic", "mitre", "cwe",
+                "category", "attack", "ports", "tactic", "mitre", "cwe",
                 "control_tested", "fix_location", "baseline_result",
                 "appliance_result", "passed", "verdict", "output",
-                "detected_source", "timestamp"]
+                "detected_source", "duration_s", "timestamp"]
 
         def _write_csv(f):
             w = csv.DictWriter(f, fieldnames=cols)
@@ -2179,6 +2179,9 @@ class Runner:
             "family": meta.get("family", ""),
             # a2b = SDWAN/site -> DC (northbound) · b2a = DC -> SDWAN/out (reverse)
             "direction": meta.get("direction", "a2b"),
+            # the target port(s) this module probes/attacks ("tcp/80"; egress/icmp = "")
+            "ports": ", ".join(f"{pr}/{p}" if p is not None else str(pr)
+                               for (pr, p) in (meta.get("ports") or [])),
             "mitre": meta.get("mitre", []),
             "cwe": meta.get("cwe", []),
             "cve": meta.get("cve", ""),
