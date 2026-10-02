@@ -1886,6 +1886,34 @@ class Runner:
         for it in range(1, iterations + 1):
             if self._stop:
                 break
+            # Between iterations: if a previous iteration's DoS/brute blacklisted
+            # the source (canary down), DON'T grind out a whole iteration of false
+            # SUSPECT BLOCKEDs. Wait for the ban to clear (re-probing the canary),
+            # and if it recovers, clear the latch and continue clean; if it stays
+            # banned past the window, stop the remaining iterations.
+            if it > 1 and self._blacklisted and self._canary:
+                wait = max(30.0, self.cooldown or 0.0)
+                log(f"  [blacklist] source was blacklisted last iteration — waiting up to "
+                    f"{wait:.0f}s for the canary {self._canary[1] or 'icmp'}/{self._canary[0]} "
+                    "to recover before iteration %d (whitelist the source to avoid this)." % it)
+                recovered = False
+                waited = 0.0
+                while waited < wait and not self._stop:
+                    if self._canary_reachable():
+                        recovered = True
+                        break
+                    time.sleep(min(5.0, wait - waited))
+                    waited += 5.0
+                if recovered:
+                    with self._bl_lock:
+                        self._blacklisted = False
+                    log("  [blacklist] canary recovered — latch cleared, continuing clean.")
+                else:
+                    log("  [blacklist] source still banned after the wait — SKIPPING the "
+                        "remaining iteration(s) so they don't fill the report with false "
+                        "BLOCKEDs. Whitelist the tester source (or drop iterations to 1 / run "
+                        "the DoS modules in a separate pass), then re-run.")
+                    break
             log(f"\n=== Iteration: {it} ===")
 
             # Parallel-safe = concurrency requested, module is ready, and not
