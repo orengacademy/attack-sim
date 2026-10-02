@@ -135,6 +135,8 @@ def _print_summary(ev, args, no_color, elapsed):
         d["vs"].append(br)
         d["verdicts"][br] = r.get("verdict", "")
         d["outputs"][br] = r.get("output", "") or ""
+        if r.get("duration_s") is not None:
+            d["dur"] = max(d.get("dur", 0.0), r["duration_s"])
     for d in by_mod.values():
         d["v"] = next((v for v in _VERDICT_ORDER if v in d["vs"]), (d["vs"] or ["?"])[0])
 
@@ -144,12 +146,20 @@ def _print_summary(ev, args, no_color, elapsed):
     n = len(by_mod)
 
     # ---- header strip --------------------------------------------------
+    import datetime as _dt
+    site = (getattr(ev, "meta", {}) or {}).get("site_id") or getattr(args, "site_id", None)
     W = 78
+
+    def _hline(text):
+        print(_c("┃", ACC, no_color) + _c(f"{text:<{W}}", BOLD, no_color)
+              + _c("┃", ACC, no_color))
     print()
     print(_c("┏" + "━" * W + "┓", ACC, no_color))
-    title = (f" RESULTS  ·  {args.target}  ·  {args.mode}  ·  "
-             f"{n} module(s) × {args.iterations} iter  ·  {elapsed:.0f}s")
-    print(_c("┃", ACC, no_color) + _c(f"{title:<{W}}", BOLD, no_color) + _c("┃", ACC, no_color))
+    _hline(f"  CONTROL VALIDATION — RESULTS" + (f"   ·   SITE {site}" if site else ""))
+    _hline(f"  {args.target}   ·   {args.mode}   ·   {n} module(s) × {args.iterations} iter"
+           f"   ·   {elapsed:.0f}s")
+    _hline(f"  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
+           + ("   ·   DEBUG" if getattr(args, "debug", False) else ""))
     print(_c("┗" + "━" * W + "┛", ACC, no_color))
 
     # ---- distribution strip -------------------------------------------
@@ -164,8 +174,11 @@ def _print_summary(ev, args, no_color, elapsed):
               f"{dist[v]}/{n}")
 
     # ---- the table -----------------------------------------------------
+    debug = getattr(args, "debug", False)
     NUM, VER, MOD, CAT, DET = 3, 13, 36, 20, 34
     cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT), ("DETAIL", DET)]
+    if debug:
+        cols.append(("TIME", 7))   # per-module wall-clock (debug only)
     inner = [w for _, w in cols]
 
     def rule(left, mid, right):
@@ -202,8 +215,12 @@ def _print_summary(ev, args, no_color, elapsed):
                 detail = "endpoint block (host patch/ACL, not network)"
             elif "BLOCKED-RATELIMIT" in otext:
                 detail = "rate-limited/shaped (boundary policed the flood)"
-        print(row([str(i), f"{icon} {d['v']}", d["name"], cat, detail],
-                  [DIM, col, None, ACC, DIM]))
+        cells = [str(i), f"{icon} {d['v']}", d["name"], cat, detail]
+        colors = [DIM, col, None, ACC, DIM]
+        if debug:
+            cells.append(f"{d.get('dur', 0.0):.1f}s")
+            colors.append(DIM)
+        print(row(cells, colors))
     print(rule("└", "┴", "┘"))
 
     findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
@@ -233,6 +250,13 @@ def main():
     ap.add_argument("-i", "--iterations", type=int, default=1)
     ap.add_argument("-w", "--workers", type=int, default=core.RECOMMENDED_WORKERS)
     ap.add_argument("--mode", choices=["blackbox", "whitebox"], default="blackbox")
+    ap.add_argument("-s", "--site-id", "--site", dest="site_id", default=None,
+                    help="engagement/site tag recorded in the evidence + headers "
+                         "(remembered per target; or set HARNESS_SITE_ID)")
+    ap.add_argument("--debug", action="store_true",
+                    help="verbose: ask tools for their own debug trace (curl -v / "
+                         "ldapsearch -v / hydra -d / impacket -debug), stream each "
+                         "module's full raw output live, and show per-module timing")
     ap.add_argument("--no-recon", action="store_true", help="skip the reachability recon")
     ap.add_argument("--force", action="store_true",
                     help="run modules even if prerequisites are missing (default: skip)")
@@ -336,6 +360,9 @@ def main():
 
     def _on_log(m):
         s = str(m)
+        if args.debug:                      # debug: keep the full engine stream
+            print(_colorize(s, args.no_color))
+            return
         st = s.strip()
         if st.lower().startswith(("target:", "baseline:")):
             return  # per-module verdict line — re-rendered by on_status
@@ -343,6 +370,14 @@ def main():
             if c and st.startswith(f"[{c}]"):
                 return
         print(_colorize(s, args.no_color))
+
+    def _on_output(aid, name, it, raw):
+        # debug: stream each module's FULL raw output live (command + stdout +
+        # stderr + the tool's own -v/-debug trace), like the GUI's output panel.
+        if not args.debug:
+            return
+        print(_c(f"\n──── {name} — raw output ────", DIM, args.no_color))
+        print(str(raw).rstrip())
 
     def _on_status(aid, name, it, b, v):
         _prog["n"] += 1
@@ -356,8 +391,10 @@ def main():
     runner = core.Runner(
         args.target, None,
         on_log=_on_log,
+        on_output=_on_output,
         on_status=_on_status)
     runner.concurrency = max(1, args.workers)
+    runner.ctx.debug = bool(args.debug)
     overrides = _parse_ports(args.port)
     if overrides:
         runner.ctx.port_overrides = overrides
@@ -405,14 +442,19 @@ def main():
         runner.ctx.creds["ssh_user"] = ssh_u
     if ssh_p is not None:
         runner.ctx.creds["ssh_pass"] = ssh_p
-    # remember creds only when explicitly given this run (don't stamp the global
-    # default onto every target).
+    # Site ID: flag > remembered > env. Recorded in evidence + echoed in headers.
+    site_id = args.site_id or mem.get("site_id") or ""
+    if site_id and not args.site_id:
+        print(f"[recall] site {site_id} (remembered for {args.target})")
+    # remember creds/site only when explicitly given this run (don't stamp the
+    # global default onto every target).
     cred_fields = {}
     if args.domain is not None: cred_fields["domain"] = args.domain
     if args.dc_user is not None: cred_fields["dc_user"] = args.dc_user
     if args.dc_pass is not None: cred_fields["dc_pass"] = args.dc_pass
     if args.ssh_user is not None: cred_fields["ssh_user"] = args.ssh_user
     if args.ssh_pass is not None: cred_fields["ssh_pass"] = args.ssh_pass
+    if args.site_id is not None: cred_fields["site_id"] = args.site_id
     core.remember_target(args.target, source=source or None, cloud=bool(cloud),
                          smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
                          **cred_fields)
@@ -422,7 +464,7 @@ def main():
         ev = core.Evidence(base=args.evidence_dir)
         root = runner.run(selected, max(1, args.iterations), ev,
                           skip_unready=not args.force, recon=not args.no_recon,
-                          mode=args.mode)
+                          mode=args.mode, site_id=site_id or None)
     except ValueError as e:               # invalid target / allowlist refusal
         print(f"[!] {e}", file=sys.stderr)
         return 2
