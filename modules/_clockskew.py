@@ -31,8 +31,14 @@ Usage (see modules/nopac.py):
 """
 import datetime as _dt
 import importlib
+import shutil as _shutil
 import sys
 import types
+
+# Correct the clock only when the measured skew exceeds this — comfortably
+# inside Kerberos' default 5-min (300s) window, but large enough that we don't
+# bother faketime-wrapping a sub-second lab difference.
+SKEW_THRESHOLD_S = 120
 
 # Modules that build their own Kerberos request timestamps via
 # datetime.datetime.now()/utcnow() and need the patched clock. Referenced
@@ -111,3 +117,44 @@ def remove():
         if mod is not None and orig is not None:
             mod.datetime = orig
     _originals.clear()
+
+
+def faketime_available():
+    return _shutil.which("faketime") is not None
+
+
+def correction_prefix(target, kdc_port=88):
+    """SUBPROCESS analogue of install()/remove(). The in-process monkeypatch
+    above can only fix Kerberos calls made *in this process*; modules that shell
+    out to an impacket CLI (kerberoast's GetUserSPNs, etc.) run in a child whose
+    clock we can't patch that way. So: measure the KDC skew here (needs only an
+    unauthenticated error packet — see measure_offset) and, if it's large enough
+    to blow Kerberos' 5-min window, return a `faketime` command PREFIX that
+    shifts the child process' clock to match the DC. faketime uses LD_PRELOAD —
+    no root, no system-clock change — the same guarantees _clockskew gives.
+
+    Returns (prefix, note): `prefix` is "" when no correction is applied (within
+    tolerance, KDC unreachable, or faketime missing); `note` is an advisory line
+    to prepend to the module's output so the verdict explains itself. The prefix
+    ends in a trailing space so callers can concatenate it straight onto a
+    `ctx.run_cmd` template (which shlex-splits, so `faketime -f +412s ` tokenises
+    cleanly — the signed `+Ns`/`-Ns` has no spaces to quote)."""
+    try:
+        offset = measure_offset(target, kdc_port=kdc_port)
+    except Exception:
+        offset = None
+    if offset is None:
+        return "", ""  # KDC unreachable — let the attack itself report that (not a skew issue)
+    secs = int(offset.total_seconds())
+    if abs(secs) <= SKEW_THRESHOLD_S:
+        return "", ""  # clocks agree closely enough — nothing to do
+    if faketime_available():
+        return (f"faketime -f {secs:+d}s ",
+                f"[INFO] KDC clock skew {secs:+d}s detected — wrapping the tool in "
+                "faketime to match the DC (no root / no system-clock change), so the "
+                "pre-auth AS-REQ isn't rejected with KRB_AP_ERR_SKEW.")
+    return ("",
+            f"[WARN] KDC clock skew {secs:+d}s exceeds Kerberos' 5-min window and "
+            "`faketime` is not installed — the pre-auth AS-REQ will fail with "
+            "KRB_AP_ERR_SKEW (not a control result). Fix: `apt install faketime` "
+            "(this module then auto-corrects), or sync this host's clock to the DC.")
