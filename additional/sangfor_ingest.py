@@ -68,7 +68,31 @@ _CANON = {
     "policy name": "Policy Name", "policy": "Policy Name", "rule name": "Policy Name", "rule": "Policy Name",
     "type": "Type", "log type": "Type", "src address": "Src Address",
     "source ip": "Src Address", "src ip": "Src Address",
+    # Forcepoint NGFW/SMC + Web spellings
+    "dst addr": "Dst IP", "src addr": "Src Address", "rule tag": "Policy Name",
+    "category": "Attack Type", "sender domain": "Dst IP",
 }
+
+# Action VALUES differ by vendor too (Sangfor Allow/Deny; Forcepoint NGFW
+# Permit/Discard/Refuse/Terminate; Web Permitted/Blocked). Normalise to Allow/Deny.
+_ALLOW_WORDS = {"allow", "allowed", "permit", "permitted", "accept", "accepted", "pass", "passed"}
+_DENY_WORDS = {"deny", "denied", "block", "blocked", "drop", "dropped", "discard", "discarded",
+               "refuse", "refused", "reject", "rejected", "terminate", "terminated", "prevent",
+               "prevented", "reset"}
+
+
+def _canon_action(val):
+    v = (val or "").strip().lower()
+    if v in _ALLOW_WORDS:
+        return "Allow"
+    if v in _DENY_WORDS:
+        return "Deny"
+    # partial match (e.g. "deny in associated policy", "discard (ips)")
+    if any(w in v for w in _DENY_WORDS):
+        return "Deny"
+    if any(w in v for w in _ALLOW_WORDS):
+        return "Allow"
+    return (val or "?").strip() or "?"
 
 
 def _canon(name):
@@ -152,7 +176,7 @@ def _port_actions(data, target):
             port = int((r.get("Dst Port") or "").strip())
         except ValueError:
             continue
-        action = (r.get("Action") or "").strip() or "?"
+        action = _canon_action(r.get("Action"))
         pa[(proto, port)][action] += 1
         meta[(proto, port)].setdefault("policy", r.get("Policy Name", ""))
         meta[(proto, port)].setdefault("service", r.get("Service", ""))
@@ -192,7 +216,7 @@ def ingest_ips(path, target, model):
         if target and dst != target:
             continue
         at = r.get("Attack Type", "")
-        action = (r.get("Action") or "").strip() or "?"
+        action = _canon_action(r.get("Action"))
         level = (r.get("Threat Level") or "").strip()
         typ = (r.get("Type") or "").strip()
         mods = _map_attack_type(at)
