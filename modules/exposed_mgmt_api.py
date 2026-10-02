@@ -34,7 +34,7 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^MGMT-SURFACE-EXPOSED",
-    "blocked_regex": r"no management surface exposed|unreachable",
+    "blocked_regex": r"no management surface exposed|unreachable|Connection reset|reset by peer|Broken pipe",
 }
 
 

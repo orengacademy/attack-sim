@@ -22,7 +22,7 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^TLS-OK",
-    "blocked_regex": r"timed out|refused|no-tls|unreachable",
+    "blocked_regex": r"timed out|refused|no-tls|unreachable|Connection reset|reset by peer|Broken pipe",
 }
 
 

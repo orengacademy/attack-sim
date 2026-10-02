@@ -1533,6 +1533,12 @@ class Runner:
         self._stop = False
         # hard wall-clock cap per module run; None -> ctx.timeout + 60s.
         self.module_hard_timeout = None
+        # seconds to wait BEFORE each run_last module (brute/DoS) so a rate-limit
+        # they trigger has time to clear between them. 0 = off. Env HARNESS_COOLDOWN.
+        try:
+            self.cooldown = float(os.environ.get("HARNESS_COOLDOWN", "0") or 0)
+        except ValueError:
+            self.cooldown = 0.0
 
     def stop(self):
         self._stop = True
@@ -1813,6 +1819,15 @@ class Runner:
             for m in serial:
                 if self._stop:
                     break
+                # cooldown before each run_last (brute/DoS) module so a rate-limit
+                # it triggers has time to clear before the next one runs.
+                if self.cooldown and m.META.get("run_last") and not self._stop:
+                    log(f"  (cooldown {self.cooldown:.0f}s before {m.META['name']} — "
+                        "let any triggered rate-limit clear)")
+                    _slept = 0.0
+                    while _slept < self.cooldown and not self._stop:
+                        time.sleep(min(1.0, self.cooldown - _slept))
+                        _slept += 1.0
                 self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
                                      recon_by_id, ev, log, bump)
 

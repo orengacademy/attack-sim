@@ -261,6 +261,9 @@ def main():
                          "ldapsearch -v / hydra -d / impacket -debug), stream each "
                          "module's full raw output live, and show per-module timing")
     ap.add_argument("--no-recon", action="store_true", help="skip the reachability recon")
+    ap.add_argument("--cooldown", type=float, default=None,
+                    help="seconds to wait before each brute/DoS (run_last) module so a "
+                         "triggered rate-limit clears (also HARNESS_COOLDOWN)")
     ap.add_argument("--force", action="store_true",
                     help="run modules even if prerequisites are missing (default: skip)")
     ap.add_argument("--port", help='per-attack port overrides, e.g. "log4shell=8983,ssh_brute=2222"')
@@ -398,6 +401,8 @@ def main():
         runner = core.Runner(target, None, on_log=_on_log, on_output=_on_output,
                              on_status=_on_status)
         runner.concurrency = max(1, args.workers)
+        if args.cooldown is not None:
+            runner.cooldown = max(0.0, args.cooldown)
         runner.ctx.debug = bool(args.debug)
         overrides = _parse_ports(args.port)
         if overrides:

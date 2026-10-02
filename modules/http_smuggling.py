@@ -35,7 +35,7 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^DESYNC-SUSPECT",
-    "blocked_regex": r"ambiguous framing rejected|unreachable",
+    "blocked_regex": r"ambiguous framing rejected|unreachable|Connection reset|reset by peer|Broken pipe",
 }
 
 
