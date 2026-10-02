@@ -67,7 +67,7 @@ def _select(modules, args):
         return sel
     # base set. DEFAULT = the original 11-module baseline (same as the GUI's
     # default tick) — a bare `cli.py --target X` runs a sensible, fast,
-    # self-contained set rather than all 48. Use --all for everything.
+    # self-contained set rather than all of them. Use --all for everything.
     if getattr(args, "all", False):
         sel = list(modules)
     elif args.added:
