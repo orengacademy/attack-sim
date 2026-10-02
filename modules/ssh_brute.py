@@ -37,8 +37,10 @@ META = {
     "cwe": ['CWE-307'],
     "tactic": 'Credential Access',
     "requires": ["hydra"],
-    "serial": True,   # rate-limit/brute test: run alone so it isn't skewed, and
-                      # so a resulting IP-blacklist hits as few other modules as possible
+    "serial": True,     # rate-limit/brute test: run alone so it isn't skewed
+    "run_last": True,   # the burst trips a brute-force signature that BLACKLISTS the
+                        # tester IP — run after everything else so that blacklist
+                        # can't turn later modules into false BLOCKEDs
     "ports": [("tcp", 22)],
     "port_customizable": True,
     # hydra's valid-pair line "login: X   password: Y" -> the brute got through.
