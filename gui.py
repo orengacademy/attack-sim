@@ -469,11 +469,12 @@ class HarnessGUI:
         # tree + BOTH scrollbars in a grid frame (packing the scrollbar after an
         # expanding tree squeezes it to zero width — the old "can't scroll" bug).
         tf = ttk.Frame(left); tf.pack(fill="both", expand=True, padx=2, pady=2)
-        cols = ("no", "mode", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
+        cols = ("no", "time", "mode", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
         self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
         self._sort_state = {}   # col -> last sort was descending
         # click any heading to sort by that column (toggles asc/desc)
-        for c, t, w, a in (("no", "#", 34, "center"), ("mode", "M", 30, "center"),
+        for c, t, w, a in (("no", "#", 34, "center"), ("time", "Time", 64, "center"),
+                           ("mode", "M", 30, "center"),
                            ("dir", "Dir", 38, "center"), ("cat", "Category", 118, "w"),
                            ("attack", "Attack", 150, "w"), ("iter", "It", 26, "center"),
                            ("result", "Result", 96, "center"), ("mitre", "MITRE", 110, "w"),
@@ -792,9 +793,11 @@ class HarnessGUI:
     def _add_status(self, aid, name, it, result, direction="", mitre="", cwe="", category=""):
         m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
         self._status_seq = getattr(self, "_status_seq", 0) + 1
+        import time as _t
+        ts = _t.strftime("%H:%M:%S")   # when this result landed (completion time)
         iid = self.status_tree.insert(
             "", "end",
-            values=(self._status_seq, m, direction, category, name, it, result, mitre, cwe),
+            values=(self._status_seq, ts, m, direction, category, name, it, result, mitre, cwe),
             tags=(result,))
         self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
