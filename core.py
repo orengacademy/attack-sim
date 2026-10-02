@@ -19,6 +19,7 @@ GUI) plus ticking Rules-of-engagement confirmed. Everything else static
 import os
 import re
 import csv
+import errno
 import json
 import shlex
 import shutil
@@ -1269,39 +1270,78 @@ _OPEN_STATES = {"open", "up"}
 _CLOSED_STATES = {"closed", "filtered", "unreachable", "unresolved", "down/filtered"}
 
 
-def probe_tcp(host, port, timeout=2.0):
-    """open / closed / filtered / unresolved / unreachable for one TCP port.
-    Cross-platform and unprivileged (a plain connect())."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return "open"
-    except (socket.timeout, TimeoutError):
-        return "filtered"        # no response — dropped/filtered (or slow)
-    except ConnectionRefusedError:
-        return "closed"          # host reachable, nothing listening on that port
-    except socket.gaierror:
-        return "unresolved"      # name/DNS did not resolve
-    except OSError:
-        return "unreachable"     # no route / network error
+# A real DNS query (A? google.com, RD set) so an open UDP/53 resolver actually
+# answers — an empty datagram elicits no reply and would look falsely ambiguous.
+_DNS_QUERY = (b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+              b"\x06google\x03com\x00\x00\x01\x00\x01")
+# UDP ports where a protocol-aware probe turns the usual "open|filtered"
+# ambiguity into a definitive "open" when something is listening.
+_UDP_PAYLOADS = {53: _DNS_QUERY, 5353: _DNS_QUERY}
+
+
+def probe_tcp(host, port, timeout=2.0, retries=1):
+    """open / closed / filtered / unreachable / unresolved for one TCP port.
+    Unprivileged connect(). Accuracy notes (the states feed BLOCKED vs NO-SERVICE):
+      - open       : the 3-way handshake completed.
+      - closed     : a RST (refused / reset) — the host is up, nothing is
+                     listening; this is NOT a control block.
+      - filtered   : no response at all (silently dropped). A single dropped SYN
+                     on a lossy/WAN path is retried once before we call it
+                     filtered, so a one-off loss isn't a false BLOCKED.
+      - unreachable: ICMP host/net-unreachable or admin-prohibited (a reject /
+                     no route) — usually a boundary block.
+    """
+    last = "filtered"
+    for _ in range(max(1, retries + 1)):
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return "open"
+        except (socket.timeout, TimeoutError):
+            last = "filtered"            # no response — retry once to confirm
+            continue
+        except ConnectionRefusedError:
+            return "closed"              # RST — host up, nothing listening
+        except ConnectionResetError:
+            return "closed"              # RST mid-handshake — refused, not a block
+        except socket.gaierror:
+            return "unresolved"          # name/DNS did not resolve
+        except OSError as e:
+            if e.errno == errno.ECONNREFUSED:
+                return "closed"
+            return "unreachable"         # no route / unreachable / admin-prohibited
+    return last                          # timed out on every attempt -> filtered
 
 
 def probe_udp(host, port, timeout=2.0):
-    """Best-effort UDP check (UDP has no handshake, so results are limited):
-    open (a reply came back) / closed (ICMP port-unreachable) / open|filtered
-    (no reply — the common, ambiguous case) / unreachable / unresolved."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(timeout)
+    """Best-effort UDP (no handshake, so limited): open (a reply — including to a
+    protocol-aware DNS probe) / closed (ICMP port-unreachable, reliably surfaced
+    via a CONNECTED socket) / open|filtered (no reply — the common ambiguous
+    case) / unreachable / unresolved. IPv4 and IPv6 (family from getaddrinfo)."""
     try:
-        s.sendto(b"", (host, port))
-        try:
-            s.recvfrom(1024)
-            return "open"
-        except socket.timeout:
-            return "open|filtered"
-        except ConnectionRefusedError:
-            return "closed"
+        info = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
     except socket.gaierror:
         return "unresolved"
+    except OSError:
+        return "unreachable"
+    if not info:
+        return "unresolved"
+    fam, _st, _pr, _cn, sa = info[0]
+    s = socket.socket(fam, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        # connect() so the kernel delivers ICMP port-unreachable to THIS socket
+        # (an unconnected UDP socket usually won't see it -> false "open|filtered").
+        s.connect(sa)
+        s.send(_UDP_PAYLOADS.get(port, b""))
+        try:
+            s.recv(4096)
+            return "open"                # something answered
+        except socket.timeout:
+            return "open|filtered"       # silent — can't tell open from filtered
+        except ConnectionRefusedError:
+            return "closed"              # ICMP port-unreachable came back
+    except ConnectionRefusedError:
+        return "closed"
     except OSError:
         return "unreachable"
     finally:
@@ -1310,13 +1350,16 @@ def probe_udp(host, port, timeout=2.0):
 
 def probe_icmp(host, timeout=3.0):
     """Best-effort ICMP reachability via the system ping (cross-OS flag: -n on
-    Windows, -c elsewhere): up / down/filtered / no-ping / unknown."""
+    Windows, -c elsewhere). Sends TWO echo requests — 'up' if EITHER replies —
+    so a single dropped packet on a lossy/WAN path isn't a false 'down'.
+    up / down/filtered / no-ping / unknown."""
     if shutil.which("ping") is None:
         return "no-ping"
     count_flag = "-n" if platform.system() == "Windows" else "-c"
     try:
-        p = subprocess.run(["ping", count_flag, "1", host],
-                           capture_output=True, text=True, timeout=timeout + 2)
+        p = subprocess.run(["ping", count_flag, "2", host],
+                           capture_output=True, text=True, timeout=timeout + 4,
+                           stdin=subprocess.DEVNULL)
         return "up" if p.returncode == 0 else "down/filtered"
     except Exception:
         return "unknown"
