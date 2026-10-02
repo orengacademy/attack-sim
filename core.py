@@ -1270,13 +1270,27 @@ _OPEN_STATES = {"open", "up"}
 _CLOSED_STATES = {"closed", "filtered", "unreachable", "unresolved", "down/filtered"}
 
 
-# A real DNS query (A? google.com, RD set) so an open UDP/53 resolver actually
-# answers — an empty datagram elicits no reply and would look falsely ambiguous.
+# Protocol-aware UDP probes: an empty datagram elicits no reply from most
+# services, so UDP would almost always look like the ambiguous "open|filtered".
+# A real request makes an open service answer -> definitive "open".
+#  - DNS (53/5353): a standard A? google.com query (RD set).
 _DNS_QUERY = (b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
               b"\x06google\x03com\x00\x00\x01\x00\x01")
-# UDP ports where a protocol-aware probe turns the usual "open|filtered"
-# ambiguity into a definitive "open" when something is listening.
-_UDP_PAYLOADS = {53: _DNS_QUERY, 5353: _DNS_QUERY}
+#  - SNMP (161): a v1 GET-request for sysDescr.0 (1.3.6.1.2.1.1.1.0), community
+#    "public" — an SNMP agent that honours it replies (if the community differs
+#    there's no reply, which correctly stays ambiguous).
+_SNMP_GET = bytes.fromhex(
+    "302902010004067075626c6963a01c020400000000020100020100"
+    "300e300c06082b060102010101000500")
+#  - QUIC / DoQ (443/853 udp): a long-header Initial with a forced-unknown
+#    version, padded to the 1200-byte minimum, so a QUIC server MUST answer with
+#    a Version-Negotiation packet. HTTP/3 and DNS-over-QUIC both ride QUIC, so
+#    this one probe covers both.
+_QUIC_VN = (b"\xc0" + b"\x1a\x2a\x3a\x4a" + b"\x08"
+            + b"\xde\xad\xbe\xef\xca\xfe\xba\xbe" + b"\x00")
+_QUIC_VN = _QUIC_VN + b"\x00" * (1200 - len(_QUIC_VN))
+_UDP_PAYLOADS = {53: _DNS_QUERY, 5353: _DNS_QUERY, 161: _SNMP_GET,
+                 443: _QUIC_VN, 853: _QUIC_VN}
 
 
 def probe_tcp(host, port, timeout=2.0, retries=1):
