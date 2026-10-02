@@ -32,13 +32,19 @@ CUSTOM_PORT_TARGETS = {
     # target_ip: {real_port: forwarded_port, ...}
     # MyGovNet cloud DCs (DigitalOcean): the ONLY ports that differ from a
     # standard/KVDC DC are SMB and RPC — exposed on alternate high ports
-    # (RPC 135 -> 1135, SMB 445 -> 4445). NetBIOS 139 is not forwarded and not
-    # needed (impacket uses 445). Everything else (LDAP 389/636, Kerberos 88,
-    # GC 3268/3269, RDP 3389) is standard on both. KVDC/on-prem DCs are NOT
-    # listed here, so they pass straight through on the real ports.
-    "159.223.35.108": {445: 4445, 135: 1135},
-    "167.71.222.169": {445: 4445, 135: 1135},
+    # (RPC 135 -> 1135, SMB 445 -> 4445, SSH 22 -> 2222). NetBIOS 139 is not
+    # forwarded and not needed (impacket uses 445). Everything else (LDAP 389/636,
+    # Kerberos 88, GC 3268/3269, RDP 3389) is standard on both. KVDC/on-prem DCs
+    # are NOT listed here, so they pass straight through on the real ports.
+    # NOTE: the socket.connect monkeypatch only redirects IN-PROCESS sockets
+    # (impacket); subprocess tools (hydra for ssh_brute) read the alt port from
+    # this map directly — ssh_brute does exactly that for the 22 entry.
+    "159.223.35.108": {445: 4445, 135: 1135, 22: 2222},
+    "167.71.222.169": {445: 4445, 135: 1135, 22: 2222},
 }
+# Default cloud SSH alternate port, used by the CLI/GUI when registering a cloud
+# target so ssh_brute hits the forwarded SSH port.
+DEFAULT_CLOUD_SSH_PORT = 2222
 
 _original_connect = socket.socket.connect
 _original_connect_ex = socket.socket.connect_ex

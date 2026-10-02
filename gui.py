@@ -222,7 +222,11 @@ class HarnessGUI:
         self.rpc_port = tk.StringVar(value="1135")
         self._rpc_entry = ttk.Entry(cf, textvariable=self.rpc_port, width=6, state="disabled")
         self._rpc_entry.pack(side="left")
-        ttk.Label(cf, text="(445→SMB, 135→RPC for AD modules)",
+        ttk.Label(cf, text="SSH").pack(side="left", padx=(8, 2))
+        self.ssh_port = tk.StringVar(value="2222")
+        self._ssh_port_entry = ttk.Entry(cf, textvariable=self.ssh_port, width=6, state="disabled")
+        self._ssh_port_entry.pack(side="left")
+        ttk.Label(cf, text="(445→SMB, 135→RPC, 22→SSH for the forwarded ports)",
                   style="Muted.TLabel").pack(side="left", padx=(6, 0))
 
         # Per-target credentials — override credentials.env/HARNESS_DC_* for THIS
@@ -540,6 +544,7 @@ class HarnessGUI:
         state = "normal" if self.cloud_var.get() else "disabled"
         self._smb_entry.configure(state=state)
         self._rpc_entry.configure(state=state)
+        self._ssh_port_entry.configure(state=state)
 
     def _prefill_last_target(self):
         """On launch, resume the most-recently-used target: set the Target field
@@ -583,6 +588,8 @@ class HarnessGUI:
                 self.smb_port.set(str(rec["smb_port"]))
             if rec.get("rpc_port"):
                 self.rpc_port.set(str(rec["rpc_port"]))
+            if rec.get("ssh_port"):
+                self.ssh_port.set(str(rec["ssh_port"]))
             self._toggle_cloud_ports()
         # per-target credentials (DC/AD + separate SSH) + Site ID — a remembered
         # per-target value WINS over the default prefill, so switching to a known
@@ -605,6 +612,7 @@ class HarnessGUI:
                 cloud=bool(self.cloud_var.get()),
                 smb_port=(self.smb_port.get().strip() or None) if self.cloud_var.get() else None,
                 rpc_port=(self.rpc_port.get().strip() or None) if self.cloud_var.get() else None,
+                ssh_port=(self.ssh_port.get().strip() or None) if self.cloud_var.get() else None,
                 domain=self.domain_entry.get().strip() or None,
                 dc_user=self.user_entry.get().strip() or None,
                 dc_pass=self.pass_entry.get().strip() or None,
@@ -644,9 +652,10 @@ class HarnessGUI:
         try:
             smb = int((self.smb_port.get() or "4445").strip())
             rpc = int((self.rpc_port.get() or "1135").strip())
-            _portpatch.CUSTOM_PORT_TARGETS[target_ip] = {445: smb, 135: rpc}
-            self._log(f"Cloud target: SMB 445->{smb}, RPC 135->{rpc} for {target_ip} "
-                      "(AD modules will use the alternates).")
+            ssh = int((self.ssh_port.get() or "2222").strip())
+            _portpatch.CUSTOM_PORT_TARGETS[target_ip] = {445: smb, 135: rpc, 22: ssh}
+            self._log(f"Cloud target: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh} for "
+                      f"{target_ip} (AD modules + ssh_brute use the alternates).")
         except Exception as e:
             self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
 

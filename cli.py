@@ -290,6 +290,7 @@ def main():
                     help="force cloud mode OFF (ignore any remembered --cloud for this target)")
     ap.add_argument("--smb-port", type=int, default=None, help="cloud SMB alt port (default 4445)")
     ap.add_argument("--rpc-port", type=int, default=None, help="cloud RPC alt port (default 1135)")
+    ap.add_argument("--ssh-port", type=int, default=None, help="cloud SSH alt port for ssh_brute (default 2222)")
     # per-target credentials (override HARNESS_DC_*/credentials.env for THIS target
     # and are remembered for it — so a Linux target and a Windows DC can differ)
     ap.add_argument("--domain", help="AD domain for this target (e.g. lab.local)")
@@ -407,6 +408,7 @@ def main():
     cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
     smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
     rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
+    ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 2222
     if source:
         runner.ctx.source_ip = source
         if args.source is None:
@@ -414,9 +416,9 @@ def main():
     if cloud:
         try:
             from modules import _portpatch
-            _portpatch.CUSTOM_PORT_TARGETS[args.target] = {445: int(smb), 135: int(rpc)}
+            _portpatch.CUSTOM_PORT_TARGETS[args.target] = {445: int(smb), 135: int(rpc), 22: int(ssh_p_port)}
             tag = "" if args.cloud is not None else " (recalled)"
-            print(f"[cloud{tag}] {args.target}: SMB 445->{smb}, RPC 135->{rpc}")
+            print(f"[cloud{tag}] {args.target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh_p_port}")
         except Exception as e:
             print(f"[!] could not enable cloud ports: {e}", file=sys.stderr)
 
@@ -457,7 +459,7 @@ def main():
     if args.site_id is not None: cred_fields["site_id"] = args.site_id
     core.remember_target(args.target, source=source or None, cloud=bool(cloud),
                          smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
-                         **cred_fields)
+                         ssh_port=(ssh_p_port if cloud else None), **cred_fields)
 
     t0 = time.time()
     try:

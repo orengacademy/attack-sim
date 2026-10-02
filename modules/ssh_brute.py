@@ -53,6 +53,18 @@ DEFAULT_ATTEMPTS = 35   # > the Sangfor Fast threshold (30 / 1 min) so the signa
 
 def run(target, ctx):
     port = ctx.get_port("ssh_brute", 22)   # overridable per-attack (GUI/env)
+    # Cloud target: SSH is NAT'd to an alternate port (default 2222, like
+    # 445->4445 / 135->1135). hydra is a subprocess so the _portpatch
+    # socket.connect redirect doesn't reach it — read the alt port from the map
+    # directly. An explicit --port ssh_brute=<n> override still wins.
+    if port == 22:
+        try:
+            from modules import _portpatch
+            alt = (_portpatch.CUSTOM_PORT_TARGETS.get(target) or {}).get(22)
+            if alt:
+                port = int(alt)
+        except Exception:
+            pass
     # SSH creds are SEPARATE from the DC creds (HARNESS_SSH_USER/PASS or the
     # per-target --ssh-user/--ssh-pass): a dual-role target is both an SSH host
     # and a DC front, and one identity can't serve both. Fall back to the DC
