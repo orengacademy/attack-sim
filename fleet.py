@@ -201,11 +201,17 @@ def main():
         if s.get("ip"):
             runner.ctx.source_ip = s["ip"]
 
+        # Device attribution: MyGovNet has many zones, each guarded by its own
+        # appliance (Sangfor NGAF at the WAN/SDWAN site, Forcepoint + others
+        # elsewhere). Tag the run with the appliance on THIS leg (target's
+        # `appliance`, else the zone) so evidence/report says which device the
+        # verdicts belong to — and the appliance-log ingester can be run per device.
+        appliance = t.get("appliance") or t.get("zone") or ""
         try:
             ev = core.Evidence(base=os.path.join(base, f"{s.get('id','local')}__{t['id']}"))
             root = runner.run(selected, max(1, args.iterations), ev,
                               skip_unready=not args.force, recon=not args.no_recon,
-                              mode=args.mode)
+                              mode=args.mode, site_id=appliance or None)
             counts = _verdict_counts(ev.records)
         except ValueError as e:                 # invalid target / allowlist refusal
             print(f"  [!] {t['id']} skipped: {e}")
@@ -219,7 +225,8 @@ def main():
         fleet_summary["jobs"].append({
             "source": s.get("id"), "source_ip": s.get("ip"),
             "target": t["id"], "ip": t["ip"], "zone": t.get("zone"),
-            "direction": j["direction"], "evidence": root, "verdicts": counts})
+            "appliance": appliance, "direction": j["direction"],
+            "evidence": root, "verdicts": counts})
         print(_colorize("  -> " + ", ".join(f"[{k}]×{v}" for k, v in sorted(counts.items())),
                         args.no_color))
 
