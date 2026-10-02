@@ -261,6 +261,7 @@ class HarnessGUI:
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
         self._unlock_btn.grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
         self._refresh_privilege()
+        self._prefill_last_target()
 
     def _refresh_privilege(self):
         ps = core.privilege_status(self.modules)
@@ -529,6 +530,32 @@ class HarnessGUI:
         state = "normal" if self.cloud_var.get() else "disabled"
         self._smb_entry.configure(state=state)
         self._rpc_entry.configure(state=state)
+
+    def _prefill_last_target(self):
+        """On launch, resume the most-recently-used target: set the Target field
+        and pull its saved source/cloud/creds (incl. password) from
+        .target_memory.json, so you don't re-type them each session. Reads only
+        your own 0600 memory file — nothing is baked into source. Clear the field
+        if you want a different target."""
+        try:
+            mem = core.load_target_memory()
+        except Exception:
+            mem = {}
+        if not mem or self.target.get().strip():
+            return
+
+        def _ts(kv):
+            rec = kv[1]
+            return rec.get("last_used", "") if isinstance(rec, dict) else ""
+        try:
+            ip = max(mem.items(), key=_ts)[0]
+        except (ValueError, TypeError):
+            return
+        if not ip:
+            return
+        self.target.delete(0, "end")
+        self.target.insert(0, ip)
+        self._recall_target()   # fills source/cloud/creds for this target
 
     def _recall_target(self):
         """Populate source/cloud/ports from the last run against this target."""
