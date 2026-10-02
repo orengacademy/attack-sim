@@ -28,6 +28,7 @@ import platform
 import ipaddress
 import importlib
 import time
+import html as _html
 import subprocess
 from datetime import datetime
 
@@ -745,12 +746,101 @@ class Evidence:
                   f"Evidence: {self.root}"]
         _safe_write("report.txt", lambda f: f.write("\n".join(lines)))
 
+        # shareable self-contained HTML report (verdict table + coverage), no deps
+        _safe_write("report.html", self._write_html)
+
         if self._log_fh is not None:
             try:
                 self._log_fh.close()
             except Exception:
                 pass
         return self.root
+
+    _V_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
+                "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
+    _V_COLOR = {"SUCCESS": "#e5484d", "PASSED": "#e5484d", "DETECTED": "#f5a524",
+                "BLOCKED": "#30a46c", "NO-SERVICE": "#4493f8", "AUTH-FAILED": "#e2a336",
+                "NO-RESULT": "#e2a336", "SKIPPED": "#8b949e", "PREREQ-MISSING": "#8b949e"}
+
+    def _write_html(self, f):
+        """A self-contained, shareable HTML evidence summary (inline CSS, no deps):
+        run meta, verdict distribution, the per-module table, and ATT&CK/CWE/CVE."""
+        e = _html.escape
+        recs = self.records or []
+        by = {}
+        for r in recs:
+            mid = r.get("attack_id") or r.get("attack")
+            d = by.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
+                                    "mitre": ", ".join(r.get("mitre", []) or []),
+                                    "cwe": ", ".join(r.get("cwe", []) or []),
+                                    "dur": None, "vs": [], "verdicts": {}})
+            br = r.get("baseline_result", "?")
+            d["vs"].append(br)
+            d["verdicts"][br] = r.get("verdict", "")
+            if r.get("duration_s") is not None:
+                d["dur"] = max(d["dur"] or 0.0, r["duration_s"])
+        for d in by.values():
+            d["v"] = next((v for v in self._V_ORDER if v in d["vs"]), (d["vs"] or ["?"])[0])
+        dist = {}
+        for d in by.values():
+            dist[d["v"]] = dist.get(d["v"], 0) + 1
+        n = len(by) or 1
+        m = self.meta
+        site = m.get("site_id", "")
+        tgt = recs[0].get("target_ip", "") if recs else ""
+
+        def color(v):
+            return self._V_COLOR.get(v, "#8b949e")
+
+        rows = []
+        for i, d in enumerate(sorted(by.values(), key=lambda x: (
+                x["cat"], self._V_ORDER.index(x["v"]) if x["v"] in self._V_ORDER else 9, x["name"])), 1):
+            vt = e(d["verdicts"].get(d["v"], ""))
+            rows.append(
+                f'<tr><td class=num>{i}</td>'
+                f'<td><span class=pill style="background:{color(d["v"])}">{e(d["v"])}</span></td>'
+                f'<td>{e(d["name"])}</td><td class=dim>{e(d["cat"])}</td>'
+                f'<td class=dim>{e(d["mitre"])}</td><td class=dim>{e(d["cwe"])}</td>'
+                f'<td class=dim>{("%.1fs" % d["dur"]) if d["dur"] is not None else ""}</td>'
+                f'<td class=verdict>{vt}</td></tr>')
+        bars = []
+        for v in self._V_ORDER:
+            if v not in dist:
+                continue
+            pct = 100.0 * dist[v] / n
+            bars.append(
+                f'<div class=bar><span class=lbl style="color:{color(v)}">{e(v)}</span>'
+                f'<span class=meter><span style="width:{pct:.0f}%;background:{color(v)}"></span></span>'
+                f'<span class=cnt>{dist[v]}/{n}</span></div>')
+        findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+        f.write(f"""<!doctype html><html><head><meta charset=utf-8>
+<title>Control Validation — {e(tgt)}</title><style>
+body{{font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:24px}}
+h1{{font-size:18px;margin:0 0 4px}} .meta{{color:#8b949e;font-size:13px;margin-bottom:16px}}
+table{{border-collapse:collapse;width:100%;margin-top:16px;font-size:13px}}
+th,td{{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d;vertical-align:top}}
+th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
+.num{{color:#6e7681;width:28px}} .dim{{color:#8b949e}} .verdict{{color:#8b949e;font-size:12px;max-width:380px}}
+.pill{{color:#fff;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}}
+.bar{{display:flex;align-items:center;gap:8px;margin:3px 0}} .lbl{{width:120px;font-weight:600}}
+.meter{{flex:0 0 220px;height:10px;background:#21262d;border-radius:5px;overflow:hidden}}
+.meter>span{{display:block;height:100%}} .cnt{{color:#8b949e}}
+.foot{{margin-top:14px;font-weight:600}} code{{color:#58a6ff}}
+</style></head><body>
+<h1>Control Validation Harness — Results</h1>
+<div class=meta>{('SITE ' + e(site) + ' &middot; ') if site else ''}target <code>{e(tgt)}</code>
+&middot; mode {e(m.get('mode',''))} &middot; run {e(m.get('run',''))}
+&middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
+{''.join(bars)}
+<table><thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th>
+<th>MITRE</th><th>CWE</th><th>Time</th><th>Detail</th></tr></thead>
+<tbody>{''.join(rows)}</tbody></table>
+<div class=foot>&rarr; {findings} finding(s) got through &middot; {dist.get('DETECTED',0)} detected
+&middot; {dist.get('BLOCKED',0)} blocked</div>
+<div class=meta style="margin-top:10px">Raw evidence, summary.json/csv and the ATT&amp;CK Navigator layer
+are in this run folder. Verdicts: red = got through (finding) &middot; orange = detected &middot;
+green = blocked &middot; blue = no-service.</div>
+</body></html>""")
 
 
 # ---------------------------------------------------------------------
@@ -1667,7 +1757,12 @@ class Runner:
                 "attack id(s) will score DETECTED if they pass.")
 
         # ----- Preflight: verify tools/privileges BEFORE executing anything ---
+        # ALWAYS runs first, every run (GUI + CLI), to confirm each module's
+        # prerequisites (tools / python-libs / privilege / OS) are met. Stored in
+        # the evidence meta so the preflight state is in summary.json too (not only
+        # the human lines in run.log).
         pf = preflight(modules)
+        ev.meta["preflight"] = pf
         pi = pf["platform"]
         plat = f"{pi['system']} {pi['release']}" + (f" · {pi['distro']}" if pi["distro"] else "")
         log(f"Platform: {plat}  |  Python {pi['python']}  |  "
