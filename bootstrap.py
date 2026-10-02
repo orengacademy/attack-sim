@@ -22,6 +22,7 @@ CORE_APT = [
     "ldap-utils", "hping3", "responder",
     "dnsutils",          # dig — covert_channel / DNS checks
     "openssh-client",    # ssh — ssh_over_443 (--active) and general use
+    "faketime",          # kerberoast — auto-correct DC clock skew (KRB_AP_ERR_SKEW), no root
 ]
 
 # Extra APT tools used only by active-establishment modules (--active). Installed
