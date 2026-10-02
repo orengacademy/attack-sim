@@ -1061,7 +1061,7 @@ class HarnessGUI:
                     runner.ctx.allow_active = active
                     runner.ctx.debug = debug
                     self._apply_cfg(runner, tgt, cfg)
-                    ev = core.Evidence()
+                    ev = core.Evidence(label=(tgt if len(jobs) > 1 else None))
                     root = runner.run(selected, iters, ev, mode=mode, site_id=site_id)
                     roots.append((tgt, root))
                     if self.runner._stop:
