@@ -211,8 +211,8 @@ def _print_summary(ev, args, no_color, elapsed):
         if d["v"] == "BLOCKED":
             vtext = d["verdicts"].get("BLOCKED", "") or ""
             otext = d["outputs"].get("BLOCKED", "") or ""
-            if "ENDPOINT" in vtext:
-                detail = "endpoint block (host patch/ACL, not network)"
+            if "REJECTION RESPONSE" in vtext:
+                detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
                 detail = "rate-limited/shaped (boundary policed the flood)"
         cells = [str(i), f"{icon} {d['v']}", d["name"], cat, detail]
