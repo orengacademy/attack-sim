@@ -149,8 +149,16 @@ class HarnessGUI:
         # column (not the full window), so packing long hints onto the same
         # row as a field used to clip them off the edge.
         ttk.Label(f, text="Target IP / host").grid(row=0, column=0, sticky="w", **pad)
-        self.target = ttk.Entry(f, width=20)
-        self.target.grid(row=0, column=1, sticky="w", **pad)
+        tgf = ttk.Frame(f); tgf.grid(row=0, column=1, sticky="w", **pad)
+        self.target = ttk.Entry(tgf, width=16)
+        self.target.pack(side="left")
+        # Optional 2nd target so one scan hits A->B (kvdc) AND A->C (cloud) — the
+        # 2nd target uses ITS OWN remembered cloud/creds (from .target_memory.json),
+        # not the on-screen fields (those apply to target 1).
+        ttk.Label(tgf, text=" + ").pack(side="left")
+        self.target2 = ttk.Entry(tgf, width=16)
+        self.target2.pack(side="left")
+        ttk.Label(tgf, text=" (2nd: own saved cfg)", style="Muted.TLabel").pack(side="left")
         # recall the last-used source/cloud options for a target when you leave the
         # field or press Enter (saved per target on RUN) — so re-running against the
         # next host doesn't need re-typing.
@@ -635,6 +643,59 @@ class HarnessGUI:
             if v:
                 self.runner.ctx.creds[key] = v
 
+    def _cfg_from_screen(self):
+        """Snapshot the on-screen creds/source/cloud as plain data (MAIN thread) so
+        the worker can apply it without touching Tk widgets. For target 1."""
+        creds = {}
+        for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
+                           ("dc_pass", self.pass_entry),
+                           ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry)):
+            v = entry.get().strip()
+            if v:
+                creds[key] = v
+        cloud_map = None
+        if self.cloud_var.get():
+            try:
+                cloud_map = {445: int((self.smb_port.get() or "4445").strip()),
+                             135: int((self.rpc_port.get() or "1135").strip()),
+                             22: int((self.ssh_port.get() or "2222").strip())}
+            except ValueError:
+                cloud_map = {445: 4445, 135: 1135, 22: 2222}
+        return {"creds": creds, "source": self.source_entry.get().strip() or None,
+                "cloud_map": cloud_map}
+
+    def _cfg_recalled(self, target):
+        """Build a target's config from its remembered .target_memory.json entry
+        (for the 2nd target, which uses its OWN saved cloud/creds, not the screen)."""
+        try:
+            rec = core.recall_target(target) or {}
+        except Exception:
+            rec = {}
+        creds = {k: rec[k] for k in ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")
+                 if rec.get(k)}
+        cloud_map = None
+        if rec.get("cloud"):
+            cloud_map = {445: int(rec.get("smb_port") or 4445),
+                         135: int(rec.get("rpc_port") or 1135),
+                         22: int(rec.get("ssh_port") or 2222)}
+        return {"creds": creds, "source": rec.get("source") or None, "cloud_map": cloud_map}
+
+    @staticmethod
+    def _apply_cfg(runner, target, cfg):
+        """Apply a plain config dict to a runner (worker thread; no Tk access)."""
+        try:
+            from modules import _portpatch
+            if cfg.get("cloud_map"):
+                _portpatch.CUSTOM_PORT_TARGETS[target] = cfg["cloud_map"]
+            else:
+                _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
+        except Exception:
+            pass
+        for k, v in cfg.get("creds", {}).items():
+            runner.ctx.creds[k] = v
+        if cfg.get("source"):
+            runner.ctx.source_ip = cfg["source"]
+
     def _apply_cloud_ports(self, target_ip):
         """When 'Cloud target' is ticked, register the target's NAT'd SMB/RPC
         ports so the impacket modules reach the forwarded alternates (same
@@ -862,8 +923,14 @@ class HarnessGUI:
                         category=meta.get("category", ""))
                 elif kind == "progress":
                     self.progress["maximum"] = p[1]; self.progress["value"] = p[0]
+                elif kind == "new_target":
+                    ti, n, tgt = p
+                    if n > 1:
+                        self._log(f"\n{'═' * 40}\n  TARGET {ti}/{n}:  {tgt}\n{'═' * 40}")
                 elif kind == "done":
                     self._finish(p)
+                elif kind == "done_multi":
+                    self._finish_multi(p)
                 elif kind == "error":
                     messagebox.showerror("Error", p); self._finish(None)
         except queue.Empty:
@@ -880,12 +947,22 @@ class HarnessGUI:
         target_ip = self.target.get().strip()
         if not target_ip:
             messagebox.showwarning("No target", "Enter the target IP."); return
-        ok, why = core.validate_target(target_ip)
-        if not ok:
-            messagebox.showwarning("Invalid target", f"{target_ip}: {why}"); return
-        allowed, areason = core.target_allowed(target_ip)
-        if not allowed:
-            messagebox.showerror("Target not allowed", areason); return
+        # Build the target list: target 1 (uses the on-screen config) + an optional
+        # target 2 (uses its OWN remembered config) so one scan hits A->B and A->C.
+        jobs = []   # (target, cfg)
+        for tnum, (entry, from_screen) in enumerate(((self.target, True), (self.target2, False)), 1):
+            tip = entry.get().strip()
+            if not tip:
+                if tnum == 1:
+                    messagebox.showwarning("No target", "Enter the target IP."); return
+                continue
+            ok, why = core.validate_target(tip)
+            if not ok:
+                messagebox.showwarning("Invalid target", f"{tip}: {why}"); return
+            allowed, areason = core.target_allowed(tip)
+            if not allowed:
+                messagebox.showerror("Target not allowed", f"{tip}: {areason}"); return
+            jobs.append((tip, self._cfg_from_screen() if from_screen else self._cfg_recalled(tip)))
         try:
             iters = max(1, int(self.iterations.get()))
         except (ValueError, TypeError):
@@ -895,10 +972,9 @@ class HarnessGUI:
         except (ValueError, TypeError):
             workers = 1
         port_overrides = self._collect_port_overrides()
-        self._apply_cloud_ports(target_ip)
-        self._run_target_ip = target_ip   # cleared from _portpatch at run-end
-        self._save_target(target_ip)   # remember source/cloud for next run vs this target
+        self._save_target(jobs[0][0])   # remember target 1's on-screen cfg
         self._run_mode = self.mode_var.get()
+        self._run_targets = [t for t, _c in jobs]   # cleared from _portpatch at run-end
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
         self.progress["value"] = 0
@@ -908,27 +984,12 @@ class HarnessGUI:
         self.log.delete("1.0", "end")
         self._status_row_keys.clear()
         self._output_marks.clear()
-        self._log("Starting run...")
-
-        self.runner = core.Runner(
-            target_ip, None,
-            on_log=lambda m: self.q.put(("log", m)),
-            on_progress=lambda c, t: self.q.put(("progress", (c, t))),
-            on_output=lambda aid, name, it, raw: self.q.put(("output", (aid, name, it, raw))),
-            on_status=lambda aid, name, it, b, v: self.q.put(("status", (aid, name, it, b, v))))
-        self.runner.concurrency = workers
-        if port_overrides:
-            self.runner.ctx.port_overrides = port_overrides
-        self.runner.ctx.allow_active = bool(self.active_var.get())
-        self.runner.ctx.debug = bool(self.debug_var.get())   # verbose tool trace + full raw output
-        self._apply_target_creds()   # per-target Domain/User/Pass override credentials.env
-        src = self.source_entry.get().strip()
-        if src:
-            self.runner.ctx.source_ip = src
-        if self.active_var.get():
+        self._log(f"Starting run... ({len(jobs)} target(s))")
+        active = bool(self.active_var.get()); debug = bool(self.debug_var.get())
+        if active:
             self._log("ACTIVE establishment ENABLED — live modules may build real "
                       "tunnels/pivots/exfil to your configured infra.")
-        if self.debug_var.get():
+        if debug:
             self._log("DEBUG mode ON — tools run verbose (curl -v / ldapsearch -v / "
                       "hydra -d / impacket -debug); full raw output + timing in evidence.")
 
@@ -936,10 +997,29 @@ class HarnessGUI:
         site_id = self.site_entry.get().strip() or None
 
         def work():
+            roots = []
             try:
-                ev = core.Evidence()
-                root = self.runner.run(selected, iters, ev, mode=mode, site_id=site_id)
-                self.q.put(("done", root))
+                for ti, (tgt, cfg) in enumerate(jobs, 1):
+                    self.q.put(("new_target", (ti, len(jobs), tgt)))
+                    runner = core.Runner(
+                        tgt, None,
+                        on_log=lambda m: self.q.put(("log", m)),
+                        on_progress=lambda c, t: self.q.put(("progress", (c, t))),
+                        on_output=lambda aid, name, it, raw: self.q.put(("output", (aid, name, it, raw))),
+                        on_status=lambda aid, name, it, b, v: self.q.put(("status", (aid, name, it, b, v))))
+                    self.runner = runner
+                    runner.concurrency = workers
+                    if port_overrides:
+                        runner.ctx.port_overrides = port_overrides
+                    runner.ctx.allow_active = active
+                    runner.ctx.debug = debug
+                    self._apply_cfg(runner, tgt, cfg)
+                    ev = core.Evidence()
+                    root = runner.run(selected, iters, ev, mode=mode, site_id=site_id)
+                    roots.append((tgt, root))
+                    if self.runner._stop:
+                        break
+                self.q.put(("done_multi", roots))
             except Exception as e:
                 self.q.put(("error", str(e)))
 
@@ -949,23 +1029,37 @@ class HarnessGUI:
         if self.runner:
             self.runner.stop(); self._log("Stop requested — finishing current step...")
 
+    def _clear_cloud_remaps(self):
+        # Clear this run's cloud SMB/RPC remaps so a long-lived GUI session can't
+        # carry a stale port redirect into a later run against the same IP.
+        try:
+            from modules import _portpatch
+            for tip in getattr(self, "_run_targets", []) or []:
+                _portpatch.CUSTOM_PORT_TARGETS.pop(tip, None)
+        except Exception:
+            pass
+
     def _finish(self, root):
         self.run_btn["state"] = "normal"; self.stop_btn["state"] = "disabled"
-        # Clear this run's cloud SMB/RPC remap so a long-lived GUI session can't
-        # carry a stale port redirect into a later run against the same IP (the
-        # cloud-off toggle also clears it; this covers the run-end case too).
-        tip = getattr(self, "_run_target_ip", None)
-        if tip:
-            try:
-                from modules import _portpatch
-                _portpatch.CUSTOM_PORT_TARGETS.pop(tip, None)
-            except Exception:
-                pass
+        self._clear_cloud_remaps()
         if root:
             self._log(f"\nDONE. Evidence: {root}")
             self._log("  summary.json / summary.csv / report.txt (+ ATT&CK coverage) "
                       "+ per-attack raw logs")
             messagebox.showinfo("Complete", f"Evidence saved to:\n{root}")
+
+    def _finish_multi(self, roots):
+        self.run_btn["state"] = "normal"; self.stop_btn["state"] = "disabled"
+        self._clear_cloud_remaps()
+        if not roots:
+            return
+        self._log("\nDONE. Evidence:")
+        for tgt, root in roots:
+            self._log(f"  {tgt}  →  {root}")
+        self._log("  summary.json / summary.csv / report.txt (+ ATT&CK coverage) "
+                  "+ per-attack raw logs")
+        lines = "\n".join(f"{tgt}:\n  {root}" for tgt, root in roots)
+        messagebox.showinfo("Complete", f"Scanned {len(roots)} target(s):\n\n{lines}")
 
 
 def main():

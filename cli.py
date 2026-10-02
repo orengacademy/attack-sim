@@ -119,9 +119,10 @@ def _cell(text, w, color, no_color):
     return _c(text, color, no_color) if color else text
 
 
-def _print_summary(ev, args, no_color, elapsed):
+def _print_summary(ev, args, no_color, elapsed, target=None):
     """Modern end-of-run summary from the evidence records: a verdict-distribution
     strip plus one aligned, colour-coded TABLE of every module's result."""
+    target = target or args.target
     recs = getattr(ev, "records", []) or []
     # aggregate per module across iterations (most-significant verdict wins)
     by_mod = {}
@@ -156,7 +157,7 @@ def _print_summary(ev, args, no_color, elapsed):
     print()
     print(_c("┏" + "━" * W + "┓", ACC, no_color))
     _hline(f"  CONTROL VALIDATION — RESULTS" + (f"   ·   SITE {site}" if site else ""))
-    _hline(f"  {args.target}   ·   {args.mode}   ·   {n} module(s) × {args.iterations} iter"
+    _hline(f"  {target}   ·   {args.mode}   ·   {n} module(s) × {args.iterations} iter"
            f"   ·   {elapsed:.0f}s")
     _hline(f"  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
            + ("   ·   DEBUG" if getattr(args, "debug", False) else ""))
@@ -246,7 +247,9 @@ def _parse_ports(spec):
 def main():
     ap = argparse.ArgumentParser(description="Headless control-validation harness runner.")
     ap.add_argument("-t", "--target", default="127.0.0.1",
-                    help="target IP/host (default: 127.0.0.1 — the local lab)")
+                    help="target IP/host; comma-separate for several in one scan, e.g. "
+                         "the on-prem DC + the cloud DC: --target 192.168.122.209,159.223.35.108 "
+                         "(each uses its own remembered cloud/creds). Default: 127.0.0.1")
     ap.add_argument("-i", "--iterations", type=int, default=1)
     ap.add_argument("-w", "--workers", type=int, default=core.RECOMMENDED_WORKERS)
     ap.add_argument("--mode", choices=["blackbox", "whitebox"], default="blackbox")
@@ -356,143 +359,161 @@ def main():
     # evidence run.log) and re-render each result as a tidy numbered line via
     # on_status. The banner / preflight / recon / health setup output is kept.
     _cats = {m.META.get("category", "") for m in selected}
-    _total = len(selected) * max(1, args.iterations)
-    _prog = {"n": 0}
+    _iters = max(1, args.iterations)
 
-    def _on_log(m):
-        s = str(m)
-        if args.debug:                      # debug: keep the full engine stream
+    def _run_one_target(target):
+        """Prepare + run the selected modules against ONE target, applying that
+        target's own recalled source/cloud/creds/site. Returns (root, exit_code).
+        Called once per --target so a single scan can hit A->B (kvdc, direct
+        ports/creds) AND A->C (cloud DO, NAT'd ports/creds) — each target pulls
+        its OWN remembered config, so the two don't clash."""
+        _total = len(selected) * _iters
+        _prog = {"n": 0}
+
+        def _on_log(m):
+            s = str(m)
+            if args.debug:                  # debug: keep the full engine stream
+                print(_colorize(s, args.no_color)); return
+            st = s.strip()
+            if st.lower().startswith(("target:", "baseline:")):
+                return  # per-module verdict line — re-rendered by on_status
+            for c in _cats:                 # "  [Category] Name" now-running line
+                if c and st.startswith(f"[{c}]"):
+                    return
             print(_colorize(s, args.no_color))
-            return
-        st = s.strip()
-        if st.lower().startswith(("target:", "baseline:")):
-            return  # per-module verdict line — re-rendered by on_status
-        for c in _cats:                     # "  [Category] Name" now-running line
-            if c and st.startswith(f"[{c}]"):
+
+        def _on_output(aid, name, it, raw):
+            if not args.debug:
                 return
-        print(_colorize(s, args.no_color))
+            print(_c(f"\n──── {name} — raw output ────", DIM, args.no_color))
+            print(str(raw).rstrip())
 
-    def _on_output(aid, name, it, raw):
-        # debug: stream each module's FULL raw output live (command + stdout +
-        # stderr + the tool's own -v/-debug trace), like the GUI's output panel.
-        if not args.debug:
-            return
-        print(_c(f"\n──── {name} — raw output ────", DIM, args.no_color))
-        print(str(raw).rstrip())
+        def _on_status(aid, name, it, b, v):
+            _prog["n"] += 1
+            col, icon = _VERDICT_STYLE.get(b, ("", "•"))
+            idx = _c(f"[{_prog['n']:>2}/{_total}]", DIM, args.no_color)
+            verd = _c(f"{icon} {b:<13}", col, args.no_color)
+            print(f"  {idx} {verd} {name}")
 
-    def _on_status(aid, name, it, b, v):
-        _prog["n"] += 1
-        col, icon = _VERDICT_STYLE.get(b, ("", "•"))
-        idx = _c(f"[{_prog['n']:>2}/{_total}]", DIM, args.no_color)
-        # pad the PLAIN label to a fixed width, THEN colour it, so ANSI codes
-        # don't throw the column alignment off.
-        verd = _c(f"{icon} {b:<13}", col, args.no_color)
-        print(f"  {idx} {verd} {name}")
+        runner = core.Runner(target, None, on_log=_on_log, on_output=_on_output,
+                             on_status=_on_status)
+        runner.concurrency = max(1, args.workers)
+        runner.ctx.debug = bool(args.debug)
+        overrides = _parse_ports(args.port)
+        if overrides:
+            runner.ctx.port_overrides = overrides
+        runner.ctx.allow_active = bool(args.active)
 
-    runner = core.Runner(
-        args.target, None,
-        on_log=_on_log,
-        on_output=_on_output,
-        on_status=_on_status)
-    runner.concurrency = max(1, args.workers)
-    runner.ctx.debug = bool(args.debug)
-    overrides = _parse_ports(args.port)
-    if overrides:
-        runner.ctx.port_overrides = overrides
-    runner.ctx.allow_active = bool(args.active)
+        # Per-target memory: recall this target's source/cloud options when the
+        # flag was omitted, then persist whatever we end up using.
+        mem = core.recall_target(target)
+        source = args.source if args.source is not None else mem.get("source")
+        cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
+        smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
+        rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
+        ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 2222
+        if source:
+            runner.ctx.source_ip = source
+            if args.source is None:
+                print(f"[recall] source {source} (remembered for {target})")
+        if cloud:
+            try:
+                from modules import _portpatch
+                _portpatch.CUSTOM_PORT_TARGETS[target] = {445: int(smb), 135: int(rpc), 22: int(ssh_p_port)}
+                tag = "" if args.cloud is not None else " (recalled)"
+                print(f"[cloud{tag}] {target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh_p_port}")
+            except Exception as e:
+                print(f"[!] could not enable cloud ports: {e}", file=sys.stderr)
+        else:
+            # ensure a stale cloud remap for this IP (from an earlier target in the
+            # same process) can't leak in — direct target uses real ports.
+            try:
+                from modules import _portpatch
+                _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
+            except Exception:
+                pass
 
-    # Per-target memory: recall the last source/cloud options for this target when
-    # the flag was omitted, then persist whatever we end up using.
-    mem = core.recall_target(args.target)
-    source = args.source if args.source is not None else mem.get("source")
-    cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
-    smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
-    rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
-    ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 2222
-    if source:
-        runner.ctx.source_ip = source
-        if args.source is None:
-            print(f"[recall] source {source} (remembered for {args.target})")
-    if cloud:
+        # Per-target CREDENTIALS (DC + separate SSH) — flag > remembered.
+        dom = args.domain or mem.get("domain")
+        usr = args.dc_user or mem.get("dc_user")
+        pw = args.dc_pass if args.dc_pass is not None else mem.get("dc_pass")
+        if dom:
+            runner.ctx.creds["domain"] = dom
+        if usr:
+            runner.ctx.creds["dc_user"] = usr
+        if pw is not None:
+            runner.ctx.creds["dc_pass"] = pw
+        if (dom or usr or pw is not None) and not (args.domain or args.dc_user or args.dc_pass is not None):
+            print(f"[recall] creds for {target}: {runner.ctx.creds.get('domain')}/"
+                  f"{runner.ctx.creds.get('dc_user')} (remembered)")
+        ssh_u = args.ssh_user or mem.get("ssh_user")
+        ssh_p = args.ssh_pass if args.ssh_pass is not None else mem.get("ssh_pass")
+        if ssh_u:
+            runner.ctx.creds["ssh_user"] = ssh_u
+        if ssh_p is not None:
+            runner.ctx.creds["ssh_pass"] = ssh_p
+        site_id = args.site_id or mem.get("site_id") or ""
+        if site_id and not args.site_id:
+            print(f"[recall] site {site_id} (remembered for {target})")
+        # remember creds/site only when explicitly given this run.
+        cred_fields = {}
+        if args.domain is not None: cred_fields["domain"] = args.domain
+        if args.dc_user is not None: cred_fields["dc_user"] = args.dc_user
+        if args.dc_pass is not None: cred_fields["dc_pass"] = args.dc_pass
+        if args.ssh_user is not None: cred_fields["ssh_user"] = args.ssh_user
+        if args.ssh_pass is not None: cred_fields["ssh_pass"] = args.ssh_pass
+        if args.site_id is not None: cred_fields["site_id"] = args.site_id
+        core.remember_target(target, source=source or None, cloud=bool(cloud),
+                             smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
+                             ssh_port=(ssh_p_port if cloud else None), **cred_fields)
+
+        t0 = time.time()
         try:
-            from modules import _portpatch
-            _portpatch.CUSTOM_PORT_TARGETS[args.target] = {445: int(smb), 135: int(rpc), 22: int(ssh_p_port)}
-            tag = "" if args.cloud is not None else " (recalled)"
-            print(f"[cloud{tag}] {args.target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh_p_port}")
+            ev = core.Evidence(base=args.evidence_dir)
+            root = runner.run(selected, _iters, ev, skip_unready=not args.force,
+                              recon=not args.no_recon, mode=args.mode, site_id=site_id or None)
+        except ValueError as e:               # invalid target / allowlist refusal
+            print(f"[!] {e}", file=sys.stderr)
+            return None, 2
+        except KeyboardInterrupt:
+            print("\n[!] interrupted", file=sys.stderr)
+            return None, 130
+        try:
+            _print_summary(ev, args, args.no_color, time.time() - t0, target=target)
         except Exception as e:
-            print(f"[!] could not enable cloud ports: {e}", file=sys.stderr)
+            print(f"[!] summary error (non-fatal): {e}", file=sys.stderr)
+        report_path = os.path.join(root, "report.txt")
+        if args.full_report:
+            try:
+                with open(report_path) as f:
+                    print("\n" + f.read())
+            except Exception:
+                pass
+        else:
+            print(_c(f"\n  Full ATT&CK/CWE/CVE report:  {report_path}"
+                     "   (add --full-report to print it here)", DIM, args.no_color))
+        print(_c(f"  Evidence:                    {root}", ACC, args.no_color))
+        return root, 0
 
-    # Per-target CREDENTIALS. One global HARNESS_DC_* / credentials.env can't serve
-    # both a Linux SSH lab (labadmin) and a Windows DC (Administrator) — so a flag
-    # (or the value remembered for THIS target) overrides them per target.
-    dom = args.domain or mem.get("domain")
-    usr = args.dc_user or mem.get("dc_user")
-    pw = args.dc_pass if args.dc_pass is not None else mem.get("dc_pass")
-    if dom:
-        runner.ctx.creds["domain"] = dom
-    if usr:
-        runner.ctx.creds["dc_user"] = usr
-    if pw is not None:
-        runner.ctx.creds["dc_pass"] = pw
-    if (dom or usr or pw is not None) and not (args.domain or args.dc_user or args.dc_pass is not None):
-        print(f"[recall] creds for {args.target}: {runner.ctx.creds.get('domain')}/"
-              f"{runner.ctx.creds.get('dc_user')} (remembered)")
-    # SSH creds, separate from the DC creds (dual-role target: SSH host + DC).
-    ssh_u = args.ssh_user or mem.get("ssh_user")
-    ssh_p = args.ssh_pass if args.ssh_pass is not None else mem.get("ssh_pass")
-    if ssh_u:
-        runner.ctx.creds["ssh_user"] = ssh_u
-    if ssh_p is not None:
-        runner.ctx.creds["ssh_pass"] = ssh_p
-    # Site ID: flag > remembered > env. Recorded in evidence + echoed in headers.
-    site_id = args.site_id or mem.get("site_id") or ""
-    if site_id and not args.site_id:
-        print(f"[recall] site {site_id} (remembered for {args.target})")
-    # remember creds/site only when explicitly given this run (don't stamp the
-    # global default onto every target).
-    cred_fields = {}
-    if args.domain is not None: cred_fields["domain"] = args.domain
-    if args.dc_user is not None: cred_fields["dc_user"] = args.dc_user
-    if args.dc_pass is not None: cred_fields["dc_pass"] = args.dc_pass
-    if args.ssh_user is not None: cred_fields["ssh_user"] = args.ssh_user
-    if args.ssh_pass is not None: cred_fields["ssh_pass"] = args.ssh_pass
-    if args.site_id is not None: cred_fields["site_id"] = args.site_id
-    core.remember_target(args.target, source=source or None, cloud=bool(cloud),
-                         smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
-                         ssh_port=(ssh_p_port if cloud else None), **cred_fields)
-
-    t0 = time.time()
-    try:
-        ev = core.Evidence(base=args.evidence_dir)
-        root = runner.run(selected, max(1, args.iterations), ev,
-                          skip_unready=not args.force, recon=not args.no_recon,
-                          mode=args.mode, site_id=site_id or None)
-    except ValueError as e:               # invalid target / allowlist refusal
-        print(f"[!] {e}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        print("\n[!] interrupted", file=sys.stderr)
-        return 130
-
-    # modern per-module summary (from the evidence records)
-    try:
-        _print_summary(ev, args, args.no_color, time.time() - t0)
-    except Exception as e:
-        print(f"[!] summary error (non-fatal): {e}", file=sys.stderr)
-    # full ATT&CK/CWE/CVE coverage report: written to evidence always; echoed to
-    # the console only with --full-report (keeps the default output clean).
-    report_path = os.path.join(root, "report.txt")
-    if args.full_report:
-        try:
-            with open(report_path) as f:
-                print("\n" + f.read())
-        except Exception:
-            pass
-    else:
-        print(_c(f"\n  Full ATT&CK/CWE/CVE report:  {report_path}"
-                 "   (add --full-report to print it here)", DIM, args.no_color))
-    print(_c(f"  Evidence:                    {root}", ACC, args.no_color))
-    return 0
+    # One scan, one or more targets (comma-separated): e.g. the on-prem DC (B) and
+    # the cloud DC (C) in a single invocation. Each runs with its OWN recalled config.
+    targets = [t.strip() for t in (args.target or "").split(",") if t.strip()] or [args.target]
+    multi = len(targets) > 1
+    worst, roots = 0, []
+    for i, tgt in enumerate(targets, 1):
+        if multi:
+            print(_c(f"\n{'═' * 64}", ACC, args.no_color))
+            print(_c(f" TARGET {i}/{len(targets)}:  {tgt}", "\033[1m", args.no_color))
+            print(_c(f"{'═' * 64}", ACC, args.no_color))
+        root, rc = _run_one_target(tgt)
+        worst = max(worst, rc)
+        if root:
+            roots.append((tgt, root))
+    if multi:
+        print(_c(f"\n  Scanned {len(targets)} targets:", "\033[1m", args.no_color))
+        for tgt, root in roots:
+            print(_c(f"    {tgt}  →  {root}", ACC, args.no_color))
+    return worst
 
 
 if __name__ == "__main__":
