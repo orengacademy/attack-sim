@@ -37,3 +37,14 @@ fleet.json
 
 # Generated lab TLS cert for the https-lab container (never commit keys)
 deploy/nginx/certs/
+
+# Engagement log exports / screenshots dropped under devices/ (real IPs, threat
+# data) — operator evidence, never commit. The folder structure is fine; the
+# artifacts are not.
+devices/**/*.xlsx
+devices/**/*.xls
+devices/**/*.csv
+devices/**/*.jpeg
+devices/**/*.jpg
+devices/**/*.png
+devices/**/*.pdf

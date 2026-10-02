@@ -1600,6 +1600,14 @@ class Runner:
         # scored DETECTED (passed but alerted) vs a silent finding.
         self._detections = load_detections()
 
+        # Contamination guard state (see _flag_if_blacklisted): a "canary" port the
+        # source can reach at the start; if it later goes unreachable, the boundary
+        # has blacklisted/quarantined the source and subsequent BLOCKEDs are suspect.
+        import threading as _th
+        self._canary = None
+        self._blacklisted = False
+        self._bl_lock = _th.Lock()
+
         # ----- Target safety: validate + enforce allowlist BEFORE anything -----
         for label, ip in ([("target", self.target_ip)] +
                           ([("appliance", self.appliance_ip)] if self.dual else [])):
@@ -1710,6 +1718,20 @@ class Runner:
                 if unreach:
                     log("  not reachable (filtered/closed) — still running (filtered "
                         "port may be the control): " + ", ".join(unreach))
+                # pick a CANARY: a benign port that is OPEN now, so a later drop in
+                # its reachability means the SOURCE got blacklisted (not that an
+                # attack's own control fired). Prefer SSH/HTTP/HTTPS, else any open
+                # tcp, else ICMP-up.
+                opens = [(proto, port) for proto, port, st in rc["probes"]
+                         if proto == "tcp" and st == "open"]
+                pref = next((pp for p in (22, 80, 443, 8080, 21, 389) for pp in opens if pp[1] == p), None)
+                if pref or opens:
+                    self._canary = pref or opens[0]
+                elif any(proto == "icmp" and st == "up" for proto, _p, st in rc["probes"]):
+                    self._canary = ("icmp", None)
+                if self._canary:
+                    log(f"  canary (contamination guard): {self._canary[1] or 'icmp'}"
+                        f"/{self._canary[0]} reachable — a later drop flags a source blacklist.")
             except Exception as e:
                 log(f"[WARN] recon skipped (non-fatal): {e}")
 
@@ -1793,6 +1815,39 @@ class Runner:
                     break
                 self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
                                      recon_by_id, ev, log, bump)
+
+    def _canary_reachable(self):
+        """Is the canary port still reachable from the source? (quick probe)."""
+        if not self._canary:
+            return None
+        proto, port = self._canary
+        try:
+            if proto == "tcp":
+                return probe_tcp(self.target_ip, port, timeout=2, retries=0) == "open"
+            if proto == "icmp":
+                return probe_icmp(self.target_ip) == "up"
+        except Exception:
+            return None
+        return None
+
+    def _flag_if_blacklisted(self, verdict, log):
+        """Called on a BLOCKED verdict: confirm the source can still reach the
+        canary. If not, the boundary has BLACKLISTED/quarantined the source, so
+        this BLOCKED (and later ones) may be fallout, not a per-attack control.
+        Latches once and annotates the verdict so the operator isn't misled."""
+        with self._bl_lock:
+            if self._canary and not self._blacklisted and self._canary_reachable() is False:
+                self._blacklisted = True
+                log("[WARN] SOURCE APPEARS BLACKLISTED by the boundary — the canary "
+                    f"{self._canary[1] or 'icmp'}/{self._canary[0]} (reachable at start) "
+                    "is now unreachable. BLOCKED/filtered verdicts from here are SUSPECT "
+                    "(the ban, not per-attack controls). Standard fix: whitelist/exempt "
+                    "the tester source IP from IPS blacklisting for the test window, then "
+                    "re-run; or wait for the quarantine to expire.")
+            if self._blacklisted:
+                return verdict + "  [SUSPECT: source appears blacklisted — this BLOCKED " \
+                                 "may be the ban, not this attack's own control]"
+        return verdict
 
     def _process_module(self, m, it, skip_unready, ready_ids, pf_by_id,
                         recon_by_id, ev, log, bump):
@@ -1926,6 +1981,11 @@ class Runner:
                 b = "NO-RESULT"
                 verdict = f"no result — {hint}" if hint else "no result — review raw log"
             a = "-"
+            # contamination guard: a BLOCKED could be THIS attack's control OR the
+            # source having been blacklisted by an earlier attack. If the canary is
+            # now unreachable, flag the verdict as suspect (don't report a false win).
+            if b == "BLOCKED":
+                verdict = self._flag_if_blacklisted(verdict, log)
             log(f"     target: [{b}]  -> {verdict}")
 
         self.on_status(meta["id"], meta["name"], it, b, verdict)
