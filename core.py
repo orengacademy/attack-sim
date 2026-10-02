@@ -1832,18 +1832,22 @@ class Runner:
                            "transit (likely SD-WAN / segmentation)")
             elif blocked_out:
                 b = "BLOCKED"
-                # Distinguish WHERE the block came from (both are green, but the
-                # remediation owner differs): a tool-reported rejection while the
-                # attack port is OPEN means the ENDPOINT/host refused the exploit
-                # (a patch / host hardening / local ACL — e.g. a patched DC
-                # answering noPac with KDC_ERR_TGT_REVOKED), NOT the network
-                # boundary. Say so, so a reader doesn't miscredit a host patch to
-                # the SD-WAN.
+                # A tool-reported rejection while the attack port is OPEN is a
+                # REJECTION block (an explicit refusal — HTTP 4xx, RST, a KDC
+                # error — not a silent network drop). From the attacker side this
+                # could be an IN-PATH IPS/WAF (e.g. the SD-WAN's inline inspection
+                # returning 403) OR the endpoint itself (a patch / host hardening /
+                # local ACL, e.g. a patched DC answering noPac with
+                # KDC_ERR_TGT_REVOKED). We CANNOT tell which from here — only the
+                # appliance/host logs can — so we don't claim one over the other.
+                # (Contrast the port_filtered/timed_out branch above: a SILENT
+                # drop, which IS the segmentation/SD-WAN signature.)
                 if port_open:
-                    verdict = ("attack blocked by the ENDPOINT — the target service "
-                               "responded with a rejection while its port is open "
-                               "(host hardening / patch / local ACL, e.g. a patched "
-                               "DC), NOT a network / SD-WAN block")
+                    verdict = ("attack blocked by a REJECTION RESPONSE while the port "
+                               "is open (explicit refusal — HTTP 4xx / RST / protocol "
+                               "error, not a silent drop) — an in-path IPS/WAF (e.g. "
+                               "the SD-WAN's inline inspection) OR host hardening/patch; "
+                               "which one needs the appliance/host logs to confirm")
                 else:
                     verdict = "attack blocked/unreachable (per tool output)"
             else:
