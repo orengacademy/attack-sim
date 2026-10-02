@@ -32,7 +32,7 @@ python3 cli.py --target <IP> --all --confirm-roe          # run ALL 48 modules (
 python3 cli.py --target <IP> --full-report --confirm-roe  # also echo report.txt (default: clean table only)
 python3 cli.py --target <IP> --site-id ORG2026-70 --debug --confirm-roe  # tag the run + verbose tool trace/timing
 python3 fleet.py --dry-run --attack-sim                   # N-target matrix preview (no traffic); then --confirm-roe
-python3 preflight.py                 # tools + Python-package check (no network); --json for CI; --target <IP> adds recon
+python3 preflight.py                 # tools + Python-package check (no network); --json for CI; --target <IP[,IP...]> adds recon (multi-target)
 python3 bootstrap.py                 # Kali/Debian apt install (degrades on non-apt); --with-active adds tunnel/exec tools
 python3 -m pip install -r requirements.txt   # the in-process AD modules' Python libs (impacket/ldap3/ldapdomaindump/dnspython)
 python3 -m unittest discover -s tests   # test suite (pure stdlib, localhost-only, offline)

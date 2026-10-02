@@ -478,12 +478,12 @@ class HarnessGUI:
         # tree + BOTH scrollbars in a grid frame (packing the scrollbar after an
         # expanding tree squeezes it to zero width — the old "can't scroll" bug).
         tf = ttk.Frame(left); tf.pack(fill="both", expand=True, padx=2, pady=2)
-        cols = ("no", "time", "mode", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
+        cols = ("no", "time", "tgt", "mode", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
         self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
         self._sort_state = {}   # col -> last sort was descending
         # click any heading to sort by that column (toggles asc/desc)
         for c, t, w, a in (("no", "#", 34, "center"), ("time", "Time", 64, "center"),
-                           ("mode", "M", 30, "center"),
+                           ("tgt", "Target", 104, "w"), ("mode", "M", 30, "center"),
                            ("dir", "Dir", 38, "center"), ("cat", "Category", 118, "w"),
                            ("attack", "Attack", 150, "w"), ("iter", "It", 26, "center"),
                            ("result", "Result", 96, "center"), ("mitre", "MITRE", 110, "w"),
@@ -762,23 +762,33 @@ class HarnessGUI:
             report = core.format_preflight_report(core.preflight(selected))
         except Exception as e:
             messagebox.showerror("Preflight failed", str(e)); return
-        # also probe the target's ports/services if a valid target is entered
-        tgt = self.target.get().strip()
+        # probe BOTH targets' ports/services (target 1 honours the on-screen Cloud
+        # tick; target 2 uses its own remembered cloud config), so preflight covers
+        # the whole multi-target scan.
         recon = ""
-        if tgt:
-            ok, why = core.validate_target(tgt)
-            if ok:
-                # honour the Cloud tick so recon probes the NAT'd SMB/RPC alt ports
-                self._apply_cloud_ports(tgt)
-                try:
-                    recon = "\n\n" + core.format_reachability_report(
-                        core.reachability(tgt, selected))
-                except Exception as e:
-                    recon = f"\n\n[recon error: {e}]"
-            else:
-                recon = f"\n\n[recon skipped: invalid target — {why}]"
-        else:
+        tgts = [(self.target.get().strip(), True), (self.target2.get().strip(), False)]
+        tgts = [(t, scr) for t, scr in tgts if t]
+        if not tgts:
             recon = "\n\n[recon skipped: enter a Target to also probe its ports/services]"
+        for tgt, from_screen in tgts:
+            ok, why = core.validate_target(tgt)
+            if not ok:
+                recon += f"\n\n[recon skipped for {tgt}: invalid target — {why}]"
+                continue
+            try:
+                from modules import _portpatch
+                if from_screen:
+                    self._apply_cloud_ports(tgt)   # honour the on-screen Cloud tick
+                else:
+                    cfg = self._cfg_recalled(tgt)  # 2nd target: its own saved cloud map
+                    if cfg.get("cloud_map"):
+                        _portpatch.CUSTOM_PORT_TARGETS[tgt] = cfg["cloud_map"]
+                    else:
+                        _portpatch.CUSTOM_PORT_TARGETS.pop(tgt, None)
+                recon += (f"\n\n───── recon: {tgt} ─────\n" if len(tgts) > 1 else "\n\n")
+                recon += core.format_reachability_report(core.reachability(tgt, selected))
+            except Exception as e:
+                recon += f"\n\n[recon error for {tgt}: {e}]"
 
         win = tk.Toplevel(self.root)
         win.title("Preflight + recon")
@@ -886,14 +896,15 @@ class HarnessGUI:
         self.log.insert("end", "\n".join(tail) + "\n")
         self.log.see("end")
 
-    def _add_status(self, aid, name, it, result, direction="", mitre="", cwe="", category=""):
+    def _add_status(self, aid, name, it, result, direction="", mitre="", cwe="",
+                    category="", target=""):
         m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         import time as _t
         ts = _t.strftime("%H:%M:%S")   # when this result landed (completion time)
         iid = self.status_tree.insert(
             "", "end",
-            values=(self._status_seq, ts, m, direction, category, name, it, result, mitre, cwe),
+            values=(self._status_seq, ts, target, m, direction, category, name, it, result, mitre, cwe),
             tags=(result,))
         self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
@@ -947,7 +958,8 @@ class HarnessGUI:
                 elif kind == "output":
                     aid, name, it, raw = p; self._show_output(aid, name, it, raw)
                 elif kind == "status":
-                    aid, name, it, result, _v = p
+                    aid, name, it, result, _v = p[:5]
+                    tgt = p[5] if len(p) > 5 else ""
                     mod = self.vars.get(aid, (None, None))[1]
                     meta = getattr(mod, "META", {}) if mod else {}
                     self._add_status(
@@ -955,7 +967,7 @@ class HarnessGUI:
                         direction=meta.get("direction", "a2b"),
                         mitre=", ".join(meta.get("mitre", [])),
                         cwe=", ".join(meta.get("cwe", [])),
-                        category=meta.get("category", ""))
+                        category=meta.get("category", ""), target=tgt)
                 elif kind == "progress":
                     self.progress["maximum"] = p[1]; self.progress["value"] = p[0]
                 elif kind == "new_target":
@@ -1041,7 +1053,7 @@ class HarnessGUI:
                         on_log=lambda m: self.q.put(("log", m)),
                         on_progress=lambda c, t: self.q.put(("progress", (c, t))),
                         on_output=lambda aid, name, it, raw: self.q.put(("output", (aid, name, it, raw))),
-                        on_status=lambda aid, name, it, b, v: self.q.put(("status", (aid, name, it, b, v))))
+                        on_status=lambda aid, name, it, b, v, _t=tgt: self.q.put(("status", (aid, name, it, b, v, _t))))
                     self.runner = runner
                     runner.concurrency = workers
                     if port_overrides:
