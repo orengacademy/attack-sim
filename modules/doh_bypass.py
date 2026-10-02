@@ -26,6 +26,10 @@ def run(target, ctx):
     # -S (alongside -s) re-enables error messages that silent mode otherwise
     # suppresses too — without it, ANY failure (timeout, TLS glitch, DNS
     # resolution hiccup) comes back as a blank NO-RESULT with zero clue why.
+    # --retry 2 --retry-connrefused --retry-delay 1: a ONE-OFF transient blip
+    # (DNS hiccup / momentary egress loss) self-heals instead of flipping this
+    # egress verdict run-to-run. A genuine boundary block still fails all tries.
     return ctx.run_cmd(
-        'curl -s -S -m10 -H "accept: application/dns-json" '
+        'curl -s -S -m10 --retry 2 --retry-connrefused --retry-delay 1 '
+        '-H "accept: application/dns-json" '
         '"https://cloudflare-dns.com/dns-query?name=google.com&type=A"', target)

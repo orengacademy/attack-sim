@@ -34,7 +34,14 @@ META = {
 def run(target, ctx):
     resolver = ctx.cfg("external_resolver", "8.8.8.8")
     out = [f"# external DNS egress test — {resolver}:53/udp (Family B)"]
-    egressed, detail = U.dns_query("example.com", resolver, ctx, timeout=4)
+    # UDP/53 has no handshake, so a single lost packet would falsely read as
+    # "blocked". Try up to 3 times — a one-off loss self-heals; a real block fails
+    # all — so the verdict is consistent run-to-run.
+    egressed, detail = False, "no response"
+    for _ in range(3):
+        egressed, detail = U.dns_query("example.com", resolver, ctx, timeout=4)
+        if egressed:
+            break
     out.append(f"query example.com @ {resolver} — {detail}")
     if egressed:
         out.append(f"EXTERNAL-DNS-OK — plaintext DNS to the external resolver {resolver} "
