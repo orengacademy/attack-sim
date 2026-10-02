@@ -179,6 +179,11 @@ harness/
 └── evidence/               # created at run time
 ```
 
+**Per-module reference:** every attack — what it tests, why, what it needs, and
+**how to block/prevent it** (the `control`/`fix` it validates) — is documented in
+**[docs/MODULES.md](docs/MODULES.md)**, auto-generated from each module's `META` +
+docstring (`python3 additional/gen_module_docs.py` to regenerate after a change).
+
 These last five target what an **SD-WAN itself** enforces (segmentation, App-ID,
 covert-channel/egress, DoS, and Kerberos exposure to the DC) — i.e. the A→B path
 through the SD-WAN — rather than app-layer/WAF controls that sit at the agency.
