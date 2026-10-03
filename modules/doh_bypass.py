@@ -6,6 +6,8 @@ META = {
     "id": "doh_bypass",
     "name": "DNS-over-HTTPS Bypass",
     "category": "Network Exploitation",
+    "order": 3,  # runs right after the Server Exploitation pair (apache_41773,
+                 # log4shell) and ahead of the run_last ICMP flood/SSH brute tail
     "test_type": "attack_sim",
     "family": "B",
     "control": "DNS filtering / egress control",

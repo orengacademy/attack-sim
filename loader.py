@@ -38,7 +38,11 @@ def discover():
                 print(f"[loader] {fn}: META missing id/name/category — skipped")
         else:
             print(f"[loader] {fn}: no META/run — skipped")
-    found.sort(key=lambda m: (m.META["category"], m.META["name"]))
+    # Optional META["order"] lets a module jump the default (category, name)
+    # alphabetical placement (e.g. putting Server Exploitation mid-batch, with
+    # DNS-over-HTTPS Bypass right after it, ahead of the run_last DoS/brute
+    # tail). Default 0 == untouched modules keep today's alphabetical order.
+    found.sort(key=lambda m: (m.META.get("order", 0), m.META["category"], m.META["name"]))
     return found
 
 

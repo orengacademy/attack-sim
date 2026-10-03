@@ -7,6 +7,8 @@ META = {
     "id": "apache_41773",
     "name": "Apache Path Traversal (CVE-2021-41773)",
     "category": "Server Exploitation",
+    "order": 1,  # mid-batch: Server Exploitation pair, right before DNS-over-HTTPS
+                 # Bypass, ahead of the run_last ICMP flood/SSH brute tail
     "test_type": "pentest",
     "control": "IPS signature / path normalization",
     "fix": "SD-WAN",

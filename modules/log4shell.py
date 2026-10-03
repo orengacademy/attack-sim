@@ -42,6 +42,8 @@ META = {
     "id": "log4shell",
     "name": "Log4Shell (CVE-2021-44228)",
     "category": "Server Exploitation",
+    "order": 2,  # mid-batch, right after apache_41773 and right before
+                 # DNS-over-HTTPS Bypass (see loader.py's sort key)
     "test_type": "pentest",
     "control": "IPS signature (JNDI pattern)",
     "fix": "SD-WAN",

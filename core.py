@@ -806,10 +806,16 @@ class Evidence:
             d = by.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
                                     "mitre": ", ".join(r.get("mitre", []) or []),
                                     "cwe": ", ".join(r.get("cwe", []) or []),
-                                    "dur": None, "vs": [], "verdicts": {}})
+                                    "dur": None, "vs": [], "verdicts": {}, "iters": []})
             br = r.get("baseline_result", "?")
             d["vs"].append(br)
             d["verdicts"][br] = r.get("verdict", "")
+            # one entry per iteration, in run order, so the report can show how
+            # the verdict varied run-to-run instead of collapsing straight to
+            # the single most-significant one (a later iteration landing in an
+            # ambiguous band, e.g. icmp_flood's loss delta, was otherwise invisible).
+            d["iters"].append({"n": r.get("iteration"), "v": br,
+                                "detail": r.get("verdict", "")})
             if r.get("duration_s") is not None:
                 d["dur"] = max(d["dur"] or 0.0, r["duration_s"])
         for d in by.values():
@@ -829,12 +835,23 @@ class Evidence:
         for i, d in enumerate(sorted(by.values(), key=lambda x: (
                 x["cat"], self._V_ORDER.index(x["v"]) if x["v"] in self._V_ORDER else 9, x["name"])), 1):
             vt = e(d["verdicts"].get(d["v"], ""))
+            # per-iteration pills (run order) — the aggregate Verdict column shows
+            # only the single most-significant iteration (_V_ORDER), which hid a
+            # later iteration landing in a different bucket (e.g. icmp_flood's
+            # loss-delta sometimes falling in the ambiguous 20-30% band on one
+            # run and not another). title="..." carries that iteration's own
+            # detail line on hover, no JS needed.
+            iter_pills = "".join(
+                f'<span class=ipill style="background:{color(it["v"])}" '
+                f'title="iteration {it["n"]}: {e(it["detail"])}">{it["n"]}&#58;{e(it["v"])}</span>'
+                for it in d["iters"])
             rows.append(
                 f'<tr><td class=num>{i}</td>'
                 f'<td><span class=pill style="background:{color(d["v"])}">{e(d["v"])}</span></td>'
                 f'<td>{e(d["name"])}</td><td class=dim>{e(d["cat"])}</td>'
                 f'<td class=dim>{e(d["mitre"])}</td><td class=dim>{e(d["cwe"])}</td>'
                 f'<td class=dim>{("%.1fs" % d["dur"]) if d["dur"] is not None else ""}</td>'
+                f'<td class=iters>{iter_pills}</td>'
                 f'<td class=verdict>{vt}</td></tr>')
         bars = []
         for v in self._V_ORDER:
@@ -855,6 +872,9 @@ th,td{{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d;vertical
 th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
 .num{{color:#6e7681;width:28px}} .dim{{color:#8b949e}} .verdict{{color:#8b949e;font-size:12px;max-width:380px}}
 .pill{{color:#fff;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}}
+.iters{{white-space:nowrap}}
+.ipill{{display:inline-block;color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;
+font-weight:600;white-space:nowrap;margin:1px 2px 1px 0;cursor:default}}
 .bar{{display:flex;align-items:center;gap:8px;margin:3px 0}} .lbl{{width:120px;font-weight:600}}
 .meter{{flex:0 0 220px;height:10px;background:#21262d;border-radius:5px;overflow:hidden}}
 .meter>span{{display:block;height:100%}} .cnt{{color:#8b949e}}
@@ -866,7 +886,7 @@ th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
 &middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
 {''.join(bars)}
 <table><thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th>
-<th>MITRE</th><th>CWE</th><th>Time</th><th>Detail</th></tr></thead>
+<th>MITRE</th><th>CWE</th><th>Time</th><th>Iterations</th><th>Detail</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 <div class=foot>&rarr; {findings} finding(s) got through &middot; {dist.get('DETECTED',0)} detected
 &middot; {dist.get('BLOCKED',0)} blocked</div>
