@@ -43,10 +43,22 @@ import time
 
 BASELINE_COUNT = 15        # normal-rate ICMP sample
 BASELINE_INTERVAL = "0.2"  # seconds between baseline pings (5 pps)
-FLOOD_COUNT = 50000        # high-rate packets to send
+# FLOOD_COUNT/FLOOD_SECONDS were 50000/12 (~10s of flood at 5000pps) — a short
+# sample over a real internet path is exposed to transient jitter, so the SAME
+# path can read e.g. 17% loss on one iteration and 26% on the next, straddling
+# the LOW_LOSS/RATE_LIMIT_DELTA gap below and landing NO-RESULT. Doubling the
+# sample (~20s of flood) narrows the per-run variance, but doesn't help when
+# (confirmed against a real lab target) the path's OWN steady-state flood-loss
+# just sits close to the LOW_LOSS line itself (e.g. 19%/23% across runs,
+# unrelated to the baseline) — that's a threshold placement problem, not a
+# sample-size one, which is why LOW_LOSS moved too (20 -> 25).
+FLOOD_COUNT = 100000       # high-rate packets to send
 FLOOD_INTERVAL_US = 200    # microseconds between flood packets (~5000 pps target)
-FLOOD_SECONDS = 12         # wall-clock cap on the flood leg
-LOW_LOSS = 20              # <= this %: that rate is "getting through"
+FLOOD_SECONDS = 25         # wall-clock cap on the flood leg (~5s margin over the
+                           # ~20s hping3 needs to actually send FLOOD_COUNT at this rate)
+LOW_LOSS = 25              # <= this %: that rate is "getting through" (was 20 — too
+                           # tight against a target whose own natural under-flood
+                           # loss hovers right on that line, see above)
 RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
 # RTT shaping is a SECONDARY signal and noisy: on a fast/local link, flooding a
 # target bumps its avg RTT from queueing on ITS OWN NIC/CPU — not the boundary.
