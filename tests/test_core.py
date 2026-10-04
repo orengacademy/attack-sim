@@ -488,5 +488,62 @@ class TestEvidenceMetaAndIndex(unittest.TestCase):
         self.assertIn(os.path.basename(ev.root), open(idx).read())
 
 
+class TestPortPolicy(unittest.TestCase):
+    """The boundary port policy (Polisi v1.3 default) must classify service ports
+    and module outcomes correctly, and a BLOCKED on a policy-DENIED port must be
+    labelled as expected segmentation, not an IPS result."""
+    def setUp(self):
+        self.pol = core.load_port_policy()
+
+    def test_status_allowed_denied_unlisted(self):
+        self.assertEqual(core.port_policy_status("tcp", 22, self.pol), "allowed")
+        self.assertEqual(core.port_policy_status("tcp", 445, self.pol), "denied")
+        self.assertEqual(core.port_policy_status("tcp", 3389, self.pol), "unlisted")
+        self.assertEqual(core.port_policy_status("udp", 443, self.pol), "allowed")  # VC UDP
+        self.assertEqual(core.port_policy_status("udp", 161, self.pol), "unlisted")
+
+    def test_module_outcomes(self):
+        allow = {"id": "a", "ports": [("tcp", 80)]}
+        block = {"id": "b", "ports": [("tcp", 445)]}
+        egress = {"id": "e", "ports": []}
+        partial = {"id": "p", "ports": [("tcp", 389), ("tcp", 445)]}  # one allowed
+        self.assertEqual(core.module_policy(allow, self.pol)["outcome"], "allowed")
+        self.assertEqual(core.module_policy(block, self.pol)["outcome"], "blocked")
+        self.assertEqual(core.module_policy(egress, self.pol)["outcome"], "egress")
+        self.assertEqual(core.module_policy(partial, self.pol)["outcome"], "allowed")
+
+    def test_override_file(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "port_policy.json")
+        with open(p, "w") as f:
+            f.write('{"name":"Custom","allow":{"tcp":[9999]},"deny":{"tcp":[22]}}')
+        old = os.environ.get("HARNESS_PORT_POLICY")
+        os.environ["HARNESS_PORT_POLICY"] = p
+        try:
+            pol = core.load_port_policy()
+            self.assertEqual(pol["name"], "Custom")
+            self.assertEqual(core.port_policy_status("tcp", 22, pol), "denied")
+            self.assertEqual(core.port_policy_status("tcp", 9999, pol), "allowed")
+        finally:
+            if old is None:
+                del os.environ["HARNESS_PORT_POLICY"]
+            else:
+                os.environ["HARNESS_PORT_POLICY"] = old
+
+    def test_blocked_on_denied_port_is_labelled_segmentation(self):
+        m = types.SimpleNamespace()
+        m.META = {"id": "smb", "name": "smb", "category": "Net", "requires": [],
+                  "ports": [("tcp", 445)], "mitre": ["T1021"], "tactic": "LM",
+                  "success_regex": r"WIN", "blocked_regex": r"timed out|No route"}
+        m.run = lambda t, c: "[TIMEOUT] no response"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=False)
+        r = ev.records[0]
+        self.assertEqual(r["baseline_result"], "BLOCKED")
+        self.assertIn("denied by", r["verdict"])
+        self.assertIn("SEGMENTATION", r["verdict"])
+        self.assertEqual(ev.meta["port_policy"]["blocked_by_policy"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

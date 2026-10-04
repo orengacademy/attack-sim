@@ -172,6 +172,7 @@ Copy the `*.example` and fill in; env vars override the files:
 | `config.json` | `HARNESS_CFG_<KEY>` | Destinations the USS modules aim at (your VPS/domain/DoH/canary/pivot). Unset → the module `[SKIP]`s. **This is how "no live infra hardcoded" is enforced — keep it that way.** |
 | `allowlist.txt` | `HARNESS_ALLOWLIST` | Opt-in hard target allowlist. Unconfigured → any validated target allowed. |
 | `detections.json` | `HARNESS_DETECTIONS` | Blue-team confirmations that drive the DETECTED verdict. |
+| `port_policy.json` | `HARNESS_PORT_POLICY` | Boundary allow-list (SD-WAN/firewall). Default built-in = **Polisi Standard Security v1.3**. Checked pre-scan: a BLOCKED/NO-SERVICE on a policy-**denied** service port is labelled *expected segmentation* (not an IPS/WAF result). `port_policy.json.example` committed. |
 | `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`/`ssh_port`, per-target creds `domain`/`dc_user`/`dc_pass`, **separate `ssh_user`/`ssh_pass`**, and `site_id`. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted (the GUI also resumes the last-used target + its saved values on launch). |
 | `fleet.json` | — | N-target fleet for `fleet.py` (`targets`/`sources`/`runs`). |
 | `requirements.txt` | — | Committed; Python libs for the in-process AD modules (`pip install -r`). Engine itself needs none. |

@@ -13,6 +13,7 @@ credentials.env
 allowlist.txt
 config.json
 detections.json
+port_policy.json
 .env
 
 # OS / editor
