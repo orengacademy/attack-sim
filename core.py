@@ -572,7 +572,7 @@ class Evidence:
         # output string straight through is correct — don't hand-escape it,
         # that would double-escape and corrupt the file.
         OUTPUT_CELL_LIMIT = 4000  # Excel caps a cell at 32,767 chars; stay well under it
-        cols = ["iteration", "mode", "test_type", "family", "direction",
+        cols = ["iteration", "test_type", "family", "direction",
                 "category", "attack", "ports", "tactic", "mitre", "cwe",
                 "control_tested", "fix_location", "baseline_result",
                 "appliance_result", "passed", "verdict", "output",
@@ -618,7 +618,7 @@ class Evidence:
             s[bucket] += 1
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
-                 f"  Run: {self.ts}   Mode: {self.meta.get('mode', 'blackbox').upper()}",
+                 f"  Run: {self.ts}",
                  "=" * 64,
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
@@ -891,7 +891,7 @@ th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
 </style></head><body>
 <h1>Control Validation Harness — Results</h1>
 <div class=meta>{('SITE ' + e(site) + ' &middot; ') if site else ''}target <code>{e(tgt)}</code>
-&middot; mode {e(m.get('mode',''))} &middot; run {e(m.get('run',''))}
+&middot; run {e(m.get('run',''))}
 &middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
 {''.join(bars)}
 <table><thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th>
