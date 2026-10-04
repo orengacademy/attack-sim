@@ -4,7 +4,7 @@
 
 **Reading the verdict:** SUCCESS = the attack reached/worked (a finding — the control did NOT stop it); BLOCKED = a control stopped it (green); DETECTED = it passed but the SOC/appliance alerted; NO-SERVICE = the port/service wasn't there; SKIPPED = needs config/creds it didn't have; NO-RESULT = inconclusive (read the raw log).
 
-**50 modules** across 7 categories. `control` = how to prevent it; `fix` = who owns the fix (SD-WAN / Server / Agency).
+**51 modules** across 7 categories. `control` = how to prevent it; `fix` = who owns the fix (SD-WAN / Server / Agency).
 
 ## Contents
 - **AD Exploitation** (9)
@@ -12,7 +12,7 @@
 - **Egress / C2** (7)
 - **Exfiltration** (3)
 - **Network Exploitation** (10)
-- **Segmentation** (7)
+- **Segmentation** (8)
 - **Server Exploitation** (4)
 
 
@@ -360,6 +360,14 @@
 - **Control it validates (how to PREVENT / BLOCK):** IPv6 ACLs mirror IPv4 (deny by default on both stacks)
 - **Fix (owner / remediation):** SD-WAN
 - **Needs to run:** nothing (just a reachable target)
+
+### NMAP Port-Policy Violation Scan (IPS-bypass)  `nmap_policy_scan`  _[added]_
+
+- **Scope:** attack_sim/D · direction a2b · ports — (no target port; egress / ICMP) · MITRE T1046, T1595.001 · CWE-923
+- **What it tests / why:** NMAP Port-Policy Violation Scan (IPS-bypass).
+- **Control it validates (how to PREVENT / BLOCK):** Allowed-port policy enforcement + port-scan IPS (App-ID / NGFW)
+- **Fix (owner / remediation):** SD-WAN
+- **Needs to run:** tools: nmap; **root**
 
 ### Reverse / Server-initiated Egress (B->A/out)  `reverse_egress`  _[added]_
 

@@ -608,6 +608,32 @@ class TestADModulesSkipWithoutPassword(unittest.TestCase):
         self.assertIn("[SKIP]", s.run("127.0.0.1", self._ctx()))
 
 
+class TestNmapPolicyScan(unittest.TestCase):
+    """Policy-violation scan: OPEN ports outside the allow-list -> POLICY-VIOLATION;
+    only-allowed-open -> POLICY-ENFORCED; no results -> SCAN-BLOCKED. Mocked nmap."""
+    def _run(self, tcp_out, udp_out=""):
+        import modules.nmap_policy_scan as n
+
+        class Ctx:
+            def run_cmd(self, tmpl, target):
+                return tcp_out if "-sS" in tmpl else udp_out
+        return n.run("10.0.0.5", Ctx())
+
+    def test_violation_detected(self):
+        out = self._run("Host: 10.0.0.5 ()\tPorts: 22/open/tcp//ssh///, 3389/open/tcp//rdp///\n")
+        self.assertIn("POLICY-VIOLATION", out)
+        self.assertIn("tcp/3389", out)        # 3389 not in the allow-list
+        self.assertNotIn("POLICY-ENFORCED", out)
+
+    def test_only_allowed_is_enforced(self):
+        out = self._run("Host: 10.0.0.5 ()\tPorts: 22/open/tcp//ssh///, 80/open/tcp//http///\n")
+        self.assertIn("POLICY-ENFORCED", out)  # 22 + 80 are allowed -> no violation
+
+    def test_no_results_is_scan_blocked(self):
+        out = self._run("")                    # nmap returned nothing -> IPS likely blocked it
+        self.assertIn("SCAN-BLOCKED", out)
+
+
 class TestToolFaultNotBlocked(unittest.TestCase):
     """A harness-internal fault (module crash / watchdog-abandon) must score
     NO-RESULT even when recon shows the port filtered — crediting a crashed

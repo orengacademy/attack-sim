@@ -2576,7 +2576,8 @@ class Runner:
             elif port_filtered or timed_out:
                 b = "BLOCKED"
                 verdict = ("attack blocked — target port filtered / traffic dropped in "
-                           "transit (likely SD-WAN / segmentation)")
+                           "transit (SD-WAN / upstream edge (ISP/cloud) / host firewall — "
+                           "confirm WHICH via the appliance/host logs, e.g. sangfor_ingest.py)")
             elif blocked_out:
                 b = "BLOCKED"
                 # A tool-reported rejection while the attack port is OPEN is a
@@ -2616,6 +2617,13 @@ class Runner:
                 pname = getattr(self, "_port_policy", {}).get("name", "port policy")
                 verdict += (f"  [policy: {denied} denied by {pname} — expected SEGMENTATION "
                             "block, not an IPS/WAF result]")
+            # Whitebox posture = allow-all baseline: it SHOULD pass. A BLOCKED/
+            # NO-SERVICE here is anomalous and usually means the service is down or
+            # an upstream (edge/host) filter dropped it — NOT the SD-WAN control
+            # (there's nothing between source and target to credit in white-box).
+            if getattr(self, "_mode", "blackbox") == "whitebox" and b in ("BLOCKED", "NO-SERVICE"):
+                verdict += ("  [whitebox-anomaly: the allow-all baseline should PASS — likely "
+                            "service-down / upstream-edge / host filter, not a control result]")
             log(f"     target: [{b}]  -> {verdict}")
 
         self.on_status(meta["id"], meta["name"], it, b, verdict)
