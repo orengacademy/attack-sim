@@ -207,6 +207,105 @@ def load_detections():
 
 
 # ---------------------------------------------------------------------
+# Boundary port policy (SD-WAN / firewall allow-list). The engagement boundary
+# permits only a defined set of ports; an attack whose SERVICE port is DENIED by
+# the policy is expected to be stopped at the SEGMENTATION boundary, NOT by the
+# IPS/WAF — so a BLOCKED on such a port must NEVER be credited to the IPS. The
+# harness evaluates this during preflight (before any scanning) and annotates the
+# verdicts so "segmentation did its job" is kept distinct from "the IPS caught it".
+#
+# Default = "Polisi Standard Security v1.3" (the engagement's standard). Override
+# with a git-ignored 'port_policy.json' (or $HARNESS_PORT_POLICY path) of shape:
+#   {"name": "...", "allow": {"tcp":[...], "udp":[...]}, "deny": {"tcp":[...], "udp":[...]}}
+# ---------------------------------------------------------------------
+def _ports(*spec):
+    """Expand a mix of ints and (lo,hi) inclusive ranges into a set of ints."""
+    out = set()
+    for s in spec:
+        if isinstance(s, tuple):
+            out.update(range(s[0], s[1] + 1))
+        else:
+            out.add(int(s))
+    return out
+
+# Polisi Standard Security v1.3 — "Standard Services" (+ cloud-VC) = allowed;
+# the red "Vulnerable Ports" = denied. Transcribed from the engagement policy.
+_POLISI_V13 = {
+    "name": "Polisi Standard Security v1.3",
+    "allow": {
+        "tcp": _ports(20, 21, 22, 53, 80, 81, 88, 123, 389, 443, 465, 587, 993,
+                      1935, 2048, 2065, 2082, 2083, 2095, 2096, 3478, 5004, 5222,
+                      7777, 7778, 8080, 8081, 8082, 8181, 8383, 8443, 8801, 8802, 8888),
+        "udp": _ports(53, 80, 443, 2048, 2065, 2082, 2095, 2096, 2257, (3478, 3481),
+                      5004, 7778, 8081, 8181, 8383, 8443, (8801, 8810), 8888, 9000,
+                      (19302, 19309), 33434),
+    },
+    "deny": {
+        "tcp": _ports(135, 139, 445, 593, 1025, 5554, 9995, 9996),
+        "udp": _ports(135, 137, 138, 445),
+    },
+}
+
+
+def load_port_policy():
+    """Active boundary port policy — Polisi v1.3 by default, overridable via a
+    git-ignored 'port_policy.json' or $HARNESS_PORT_POLICY. Returns
+    {name, allow:{tcp:set,udp:set}, deny:{tcp:set,udp:set}}. Never raises."""
+    pol = {"name": _POLISI_V13["name"],
+           "allow": {"tcp": set(_POLISI_V13["allow"]["tcp"]), "udp": set(_POLISI_V13["allow"]["udp"])},
+           "deny":  {"tcp": set(_POLISI_V13["deny"]["tcp"]),  "udp": set(_POLISI_V13["deny"]["udp"])}}
+    path = os.environ.get("HARNESS_PORT_POLICY") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "port_policy.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            pol["name"] = data.get("name", pol["name"])
+            for sect in ("allow", "deny"):
+                d = data.get(sect) or {}
+                for proto in ("tcp", "udp"):
+                    if proto in d:
+                        pol[sect][proto] = {int(x) for x in d[proto]}
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return pol
+
+
+def port_policy_status(proto, port, policy):
+    """Per-port verdict against the policy: 'denied' (explicitly vulnerable/
+    blocked), 'allowed' (permitted service), or 'unlisted' (default-deny)."""
+    proto = "udp" if str(proto).lower() == "udp" else "tcp"
+    if port in policy["deny"][proto]:
+        return "denied"
+    if port in policy["allow"][proto]:
+        return "allowed"
+    return "unlisted"
+
+
+def module_policy(meta, policy):
+    """Policy outcome for a module from its DECLARED service ports (not the lab's
+    NAT alternate — the policy governs the service, not the forwarding trick).
+    Returns {outcome, ports:[(proto,port,status)...]}:
+      'allowed' = at least one attack port is permitted, so the attack reaches the
+                  boundary and the IPS/WAF is the control actually under test;
+      'blocked' = every attack port is denied/unlisted, so it's expected to be
+                  stopped at the SEGMENTATION boundary (a BLOCKED is NOT an IPS win);
+      'egress'  = no fixed inbound TCP/UDP port (egress/ICMP) — policy n/a."""
+    specs = []
+    for spec in meta.get("ports", []) or []:
+        proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
+        if port is None:
+            continue
+        specs.append((proto, int(port), port_policy_status(proto, int(port), policy)))
+    if not specs:
+        return {"outcome": "egress", "ports": []}
+    outcome = "allowed" if any(s[2] == "allowed" for s in specs) else "blocked"
+    return {"outcome": outcome, "ports": specs}
+
+
+# ---------------------------------------------------------------------
 # Per-target memory — remember the last per-target options (source IP, cloud
 # SMB/RPC toggle + ports) so an engineer re-running the SAME script against the
 # next target doesn't re-type them. Git-ignored '.target_memory.json'. Keyed by
@@ -709,6 +808,11 @@ class Evidence:
                  "=" * 64,
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
+        _pp = self.meta.get("port_policy")
+        if _pp:
+            lines += [f"  Port policy [{_pp.get('name','')}]: {_pp.get('allowed',0)} on allowed "
+                      f"ports (IPS/WAF under test) · {_pp.get('blocked_by_policy',0)} denied "
+                      f"(expected segmentation block) · {_pp.get('egress',0)} egress/ICMP", ""]
 
         # Contamination banner — SUSPECT (BLOCKED that may be a source-IP ban) and
         # INCONCLUSIVE (never tested; source in IPS quarantine) are NOT per-attack
@@ -2080,6 +2184,43 @@ class Runner:
                         f"/{self._canary[0]} reachable — a later drop flags a source blacklist.")
             except Exception as e:
                 log(f"[WARN] recon skipped (non-fatal): {e}")
+        else:
+            log("[WARN] recon DISABLED (--no-recon): port/service reachability is NOT "
+                "verified, so BLOCKED vs NO-SERVICE can be misattributed. Prefer running "
+                "with recon so we never assume a port is open.")
+
+        # ----- Boundary port policy — evaluated BEFORE scanning (static/offline,
+        # always runs) so a BLOCKED on a policy-DENIED port is attributed to the
+        # SEGMENTATION boundary, not the IPS/WAF. Stored in meta + used by the
+        # verdict annotation in _process_module. We do NOT assume reachability:
+        # recon above checks the live port/service state separately.
+        self._port_policy = load_port_policy()
+        self._pol_by_id = {}
+        allow_n = deny_n = egr_n = 0
+        for m in modules:
+            mp = module_policy(m.META, self._port_policy)
+            self._pol_by_id[m.META["id"]] = mp
+            if mp["outcome"] == "allowed":
+                allow_n += 1
+            elif mp["outcome"] == "blocked":
+                deny_n += 1
+            else:
+                egr_n += 1
+        ev.meta["port_policy"] = {
+            "name": self._port_policy["name"],
+            "allowed": allow_n, "blocked_by_policy": deny_n, "egress": egr_n,
+            "modules": {mid: {"outcome": v["outcome"],
+                              "ports": [f"{p}/{pt}:{st}" for p, pt, st in v["ports"]]}
+                        for mid, v in self._pol_by_id.items()},
+        }
+        log(f"Port policy [{self._port_policy['name']}] (checked pre-scan): "
+            f"{allow_n} on ALLOWED ports (reach the boundary → IPS/WAF is the control "
+            f"under test), {deny_n} on DENIED/unlisted ports (expected SEGMENTATION block, "
+            f"not an IPS result), {egr_n} egress/ICMP (policy n/a).")
+        _denied = [m.META["name"] for m in modules
+                   if self._pol_by_id[m.META["id"]]["outcome"] == "blocked"]
+        if _denied:
+            log("  policy-denied (expect BLOCKED @ boundary): " + ", ".join(_denied))
 
         # Run the iterations; capture (don't propagate) module-loop faults so the
         # run is crash-proof, but let KeyboardInterrupt/SystemExit through. The
@@ -2418,6 +2559,15 @@ class Runner:
             # now unreachable, flag the verdict as suspect (don't report a false win).
             if b == "BLOCKED":
                 verdict = self._flag_if_blacklisted(verdict, log)
+            # Port-policy attribution: a BLOCKED/NO-SERVICE on a port the boundary
+            # policy DENIES is EXPECTED segmentation, not an IPS/WAF result — label
+            # it so the two aren't conflated (this is the control working by design).
+            pol = getattr(self, "_pol_by_id", {}).get(meta["id"])
+            if pol and pol["outcome"] == "blocked" and b in ("BLOCKED", "NO-SERVICE"):
+                denied = ", ".join(f"{p}/{pt}" for p, pt, st in pol["ports"] if st != "allowed")
+                pname = getattr(self, "_port_policy", {}).get("name", "port policy")
+                verdict += (f"  [policy: {denied} denied by {pname} — expected SEGMENTATION "
+                            "block, not an IPS/WAF result]")
             log(f"     target: [{b}]  -> {verdict}")
 
         self.on_status(meta["id"], meta["name"], it, b, verdict)

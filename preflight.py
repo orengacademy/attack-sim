@@ -83,6 +83,24 @@ def main():
                 if len(targets) > 1:
                     print(f"───── recon: {tgt} ─────")
                 print(core.format_reachability_report(rc))
+        # Boundary port policy (static/offline) — which modules reach the boundary
+        # (allowed ports -> IPS/WAF test) vs are stopped at segmentation.
+        pol = core.load_port_policy()
+        allow, deny, egr = [], [], 0
+        for m in modules:
+            mp = core.module_policy(m.META, pol)
+            if mp["outcome"] == "allowed":
+                allow.append(m.META["name"])
+            elif mp["outcome"] == "blocked":
+                deny.append(m.META["name"])
+            else:
+                egr += 1
+        print(f"\n===== PORT POLICY: {pol['name']} =====")
+        print(f"  ALLOWED ports (reach boundary → IPS/WAF under test): {len(allow)}")
+        print("    " + ", ".join(sorted(allow)))
+        print(f"  DENIED/unlisted (expected SEGMENTATION block): {len(deny)}")
+        print("    " + ", ".join(sorted(deny)))
+        print(f"  egress/ICMP (policy n/a): {egr}")
 
     return 0 if all(r["ready"] for r in pf["modules"]) else 1
 
