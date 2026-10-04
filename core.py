@@ -32,6 +32,13 @@ import html as _html
 import subprocess
 from datetime import datetime
 
+# Harness release version — bump on meaningful changes. Surfaced in the CLI
+# (`--version` + run header), the GUI title, every report, and each run's
+# summary.json meta, so any evidence folder is traceable to the build that made
+# it (alongside the git short-SHA in `engine_version`). Single source of truth —
+# cli.py / gui.py import this.
+VERSION = "1.1.0"
+
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
 # never hard-coded in source — it comes from the environment or a git-ignored
@@ -474,6 +481,70 @@ class Context:
 # ---------------------------------------------------------------------
 # Evidence logger
 # ---------------------------------------------------------------------
+def _claim_run_dir(base, name):
+    """Atomically claim a UNIQUE run directory `base/name`, returning its path.
+
+    Evidence folder names are minute-resolution (DD-MM-HH-MM, no seconds), so two
+    runs started in the same minute — two Claude sessions, GUI+CLI, or parallel
+    fleet jobs — want the SAME folder. A check-then-create (os.path.exists +
+    makedirs(exist_ok=True)) is a TOCTOU race: both pass the check, both create,
+    and their iteration_N/<attack>/ results silently interleave in one dir. So we
+    try os.mkdir (atomic — raises FileExistsError if the name is already taken)
+    and bump -2/-3/... on a clash, guaranteeing each process gets its OWN dir with
+    no interleaving. Degrades to a nominal (uncreated) path if creation is
+    impossible, so the caller's save_* helpers just no-op with warnings."""
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        return os.path.join(base, name)
+    candidate = os.path.join(base, name)
+    n = 1
+    while True:
+        try:
+            os.mkdir(candidate)
+            return candidate
+        except FileExistsError:
+            n += 1
+            candidate = os.path.join(base, f"{name}-{n}")
+            if n > 100000:          # pathological; stop looping
+                return candidate
+        except Exception:
+            return candidate        # permission/other — let save_* degrade
+
+
+def _atomic_write(path, writer, newline=None):
+    """Write `path` via a temp file + os.replace() so a concurrent reader never
+    sees a half-written file and two writers can't corrupt each other. The temp
+    name carries the pid so parallel writers to the same path don't collide on
+    the temp itself. `writer(f)` performs the actual write."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", newline=newline) as f:
+            writer(f)
+        os.replace(tmp, path)       # atomic on POSIX within one filesystem
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def _engine_version():
+    """Best-effort engine revision (git short SHA) for evidence provenance; '' if
+    unavailable. Never raises or blocks the run."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.run(["git", "-C", here, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=3)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 class Evidence:
     @staticmethod
     def _slug(label):
@@ -489,22 +560,18 @@ class Evidence:
         # can't tell WHICH target is which. A label (the target) names the dir
         # run_<ts>__<target> so it's self-describing.
         name = f"run_{self.ts}" + (f"__{self._slug(label)}" if label else "")
-        self.root = os.path.join(base, name)
-        # DD-MM-HH-MM has no seconds, so two runs started in the same minute
-        # collide on folder name — without this, the second run's files would
-        # silently land in / overwrite the first run's iteration_N/attack_id/
-        # dirs. Append -2, -3, ... only when that actually happens.
-        if os.path.exists(self.root):
-            n = 2
-            while os.path.exists(f"{self.root}-{n}"):
-                n += 1
-            self.root = f"{self.root}-{n}"
+        # Claim the dir ATOMICALLY (os.mkdir, not exists-check + makedirs) so two
+        # concurrent runs in the same minute can never share/interleave a dir —
+        # see _claim_run_dir(). Each run gets its own run_<ts>[-N].
+        self.root = _claim_run_dir(base, name)
         self.records = []
         self.meta = {"run": self.ts, "started": datetime.now().isoformat()}
         self._log_fh = None
         self._lock = threading.Lock()   # log/save are safe under concurrent runs
         try:
-            os.makedirs(self.root, exist_ok=True)
+            # _claim_run_dir already created self.root (or returned a nominal path
+            # if creation was impossible, in which case this open just fails and
+            # logging degrades to a no-op — the run still proceeds).
             self._log_fh = open(os.path.join(self.root, "run.log"), "a")
         except Exception:
             # evidence dir/log unavailable — the run still proceeds; log() and
@@ -547,18 +614,37 @@ class Evidence:
             self.records.append(result)
         try:
             path = os.path.join(self._dir(iteration, attack_id), "result.json")
-            with open(path, "w") as f:
-                json.dump(result, f, indent=2, default=str)
+            _atomic_write(path, lambda f: json.dump(result, f, indent=2, default=str))
         except Exception as e:
             self.log(f"[WARN] could not save {attack_id}/result.json: {e}")
 
     def finalize(self):
         self.meta["finished"] = datetime.now().isoformat()
 
+        # Verdict distribution + contamination counts baked into meta, so
+        # summary.json / INDEX.md are self-describing and a reader can see at a
+        # glance how many verdicts are poisoned (SUSPECT = BLOCKED that may be an
+        # IP ban; INCONCLUSIVE = never tested, source in IPS quarantine).
+        _dist, _suspect = {}, 0
+        for r in self.records:
+            v = (r.get("appliance_result") if r.get("appliance_ip") is not None
+                 else r.get("baseline_result")) or "?"
+            _dist[v] = _dist.get(v, 0) + 1
+            if "SUSPECT" in (r.get("verdict") or ""):
+                _suspect += 1
+        self.meta["verdicts"] = _dist
+        self.meta["finding_count"] = _dist.get("SUCCESS", 0) + _dist.get("PASSED", 0)
+        self.meta["inconclusive_count"] = _dist.get("INCONCLUSIVE", 0)
+        self.meta["suspect_count"] = _suspect
+        _durs = [r.get("duration_s") for r in self.records if r.get("duration_s") is not None]
+        if _durs:
+            self.meta["total_duration_s"] = round(sum(_durs), 1)
+
         def _safe_write(name, writer):
+            # temp-file + os.replace so a reader (or another session tailing the
+            # evidence) never catches a half-written summary/report.
             try:
-                with open(os.path.join(self.root, name), "w", newline="") as f:
-                    writer(f)
+                _atomic_write(os.path.join(self.root, name), writer, newline="")
             except Exception as e:
                 self.log(f"[WARN] could not write {name}: {e}")
 
@@ -618,14 +704,35 @@ class Evidence:
             s[bucket] += 1
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
-                 f"  Run: {self.ts}",
+                 f"  Run: {self.ts}   ·   Harness v{VERSION}"
+                 + (f" ({self.meta['engine_version']})" if self.meta.get("engine_version") else ""),
                  "=" * 64,
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
 
+        # Contamination banner — SUSPECT (BLOCKED that may be a source-IP ban) and
+        # INCONCLUSIVE (never tested; source in IPS quarantine) are NOT per-attack
+        # control results, so surface them up top; they must not be read as real
+        # BLOCKEDs. Lists the exact modules to re-run clean.
+        _susp_mods = sorted({r.get("attack", r.get("attack_id", "?")) for r in self.records
+                             if "SUSPECT" in (r.get("verdict") or "")})
+        _inc_mods = sorted({r.get("attack", r.get("attack_id", "?")) for r in self.records
+                            if r.get("baseline_result") == "INCONCLUSIVE"})
+        if _susp_mods or _inc_mods:
+            lines += ["  " + "!" * 60,
+                      "  ** CONTAMINATED RESULTS — these are NOT control wins; re-run clean",
+                      "     (whitelist the tester source on the appliance / wait out the",
+                      "     quarantine), then re-test ONLY these:"]
+            if _inc_mods:
+                lines.append("       INCONCLUSIVE (IPS quarantine, not tested): " + ", ".join(_inc_mods))
+            if _susp_mods:
+                lines.append("       SUSPECT (BLOCKED may be the ban, not the control): " + ", ".join(_susp_mods))
+            lines += [f"     -> python3 cli.py --suspect {self.root}",
+                      "  " + "!" * 60, ""]
+
         # ---- modern per-module results: verdict distribution + a grouped table ----
         _VORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
-                   "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
+                   "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
         permod = {}
         for r in self.records:
             mid = r.get("attack_id") or r.get("attack")
@@ -782,6 +889,9 @@ class Evidence:
         # shareable self-contained HTML report (verdict table + coverage), no deps
         _safe_write("report.html", self._write_html)
 
+        # one-line entry in a sibling INDEX.md so all runs are scannable at a glance
+        self._append_index()
+
         if self._log_fh is not None:
             try:
                 self._log_fh.close()
@@ -789,18 +899,52 @@ class Evidence:
                 pass
         return self.root
 
+    def _append_index(self):
+        """Append ONE line describing this run to a sibling INDEX.md, so every run
+        under the evidence dir is scannable without opening each folder. A single
+        short append to an O_APPEND file is atomic on POSIX, so concurrent runs
+        (two sessions / fleet jobs) can't corrupt each other's lines. Best-effort."""
+        try:
+            m = self.meta
+            d = m.get("verdicts", {})
+            flags = []
+            if m.get("inconclusive_count"):
+                flags.append(f"INCONCLUSIVE={m['inconclusive_count']}")
+            if m.get("suspect_count"):
+                flags.append(f"SUSPECT={m['suspect_count']}")
+            flag_s = ("  [" + " ".join(flags) + "]") if flags else ""
+            line = (f"- `{os.path.basename(self.root)}` · {m.get('run','')} · "
+                    f"v{m.get('harness_version', VERSION)} · "
+                    f"target `{m.get('target_ip','?')}`"
+                    + (f" · site {m['site_id']}" if m.get("site_id") else "")
+                    + f" · {m.get('module_count','?')} modules · "
+                    f"finding={m.get('finding_count',0)} "
+                    f"detected={d.get('DETECTED',0)} blocked={d.get('BLOCKED',0)}"
+                    + flag_s + "\n")
+            parent = os.path.dirname(self.root) or "."
+            idx = os.path.join(parent, "INDEX.md")
+            new = not os.path.exists(idx)
+            with open(idx, "a") as f:        # O_APPEND: atomic for a short line
+                if new:
+                    f.write("# Evidence run index\n\n")
+                f.write(line)
+        except Exception as e:
+            self.log(f"[WARN] could not update INDEX.md: {e}")
+
     _V_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
-                "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
+                "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
     _V_COLOR = {"SUCCESS": "#e5484d", "PASSED": "#e5484d", "DETECTED": "#f5a524",
                 "BLOCKED": "#30a46c", "NO-SERVICE": "#4493f8", "AUTH-FAILED": "#e2a336",
-                "NO-RESULT": "#e2a336", "SKIPPED": "#8b949e", "PREREQ-MISSING": "#8b949e"}
+                "NO-RESULT": "#e2a336", "INCONCLUSIVE": "#a371f7",
+                "SKIPPED": "#8b949e", "PREREQ-MISSING": "#8b949e"}
     # short gloss per verdict for the per-iteration ITERATIONS column (mirrors
     # cli.py's _VERDICT_GLOSS_SHORT so the HTML report and the terminal table
     # read the same way) — N copies of it (one per iteration) share one cell.
     _V_GLOSS_SHORT = {
         "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
         "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
-        "NO-RESULT": "review log", "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
+        "NO-RESULT": "review log", "INCONCLUSIVE": "IPS quarantine",
+        "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
     }
 
     def _write_html(self, f):
@@ -875,6 +1019,22 @@ class Evidence:
                 f'<span class=meter><span style="width:{pct:.0f}%;background:{color(v)}"></span></span>'
                 f'<span class=cnt>{dist[v]}/{n}</span></div>')
         findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+        # Contamination banner (SUSPECT / INCONCLUSIVE) — see report.txt rationale.
+        susp_mods = sorted({r.get("attack", "?") for r in recs
+                            if "SUSPECT" in (r.get("verdict") or "")})
+        inc_mods = sorted({r.get("attack", "?") for r in recs
+                           if r.get("baseline_result") == "INCONCLUSIVE"})
+        banner = ""
+        if susp_mods or inc_mods:
+            parts = []
+            if inc_mods:
+                parts.append("<b>INCONCLUSIVE</b> (IPS quarantine, not tested): " + e(", ".join(inc_mods)))
+            if susp_mods:
+                parts.append("<b>SUSPECT</b> (BLOCKED may be the ban, not the control): " + e(", ".join(susp_mods)))
+            banner = ('<div class=warn><b>&#9888; Contaminated results — NOT control wins.</b> '
+                      'Re-run clean (whitelist the tester source on the appliance / wait out the '
+                      'quarantine):<br>' + "<br>".join(parts) + '</div>')
+        ver = e("v" + VERSION + ((" (" + m.get("engine_version", "") + ")") if m.get("engine_version") else ""))
         f.write(f"""<!doctype html><html><head><meta charset=utf-8>
 <title>Control Validation — {e(tgt)}</title><style>
 body{{font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:24px}}
@@ -888,11 +1048,14 @@ th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
 .meter{{flex:0 0 220px;height:10px;background:#21262d;border-radius:5px;overflow:hidden}}
 .meter>span{{display:block;height:100%}} .cnt{{color:#8b949e}}
 .foot{{margin-top:14px;font-weight:600}} code{{color:#58a6ff}}
+.warn{{background:#2d2411;border:1px solid #9e6a03;border-left:4px solid #e3a008;
+color:#f0d58c;padding:10px 12px;border-radius:6px;margin:12px 0;font-size:13px}}
 </style></head><body>
 <h1>Control Validation Harness — Results</h1>
 <div class=meta>{('SITE ' + e(site) + ' &middot; ') if site else ''}target <code>{e(tgt)}</code>
-&middot; run {e(m.get('run',''))}
+&middot; run {e(m.get('run',''))} &middot; harness {ver}
 &middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
+{banner}
 {''.join(bars)}
 <table><thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th>
 <th>MITRE</th><th>CWE</th><th>Time</th><th>{"Iterations" if show_iters else "Detail"}</th></tr></thead>
@@ -1783,12 +1946,22 @@ class Runner:
                   "the attack/service works)" if self._mode == "whitebox"
                   else "BLACKBOX (through the SD-WAN as-is — what gets blocked)")
         ev.meta["mode"] = self._mode
+        # Self-describing run provenance (so summary.json/INDEX need no outside
+        # context to diff runs): what was hit, from where, with which engine build.
+        ev.meta["target_ip"] = self.target_ip
+        if self.dual:
+            ev.meta["appliance_ip"] = self.appliance_ip
+        ev.meta["module_count"] = len(modules)
+        ev.meta["harness_version"] = VERSION
+        ev.meta["engine_version"] = _engine_version()
         # Site ID: an operator-supplied engagement/site tag recorded in the
         # evidence meta (and echoed by the CLI/GUI headers + report).
         site = site_id or os.environ.get("HARNESS_SITE_ID") or ""
         if site:
             ev.meta["site_id"] = site
         log("=" * 60)
+        log("Harness v" + VERSION + (f" ({ev.meta['engine_version']})"
+            if ev.meta.get("engine_version") else ""))
         log(f"MODE: {banner}")
         if site:
             log(f"SITE ID: {site}")
@@ -1821,6 +1994,9 @@ class Runner:
                 # report NO-SERVICE while doh_bypass (no bind) scored SUCCESS on the
                 # SAME egress path. Clearing it here keeps those verdicts consistent.
                 self.ctx.source_ip = None
+        # record the EFFECTIVE egress source (after the bindable check above may
+        # have cleared an unusable one), so the evidence reflects what actually ran.
+        ev.meta["source_ip"] = getattr(self.ctx, "source_ip", None) or ""
         if self._detections:
             log(f"Blue-team detections loaded: {len(self._detections)} "
                 "attack id(s) will score DETECTED if they pass.")
@@ -1950,23 +2126,7 @@ class Runner:
             # and if it recovers, clear the latch and continue clean; if it stays
             # banned past the window, stop the remaining iterations.
             if it > 1 and self._blacklisted and self._canary:
-                wait = max(30.0, self.cooldown or 0.0)
-                log(f"  [blacklist] source was blacklisted last iteration — waiting up to "
-                    f"{wait:.0f}s for the canary {self._canary[1] or 'icmp'}/{self._canary[0]} "
-                    "to recover before iteration %d (whitelist the source to avoid this)." % it)
-                recovered = False
-                waited = 0.0
-                while waited < wait and not self._stop:
-                    if self._canary_reachable():
-                        recovered = True
-                        break
-                    time.sleep(min(5.0, wait - waited))
-                    waited += 5.0
-                if recovered:
-                    with self._bl_lock:
-                        self._blacklisted = False
-                    log("  [blacklist] canary recovered — latch cleared, continuing clean.")
-                else:
+                if not self._await_unblacklist(log, f"iteration {it}"):
                     log("  [blacklist] source still banned after the wait — SKIPPING the "
                         "remaining iteration(s) so they don't fill the report with false "
                         "BLOCKEDs. Whitelist the tester source (or drop iterations to 1 / run "
@@ -1974,32 +2134,38 @@ class Runner:
                     break
             log(f"\n=== Iteration: {it} ===")
 
-            # Parallel-safe = concurrency requested, module is ready, and not
-            # flagged serial (DoS/brute tests must run ALONE so they can't
-            # pollute each other's rate-limit/latency results). Everything else
-            # (skips + serial + all modules when conc==1) runs sequentially.
+            # Parallel-safe = concurrency requested, module is ready, and not a
+            # module that must run alone or last. `serial` modules (DoS/brute/AD)
+            # can't share a batch; `run_last`/`trips_ips` modules trip a blacklist
+            # or an inline IPS signature that would quarantine the source, so they
+            # must also run sequentially AT THE END (never early in a parallel
+            # pool) — otherwise the ban they cause contaminates everything after.
+            # Everything else (skips + all modules when conc==1) runs sequentially.
+            def _defer_last(m):
+                return bool(m.META.get("run_last") or m.META.get("trips_ips"))
             parallel, serial = [], []
             for m in modules:
                 mid = m.META["id"]
                 unready = skip_unready and mid not in ready_ids
-                is_serial = bool(m.META.get("serial"))
+                is_serial = bool(m.META.get("serial")) or _defer_last(m)
                 if conc > 1 and not unready and not is_serial:
                     parallel.append(m)
                 else:
                     serial.append(m)
 
-            # run_last: a module whose SIDE EFFECT persists and would contaminate
-            # OTHER modules' verdicts — brute-force (trips an IP blacklist) and DoS
-            # floods (trip anti-DoS rate-limits). Sort them to the very end of the
-            # serial batch (which itself runs after the parallel batch) so a
-            # blacklist/rate-limit they trigger can't turn later attacks into false
-            # BLOCKEDs. Stable sort: everything else keeps its order. (Across
-            # multiple iterations a persisted blacklist can still bleed into the
-            # next iteration — single-iteration runs are unaffected.)
-            serial.sort(key=lambda m: bool(m.META.get("run_last")))
-            if any(m.META.get("run_last") for m in serial):
-                lastnames = ", ".join(m.META["name"] for m in serial if m.META.get("run_last"))
-                log(f"  (deferring to run LAST so a triggered blacklist/rate-limit "
+            # Defer-last: a module whose SIDE EFFECT persists and would contaminate
+            # OTHER modules' verdicts — brute-force (trips an IP blacklist), DoS
+            # floods (trip anti-DoS rate-limits), and IPS-signature attacks
+            # (log4shell/struts2/web_ips_sigs/apache_41773/doh — an inline NGAF/NGFW
+            # blacklists the source on the hit). Sort them to the very end of the
+            # serial batch (which itself runs after the parallel batch) so the quiet
+            # attacks all get a clean, uncontaminated test first; a ban they trigger
+            # then only affects the recovery logic below, not earlier verdicts.
+            # Stable sort: everything else keeps its order.
+            serial.sort(key=_defer_last)
+            if any(_defer_last(m) for m in serial):
+                lastnames = ", ".join(m.META["name"] for m in serial if _defer_last(m))
+                log(f"  (deferring to run LAST so a triggered blacklist / IPS-signature ban "
                     f"doesn't contaminate other results: {lastnames})")
 
             if parallel:
@@ -2008,20 +2174,79 @@ class Runner:
                     list(ex.map(lambda mm: self._process_module(
                         mm, it, skip_unready, ready_ids, pf_by_id, recon_by_id,
                         ev, log, bump), parallel))
-            for m in serial:
+            for i, m in enumerate(serial):
                 if self._stop:
                     break
-                # cooldown before each run_last (brute/DoS) module so a rate-limit
-                # it triggers has time to clear before the next one runs.
-                if self.cooldown and m.META.get("run_last") and not self._stop:
+                # Mid-run quarantine recovery: if an earlier module tripped the
+                # appliance and the source got blacklisted (canary down), DON'T
+                # grind out false BLOCKEDs on the rest — wait for the ban to clear
+                # before this module. If it recovers, the latch is cleared and we
+                # continue clean; if it stays banned past the window, record this
+                # and every remaining module as INCONCLUSIVE (not tested — the ban,
+                # not a per-attack control) and stop the batch.
+                if self._blacklisted and self._canary and not self._stop:
+                    if not self._await_unblacklist(log, m.META["name"]):
+                        log("  [blacklist] source still in IPS quarantine — recording the "
+                            f"remaining {len(serial) - i} module(s) as INCONCLUSIVE (not tested) "
+                            "instead of false BLOCKEDs. Whitelist the tester source on the "
+                            "appliance (or wait for the quarantine to expire), then re-run.")
+                        for rem in serial[i:]:
+                            if self._stop:
+                                break
+                            self._record_untested(
+                                rem, it, ev, log, bump, recon_by_id,
+                                reason="source in IPS quarantine (canary unreachable) when this "
+                                       "attack was due — not tested")
+                        break
+                # cooldown before each defer-last (brute/DoS/IPS-signature) module
+                # so a rate-limit/ban it triggers has time to clear before the next.
+                if self.cooldown and _defer_last(m) and not self._stop:
                     log(f"  (cooldown {self.cooldown:.0f}s before {m.META['name']} — "
-                        "let any triggered rate-limit clear)")
+                        "let any triggered rate-limit / IPS ban clear)")
                     _slept = 0.0
                     while _slept < self.cooldown and not self._stop:
                         time.sleep(min(1.0, self.cooldown - _slept))
                         _slept += 1.0
                 self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
                                      recon_by_id, ev, log, bump)
+
+    def _await_unblacklist(self, log, where):
+        """Wait up to max(30s, cooldown) for a blacklisted source to be let back
+        in, re-probing the canary. On recovery clear the latch and return True;
+        otherwise return False. Shared by the between-iterations guard and the
+        mid-run (per-module) quarantine recovery."""
+        if not (self._blacklisted and self._canary):
+            return True
+        wait = max(30.0, self.cooldown or 0.0)
+        log(f"  [blacklist] source appears quarantined — waiting up to {wait:.0f}s for the "
+            f"canary {self._canary[1] or 'icmp'}/{self._canary[0]} to recover before {where} "
+            "(whitelist the tester source on the appliance to avoid this).")
+        waited = 0.0
+        while waited < wait and not self._stop:
+            if self._canary_reachable():
+                with self._bl_lock:
+                    self._blacklisted = False
+                log("  [blacklist] canary recovered — latch cleared, continuing clean.")
+                return True
+            time.sleep(min(5.0, wait - waited))
+            waited += 5.0
+        return False
+
+    def _record_untested(self, m, it, ev, log, bump, recon_by_id, reason):
+        """Record a module as INCONCLUSIVE (couldn't be fairly tested because the
+        source was in IPS quarantine at the time) through the normal result path,
+        so it shows in the live status, evidence, and summary like any verdict —
+        but is never mistaken for a per-attack BLOCKED (control worked)."""
+        meta = m.META
+        b = "INCONCLUSIVE"
+        verdict = (f"INCONCLUSIVE — {reason}. Whitelist/exempt the tester source on the "
+                   "appliance (or wait for the quarantine to expire), then re-run "
+                   "(`cli.py --suspect <evidence_dir>` lists what to repeat).")
+        log(f"  [{meta['category']}] {meta['name']}")
+        log(f"     target: [{b}]  -> {verdict}")
+        self.on_status(meta["id"], meta["name"], it, b, verdict)
+        self._record(ev, it, meta, b, "-", verdict, recon_by_id or {})
+        bump()
 
     def _canary_reachable(self):
         """Is the canary port still reachable from the source? (quick probe)."""

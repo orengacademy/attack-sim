@@ -16,6 +16,7 @@ META = {
     "cwe": ['CWE-693'],
     "tactic": 'Command and Control',
     "requires": ["curl"],
+    "trips_ips": True,   # DoH/egress signature can trip the gateway → source blacklist; run last
     "ports": [],  # egress test — no target port
     "success_regex": r'"Answer"|"data"',
     "blocked_regex": r"timed out|Connection refused|could not resolve|SSL certificate problem|curl: \(\d+\)",

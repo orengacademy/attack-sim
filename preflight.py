@@ -32,6 +32,8 @@ import loader
 def main():
     ap = argparse.ArgumentParser(
         description="Preflight tool/privilege check for the control-validation harness.")
+    ap.add_argument("--version", action="version",
+                    version=f"control-validation harness v{core.VERSION}")
     ap.add_argument("--json", action="store_true",
                     help="emit the full preflight result as JSON")
     ap.add_argument("--versions", action="store_true",

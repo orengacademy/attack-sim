@@ -355,5 +355,138 @@ class TestPreflightAndReachability(unittest.TestCase):
             srv.close()
 
 
+class TestInconclusiveVerdictRegistered(unittest.TestCase):
+    """The INCONCLUSIVE bucket (source in IPS quarantine, attack not tested) must
+    be keyed in every verdict order/colour/gloss map, or it silently drops out of
+    the table/HTML the moment the engine emits it."""
+    def test_in_core_orders_and_maps(self):
+        self.assertIn("INCONCLUSIVE", core.Evidence._V_ORDER)
+        self.assertIn("INCONCLUSIVE", core.Evidence._V_COLOR)
+        self.assertIn("INCONCLUSIVE", core.Evidence._V_GLOSS_SHORT)
+
+    def test_in_cli_orders_and_maps(self):
+        import cli
+        self.assertIn("INCONCLUSIVE", cli._VERDICT_ORDER)
+        self.assertIn("INCONCLUSIVE", cli._VERDICT_STYLE)
+        self.assertIn("INCONCLUSIVE", cli._ITER_CODE)
+        self.assertIn("INCONCLUSIVE", cli._VERDICT_GLOSS)
+        self.assertIn("INCONCLUSIVE", cli._VERDICT_GLOSS_SHORT)
+
+
+class TestDeferLastOrdering(unittest.TestCase):
+    """Quiet attacks must all run (and be recorded) BEFORE the loud ones that trip
+    a blacklist / IPS signature (run_last + the new trips_ips), so a ban the loud
+    ones cause can't contaminate the quiet verdicts. conc==1 => execution order ==
+    record order."""
+    def _mod(self, mid, **flags):
+        m = fake_module(mid, requires=[], ports=[], mitre=["T1046"], tactic="Discovery",
+                        success_regex=r"NEVER", blocked_regex=r"NEVER", **flags)
+        m.run = lambda t, c: "benign"
+        return m
+
+    def test_trips_ips_and_run_last_sort_after_quiet(self):
+        mods = [self._mod("loud_ips", trips_ips=True),
+                self._mod("q1"),
+                self._mod("loud_brute", run_last=True),
+                self._mod("q2")]
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1").run(mods, 1, ev, skip_unready=False, recon=False)
+        order = [r["attack_id"] for r in ev.records]
+        # both quiet modules recorded before either loud one
+        self.assertLess(order.index("q1"), order.index("loud_ips"))
+        self.assertLess(order.index("q1"), order.index("loud_brute"))
+        self.assertLess(order.index("q2"), order.index("loud_ips"))
+        self.assertLess(order.index("q2"), order.index("loud_brute"))
+
+
+class TestQuarantineSkipsRemainingAsInconclusive(unittest.TestCase):
+    """Once the source is in IPS quarantine and the ban doesn't clear, the engine
+    must record the remaining modules as INCONCLUSIVE (not tested) rather than
+    grinding out false BLOCKEDs."""
+    def _mod(self, mid):
+        m = fake_module(mid, requires=[], ports=[], mitre=["T1046"], tactic="Discovery",
+                        success_regex=r"NEVER", blocked_regex=r"NEVER")
+        m.run = lambda t, c: "benign"
+        return m
+
+    def test_remaining_modules_are_inconclusive(self):
+        import threading
+        r = core.Runner("127.0.0.1")
+        # state normally set up by run(); we drive _iterate directly with the
+        # source already quarantined and the ban held open.
+        r._canary = ("tcp", 9)
+        r._blacklisted = True
+        r._bl_lock = threading.Lock()
+        r._stop = False
+        r._mode = "blackbox"
+        r._await_unblacklist = lambda log, where: False   # ban never clears
+        mods = [self._mod("a"), self._mod("b")]
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        r._iterate(mods, 1, ev, skip_unready=False,
+                   ready_ids={"a", "b"}, pf_by_id={}, recon_by_id={}, log=lambda *a: None)
+        self.assertEqual({rr["baseline_result"] for rr in ev.records}, {"INCONCLUSIVE"})
+        self.assertTrue(all(rr["passed"] is False for rr in ev.records))
+
+
+class TestEvidenceConcurrencySafety(unittest.TestCase):
+    """The run-dir claim must be race-safe: two runs in the same minute (two
+    sessions / GUI+CLI / fleet jobs) must get DISTINCT, actually-created dirs —
+    never silently share one and interleave results."""
+    def test_claim_run_dir_unique_under_collision(self):
+        base = tempfile.mkdtemp()
+        dirs = [core._claim_run_dir(base, "run_X") for _ in range(3)]
+        self.assertEqual(len(set(dirs)), 3)                 # all distinct
+        for p in dirs:
+            self.assertTrue(os.path.isdir(p))               # all really created
+        self.assertEqual(os.path.basename(dirs[0]), "run_X")
+        self.assertTrue(os.path.basename(dirs[1]).startswith("run_X-"))
+
+    def test_two_evidences_same_minute_dont_share(self):
+        base = tempfile.mkdtemp()
+        e1 = core.Evidence(base=base, label="t")
+        e2 = core.Evidence(base=base, label="t")
+        self.assertNotEqual(e1.root, e2.root)
+
+    def test_atomic_write_leaves_no_tmp(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "x.json")
+        core._atomic_write(p, lambda f: f.write('{"a":1}'))
+        self.assertEqual(open(p).read(), '{"a":1}')
+        self.assertEqual([x for x in os.listdir(d) if ".tmp" in x], [])
+
+
+class TestEvidenceMetaAndIndex(unittest.TestCase):
+    """finalize() must bake run provenance + verdict/contamination counts into
+    summary.json meta, and append one line per run to a sibling INDEX.md."""
+    def _mod(self, mid, out):
+        m = types.SimpleNamespace()
+        m.META = {"id": mid, "name": mid, "category": "Test", "requires": [],
+                  "ports": [], "mitre": ["T1046"], "tactic": "Discovery",
+                  "success_regex": r"WIN", "blocked_regex": r"nope"}
+        m.run = lambda t, c, o=out: o
+        return m
+
+    def test_meta_has_version_target_and_verdicts(self):
+        import json as _j
+        base = tempfile.mkdtemp()
+        ev = core.Evidence(base=base, label="127.0.0.1")
+        core.Runner("127.0.0.1").run([self._mod("m1", "WIN")], 1, ev,
+                                     skip_unready=False, recon=False)
+        meta = _j.load(open(os.path.join(ev.root, "summary.json")))["meta"]
+        self.assertEqual(meta["harness_version"], core.VERSION)
+        self.assertEqual(meta["target_ip"], "127.0.0.1")
+        self.assertIn("verdicts", meta)
+        self.assertEqual(meta["module_count"], 1)
+
+    def test_index_md_appended(self):
+        base = tempfile.mkdtemp()
+        ev = core.Evidence(base=base, label="127.0.0.1")
+        core.Runner("127.0.0.1").run([self._mod("m1", "WIN")], 1, ev,
+                                     skip_unready=False, recon=False)
+        idx = os.path.join(os.path.dirname(ev.root), "INDEX.md")
+        self.assertTrue(os.path.exists(idx))
+        self.assertIn(os.path.basename(ev.root), open(idx).read())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

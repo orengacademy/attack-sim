@@ -27,6 +27,7 @@ META = {
     "cwe": ['CWE-917'],
     "tactic": 'Initial Access',
     "requires": ["curl"],
+    "trips_ips": True,   # IPS "struts2 injection" signature blacklists the source — run last
     "ports": [("tcp", 80)],
     "port_customizable": True,
     "success_regex": r"^\[STRUTS2-DELIVERED\]",

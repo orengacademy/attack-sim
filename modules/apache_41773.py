@@ -17,6 +17,7 @@ META = {
     "cwe": ['CWE-22'],
     "tactic": 'Initial Access',
     "requires": ["curl"],
+    "trips_ips": True,   # path-traversal/RCE signature blacklists the source — run last
     "ports": [("tcp", 80)],
     "port_customizable": True,
     # Linux: /etc/passwd ("root:...:0:0:"); Windows: win.ini ("[fonts]"/"[extensions]")
