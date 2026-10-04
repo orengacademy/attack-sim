@@ -590,9 +590,11 @@ class HarnessGUI:
     def _eye(self, parent, entry):
         """Add a small show/hide (eye) toggle next to a masked password Entry."""
         var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(parent, text="👁", width=2, variable=var,
+        # plain "show" text — the 👁 emoji isn't in the default Tk font and rendered
+        # as a tofu box.
+        ttk.Checkbutton(parent, text="show", variable=var,
                         command=lambda: entry.config(show="" if var.get() else "•"),
-                        style="TCheckbutton").pack(side="left", padx=(0, 4))
+                        style="TCheckbutton").pack(side="left", padx=(4, 4))
 
     def _toggle_cloud_ports(self):
         # The SMB/RPC/SSH port boxes stay ALWAYS editable/visible now (a disabled,
