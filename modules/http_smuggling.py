@@ -88,8 +88,13 @@ def run(target, ctx):
                        "CL/TE not rejected); possible request-smuggling exposure. Verify "
                        "a real desync manually before reporting. [REVIEW/FINDING]")
         else:
-            out.append(f"DESYNC-SUSPECT — server accepted ambiguous CL/TE framing "
-                       f"({first!r}); confirm desync manually. [REVIEW/FINDING]")
+            # A prompt, non-4xx answer (e.g. 200/302) is NOT itself a desync — the
+            # server simply replied. Marking it DESYNC-SUSPECT made any responsive
+            # server a smuggling finding. The real signal is the front-end WAITING
+            # for more body (the elif above). Treat a clean reply as inconclusive.
+            out.append(f"no desync indicator — server answered promptly ({first!r}) and "
+                       "did not hold the connection waiting for more body; INCONCLUSIVE "
+                       "for request-smuggling (a clean response is not a desync). [REVIEW]")
     except ssl.SSLError as e:
         out.append(f"ambiguous framing rejected — TLS error ({e.__class__.__name__})")
     except Exception as e:

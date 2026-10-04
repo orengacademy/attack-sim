@@ -148,9 +148,28 @@ def load_config():
             cfg[k] = v
     for k in list(cfg.keys()):
         env = os.environ.get(f"HARNESS_CFG_{k.upper()}")
-        if env:
-            # comma-split list-valued keys so a list can be set from one env var
-            cfg[k] = [x.strip() for x in env.split(",")] if isinstance(cfg[k], list) else env
+        if not env:
+            continue
+        dflt = _CFG_DEFAULTS.get(k)
+        # Coerce to the DEFAULT value's type so a numeric key (e.g.
+        # HARNESS_CFG_BEACON_SECONDS=60) doesn't arrive as the string "60" and
+        # break a module doing arithmetic on it. (bool before int — bool is an int.)
+        if isinstance(cfg[k], list) or isinstance(dflt, list):
+            cfg[k] = [x.strip() for x in env.split(",") if x.strip()]
+        elif isinstance(dflt, bool):
+            cfg[k] = env.strip().lower() in ("1", "true", "yes", "on")
+        elif isinstance(dflt, int):
+            try:
+                cfg[k] = int(env)
+            except ValueError:
+                cfg[k] = dflt
+        elif isinstance(dflt, float):
+            try:
+                cfg[k] = float(env)
+            except ValueError:
+                cfg[k] = dflt
+        else:
+            cfg[k] = env
     return cfg
 
 
@@ -2534,18 +2553,32 @@ class Runner:
         canary. If not, the boundary has BLACKLISTED/quarantined the source, so
         this BLOCKED (and later ones) may be fallout, not a per-attack control.
         Latches once and annotates the verdict so the operator isn't misled."""
+        if not self._canary:
+            return verdict
+        # Fast path: already latched → just tag (no probe). Checked under the lock.
         with self._bl_lock:
-            if self._canary and not self._blacklisted and self._canary_reachable() is False:
-                self._blacklisted = True
-                log("[WARN] SOURCE APPEARS BLACKLISTED by the boundary — the canary "
-                    f"{self._canary[1] or 'icmp'}/{self._canary[0]} (reachable at start) "
-                    "is now unreachable. BLOCKED/filtered verdicts from here are SUSPECT "
-                    "(the ban, not per-attack controls). Standard fix: whitelist/exempt "
-                    "the tester source IP from IPS blacklisting for the test window, then "
-                    "re-run; or wait for the quarantine to expire.")
-            if self._blacklisted:
-                return verdict + "  [SUSPECT: source appears blacklisted — this BLOCKED " \
-                                 "may be the ban, not this attack's own control]"
+            latched = self._blacklisted
+        if not latched:
+            # Probe the canary OUTSIDE the lock — it's a ~2s TCP connect (or ~7s
+            # ping). Holding the lock across it would serialize every parallel
+            # worker's BLOCKED behind this probe (N BLOCKEDs -> N x up to 7s).
+            unreachable = self._canary_reachable() is False
+            if unreachable:
+                with self._bl_lock:
+                    first = not self._blacklisted
+                    self._blacklisted = True
+                if first:
+                    log("[WARN] SOURCE APPEARS BLACKLISTED by the boundary — the canary "
+                        f"{self._canary[1] or 'icmp'}/{self._canary[0]} (reachable at start) "
+                        "is now unreachable. BLOCKED/filtered verdicts from here are SUSPECT "
+                        "(the ban, not per-attack controls). Standard fix: whitelist/exempt "
+                        "the tester source IP from IPS blacklisting for the test window, then "
+                        "re-run; or wait for the quarantine to expire.")
+        with self._bl_lock:
+            latched = self._blacklisted
+        if latched:
+            return verdict + "  [SUSPECT: source appears blacklisted — this BLOCKED " \
+                             "may be the ban, not this attack's own control]"
         return verdict
 
     def _process_module(self, m, it, skip_unready, ready_ids, pf_by_id,
