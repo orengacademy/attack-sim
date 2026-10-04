@@ -165,6 +165,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         mid = r.get("attack_id") or r.get("attack")
         d = by_mod.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
                                     "mitre": ", ".join(r.get("mitre", []) or []),
+                                    "ports": r.get("ports", "") or "", "policy": r.get("policy", "") or "",
                                     "dir": r.get("direction", ""), "vs": [],
                                     "verdicts": {}, "outputs": {}, "iters": []})
         br = r.get("baseline_result", "?")
@@ -194,7 +195,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     print(_c("┏" + "━" * W + "┓", ACC, no_color))
     _hline(f"  CONTROL VALIDATION — RESULTS   ·   v{core.VERSION}"
            + (f"   ·   SITE {site}" if site else ""))
-    _hline(f"  {target}   ·   {args.mode}   ·   {n} module(s) × {args.iterations} iter"
+    _mode = (getattr(ev, "meta", {}) or {}).get("mode") or (args.mode or "blackbox")
+    _hline(f"  {target}   ·   {_mode}   ·   {n} module(s) × {args.iterations} iter"
            f"   ·   {elapsed:.0f}s")
     _hline(f"  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
            + ("   ·   DEBUG" if getattr(args, "debug", False) else ""))
@@ -221,9 +223,10 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     # icmp_flood's loss-delta falling in the ambiguous band on one run and
     # not another).
     show_iters = args.iterations > 1
-    NUM, VER, MOD, CAT, DET = 3, 13, 30, 16, 32
+    NUM, VER, MOD, CAT, PORTS, MITRE, DET = 3, 13, 28, 14, 11, 13, 30
     ITERS_W = 22 * min(args.iterations, 4)   # grows with iteration count, caps at 4x
     cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT),
+            ("PORTS", PORTS), ("MITRE", MITRE),
             (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET))]
     if debug:
         cols.append(("TIME", 7))   # per-module wall-clock (debug only)
@@ -263,8 +266,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
                 detail = "rate-limited/shaped (boundary policed the flood)"
-        cells = [str(i), f"{icon} {d['v']}", d["name"], cat]
-        colors = [DIM, col, None, ACC]
+        cells = [str(i), f"{icon} {d['v']}", d["name"], cat, d.get("ports", ""), d.get("mitre", "")]
+        colors = [DIM, col, None, ACC, DIM, DIM]
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                    key=lambda it: it[0])
@@ -361,7 +364,10 @@ def main():
                          "(each uses its own remembered cloud/creds). Default: 127.0.0.1")
     ap.add_argument("-i", "--iterations", type=int, default=1)
     ap.add_argument("-w", "--workers", type=int, default=core.RECOMMENDED_WORKERS)
-    ap.add_argument("--mode", choices=["blackbox", "whitebox"], default="blackbox")
+    ap.add_argument("--mode", choices=["blackbox", "whitebox"], default=None,
+                    help="assessment posture for the target(s): blackbox (through the SD-WAN "
+                         "as-is — the default) or whitebox (allow-all baseline confirming the "
+                         "attacks/services work). Remembered PER TARGET (recalled when omitted)")
     ap.add_argument("-s", "--site-id", "--site", dest="site_id", default=None,
                     help="engagement/site tag recorded in the evidence + headers "
                          "(remembered per target; or set HARNESS_SITE_ID)")
@@ -549,6 +555,11 @@ def main():
         mem = core.recall_target(target)
         source = args.source if args.source is not None else mem.get("source")
         cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
+        # posture (whitebox/blackbox) is per-target: CLI flag wins, else the
+        # target's remembered value, else blackbox.
+        mode = args.mode or mem.get("mode") or "blackbox"
+        if args.mode is None and mem.get("mode"):
+            print(f"[recall] posture {mode} (remembered for {target})")
         smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
         rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
         ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 22
@@ -603,6 +614,7 @@ def main():
         if args.ssh_user is not None: cred_fields["ssh_user"] = args.ssh_user
         if args.ssh_pass is not None: cred_fields["ssh_pass"] = args.ssh_pass
         if args.site_id is not None: cred_fields["site_id"] = args.site_id
+        if args.mode is not None: cred_fields["mode"] = args.mode
         core.remember_target(target, source=source or None, cloud=bool(cloud),
                              smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
                              ssh_port=(ssh_p_port if cloud else None), **cred_fields)
@@ -611,7 +623,7 @@ def main():
         try:
             ev = core.Evidence(base=args.evidence_dir, label=label)
             root = runner.run(run_set, _iters, ev, skip_unready=not args.force,
-                              recon=not args.no_recon, mode=args.mode, site_id=site_id or None)
+                              recon=not args.no_recon, mode=mode, site_id=site_id or None)
         except ValueError as e:               # invalid target / allowlist refusal
             print(f"[!] {e}", file=sys.stderr)
             return None, 2

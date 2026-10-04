@@ -314,6 +314,12 @@ class TestTargetMemory(unittest.TestCase):
         self.assertEqual(r["source"], "1.1.1.1")
         self.assertFalse(r["cloud"])
 
+    def test_posture_remembered_per_target(self):
+        core.remember_target("wb", mode="whitebox")
+        core.remember_target("bb", mode="blackbox")
+        self.assertEqual(core.recall_target("wb")["mode"], "whitebox")
+        self.assertEqual(core.recall_target("bb")["mode"], "blackbox")
+
 
 class TestProbes(unittest.TestCase):
     def test_tcp_open_then_closed(self):
