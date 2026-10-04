@@ -73,6 +73,17 @@ class TestTargetSafety(unittest.TestCase):
         self.assertFalse(core.validate_target("not a host!!")[0])
         self.assertFalse(core.validate_target("")[0])
 
+    def test_malformed_ip_rejected(self):
+        # a dotted all-numeric string that isn't a real IP must NOT pass as a
+        # hostname (else every probe fails and the run falsely reports BLOCKED).
+        for bad in ("192.168.1.300", "10.0.0.1.2", "999.1.1.1", "1.2.3.256"):
+            ok, why = core.validate_target(bad)
+            self.assertFalse(ok, f"{bad} wrongly accepted ({why})")
+        # real IPs / hostnames still pass
+        self.assertTrue(core.validate_target("192.168.1.30")[0])
+        self.assertTrue(core.validate_target("8.8.8.8")[0])
+        self.assertTrue(core.validate_target("host123.lab.local")[0])
+
     def test_allowlist_enforced(self):
         os.environ["HARNESS_ALLOWLIST"] = "10.0.0.5, dc01.lab.local"
         try:
@@ -567,6 +578,49 @@ class TestWaitUnblockFlag(unittest.TestCase):
             _t.sleep = orig
         self.assertFalse(ok)                               # stayed banned -> False
         self.assertAlmostEqual(sum(slept), 12.0, delta=0.01)   # waited ~12s, not 30
+
+
+class TestDirectionFilter(unittest.TestCase):
+    """--direction both must run EVERY direction, not only modules tagged
+    direction='both'. A one-way filter still includes 'both'-tagged modules."""
+    def _args(self, direction):
+        return types.SimpleNamespace(only=None, all=True, added=False,
+                                     attack_sim=False, test_type=None, family=None,
+                                     direction=direction)
+    def _mods(self):
+        return [fake_module("a", direction="a2b"),
+                fake_module("b", direction="b2a"),
+                fake_module("c", direction="both")]
+
+    def test_both_keeps_all_directions(self):
+        import cli
+        ids = {m.META["id"] for m in cli._select(self._mods(), self._args("both"))}
+        self.assertEqual(ids, {"a", "b", "c"})
+
+    def test_a2b_keeps_a2b_and_both(self):
+        import cli
+        ids = {m.META["id"] for m in cli._select(self._mods(), self._args("a2b"))}
+        self.assertEqual(ids, {"a", "c"})
+
+
+class TestPortPolicyMalformed(unittest.TestCase):
+    """A malformed port_policy.json must fall back to the built-in default (not
+    raise) — and the operator is warned on stderr (verified separately)."""
+    def test_malformed_falls_back_to_default(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "port_policy.json")
+        with open(p, "w") as f:
+            f.write("{ this is not valid json ]")
+        old = os.environ.get("HARNESS_PORT_POLICY")
+        os.environ["HARNESS_PORT_POLICY"] = p
+        try:
+            pol = core.load_port_policy()
+            self.assertEqual(pol["name"], "Polisi Standard Security v1.3")
+            self.assertIn(445, pol["deny"]["tcp"])   # built-in default intact
+        finally:
+            if old is None:
+                del os.environ["HARNESS_PORT_POLICY"]
+            else:
+                os.environ["HARNESS_PORT_POLICY"] = old
 
 
 if __name__ == "__main__":

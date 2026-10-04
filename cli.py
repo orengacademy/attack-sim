@@ -106,9 +106,12 @@ def _select(modules, args):
         sel = [m for m in sel if m.META.get("family", "").upper() in fams]
     if args.direction:
         d = args.direction.lower()
-        # a module tagged "both" always matches; otherwise exact direction match.
-        sel = [m for m in sel
-               if m.META.get("direction", "a2b").lower() in (d, "both")]
+        # "both" = run EVERY direction (a2b + b2a + both), not only the modules
+        # literally tagged direction="both". For a one-way filter (a2b / b2a) a
+        # module tagged "both" still matches (it runs in that direction too).
+        if d != "both":
+            sel = [m for m in sel
+                   if m.META.get("direction", "a2b").lower() in (d, "both")]
     return sel
 
 

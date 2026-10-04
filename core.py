@@ -268,8 +268,12 @@ def load_port_policy():
                         pol[sect][proto] = {int(x) for x in d[proto]}
     except FileNotFoundError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        # A malformed port_policy.json must not silently revert to the built-in
+        # default and leave the operator thinking their custom policy is active.
+        import sys as _sys
+        print(f"[port-policy] WARNING: could not load {path} ({e.__class__.__name__}: "
+              f"{e}); using built-in default '{pol['name']}'.", file=_sys.stderr)
     return pol
 
 
@@ -380,6 +384,12 @@ def validate_target(target):
         return True, "valid IP"
     except ValueError:
         pass
+    # A dotted all-numeric string that FAILED ip_address (e.g. 192.168.1.300, or
+    # 10.0.0.1.2) is a MALFORMED IP, not a hostname. Accepting it as a hostname is
+    # dangerous: every probe then silently fails and the whole run reports BLOCKED
+    # for a target that was never reached. Reject it with a clear reason.
+    if re.match(r"^\d{1,}(?:\.\d{1,})+$", t):
+        return False, "malformed IP address (octet out of range / wrong length)"
     if _HOSTNAME_RE.match(t):
         return True, "valid hostname"
     return False, "not a valid IP address or hostname"
