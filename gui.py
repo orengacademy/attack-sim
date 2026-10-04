@@ -150,29 +150,26 @@ class HarnessGUI:
         # gets its own row below — this panel now lives in a ~70%-width
         # column (not the full window), so packing long hints onto the same
         # row as a field used to clip them off the edge.
-        ttk.Label(f, text="Target IP / host").grid(row=0, column=0, sticky="w", **pad)
+        # Dynamic, TOP-TO-BOTTOM target list. Each row = an IP/host + a per-target
+        # WHITEBOX tick (ticked = allow-all baseline; unticked = blackbox). Row 1
+        # uses the on-screen creds/cloud/source below; added rows use their OWN
+        # remembered cfg. "+ add target" appends a row (unlimited N, like CLI
+        # --target A,B,C). The "−" on a row removes it.
+        ttk.Label(f, text="Targets").grid(row=0, column=0, sticky="nw", **pad)
         tgf = ttk.Frame(f); tgf.grid(row=0, column=1, sticky="w", **pad)
-        self.target = ttk.Entry(tgf, width=16)
-        self.target.pack(side="left")
-        # Additional targets (comma-separated) so one scan hits A->B (kvdc), A->C
-        # (cloud), ... — each ADDITIONAL target uses ITS OWN remembered cloud/creds/
-        # posture (from .target_memory.json), not the on-screen fields (those apply
-        # to target 1). Unlimited N, same as the CLI's --target A,B,C.
-        ttk.Label(tgf, text=" + more ").pack(side="left")
-        self.target2 = ttk.Entry(tgf, width=30)
-        self.target2.pack(side="left")
-        ttk.Label(tgf, text=" (comma-separated; each uses its own saved cfg)",
+        hdr = ttk.Frame(tgf); hdr.pack(anchor="w", pady=(0, 2))
+        ttk.Button(hdr, text="+ add target", width=12,
+                   command=self._add_target_row).pack(side="left")
+        ttk.Label(hdr, text="  (tick = whitebox baseline · row 1 uses the fields below)",
                   style="Muted.TLabel").pack(side="left")
-        # recall the last-used source/cloud options for a target when you leave the
-        # field or press Enter (saved per target on RUN) — so re-running against the
-        # next host doesn't need re-typing.
-        self.target.bind("<FocusOut>", lambda e: self._recall_target())
-        self.target.bind("<Return>", lambda e: self._recall_target())
+        self._rows_frame = ttk.Frame(tgf); self._rows_frame.pack(anchor="w")
+        self.target_rows = []          # [(entry, whitebox_var, row_frame)]
+        self._add_target_row(primary=True)
 
-        ttk.Label(f, text="Iterations").grid(row=0, column=2, sticky="e", **pad)
+        ttk.Label(f, text="Iterations").grid(row=0, column=2, sticky="ne", **pad)
         self.iterations = ttk.Spinbox(f, from_=1, to=20, width=5)
         self.iterations.set(1)
-        self.iterations.grid(row=0, column=3, sticky="w", **pad)
+        self.iterations.grid(row=0, column=3, sticky="nw", **pad)
 
         ttk.Label(f, text="Workers").grid(row=1, column=0, sticky="w", **pad)
         self.workers = ttk.Spinbox(f, from_=1, to=16, width=5)
@@ -210,12 +207,7 @@ class HarnessGUI:
             self.site_entry.insert(0, _os.environ["HARNESS_SITE_ID"])
         self.debug_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(sf, text="Debug", variable=self.debug_var).pack(side="left", padx=(8, 0))
-        # Assessment posture (per target): ticked = WHITEBOX (allow-all baseline,
-        # confirms the attacks/services work); unticked = BLACKBOX (through the
-        # SD-WAN as-is). Recorded in the evidence + remembered per target.
-        self.whitebox_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(sf, text="Whitebox (allow-all baseline)",
-                        variable=self.whitebox_var).pack(side="left", padx=(8, 0))
+        # (posture is now a per-target "whitebox" tick on each Target row above)
 
         # Cloud target: SMB/RPC are DNAT'd to alternate high ports (ISPs block
         # outbound 445). Ticking this maps 445->SMB and 135->RPC for the entered
@@ -559,6 +551,28 @@ class HarnessGUI:
                 out[mid] = int(v)
         return out
 
+    def _add_target_row(self, primary=False):
+        """Append a target row: IP/host entry + a per-target whitebox tick (and a
+        remove button on non-primary rows). The primary row's widgets are also
+        exposed as self.target / self.whitebox_var so recall/save/prefill work."""
+        rf = ttk.Frame(self._rows_frame); rf.pack(anchor="w", pady=1)
+        entry = ttk.Entry(rf, width=18); entry.pack(side="left")
+        wb = tk.BooleanVar(value=False)
+        ttk.Checkbutton(rf, text="whitebox", variable=wb).pack(side="left", padx=(6, 0))
+        if primary:
+            self.target = entry
+            self.whitebox_var = wb
+            entry.bind("<FocusOut>", lambda e: self._recall_target())
+            entry.bind("<Return>", lambda e: self._recall_target())
+        else:
+            ttk.Button(rf, text="−", width=2,
+                       command=lambda: self._remove_target_row(rf)).pack(side="left", padx=(6, 0))
+        self.target_rows.append((entry, wb, rf))
+
+    def _remove_target_row(self, rf):
+        self.target_rows = [(e, w, f) for (e, w, f) in self.target_rows if f is not rf]
+        rf.destroy()
+
     def _eye(self, parent, entry):
         """Add a small show/hide (eye) toggle next to a masked password Entry."""
         var = tk.BooleanVar(value=False)
@@ -841,10 +855,7 @@ class HarnessGUI:
         # tick; target 2 uses its own remembered cloud config), so preflight covers
         # the whole multi-target scan.
         recon = ""
-        tgts = [(self.target.get().strip(), True)]
-        for t in self.target2.get().replace(";", ",").split(","):
-            if t.strip():
-                tgts.append((t.strip(), False))
+        tgts = [(e.get().strip(), (i == 0)) for i, (e, _w, _f) in enumerate(self.target_rows)]
         tgts = [(t, scr) for t, scr in tgts if t]
         if not tgts:
             recon = "\n\n[recon skipped: enter a Target to also probe its ports/services]"
@@ -1087,16 +1098,21 @@ class HarnessGUI:
             if not allowed:
                 messagebox.showerror("Target not allowed", f"{tip}: {areason}"); return False
             return True
-        # target 1: on-screen config. Additional (comma-separated): each its own cfg.
-        if not _ok_target(target_ip):
-            return
-        jobs.append((target_ip, self._cfg_from_screen()))
-        for tip in (t.strip() for t in self.target2.get().replace(";", ",").split(",")):
+        # Each Target ROW: row 1 uses the on-screen config, added rows use their own
+        # remembered cfg; posture comes from THAT row's whitebox tick.
+        for i, (entry, wb, _rf) in enumerate(self.target_rows):
+            tip = entry.get().strip()
             if not tip:
                 continue
             if not _ok_target(tip):
                 return
-            jobs.append((tip, self._cfg_recalled(tip)))
+            cfg = self._cfg_from_screen() if i == 0 else self._cfg_recalled(tip)
+            cfg["mode"] = "whitebox" if wb.get() else "blackbox"   # per-ROW posture
+            if i > 0:
+                core.remember_target(tip, mode=cfg["mode"])        # persist added row's posture
+            jobs.append((tip, cfg))
+        if not jobs:
+            messagebox.showwarning("No target", "Enter at least one target."); return
         try:
             iters = max(1, int(self.iterations.get()))
         except (ValueError, TypeError):
