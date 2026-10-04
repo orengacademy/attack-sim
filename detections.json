@@ -1,0 +1,106 @@
+{
+  "apache_41773": {
+    "source": "Sangfor M4500-F-1",
+    "note": "Sangfor IPS signature fired: 'web Vulnerability' [High/Medium] DENY x12 (prevention=yes)"
+  },
+  "dcsync": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/445,tcp/135: ALLOW (policy=)"
+  },
+  "dns_egress_external": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged udp/53: ALLOW (policy=Standard Outbound)"
+  },
+  "dot_doq_853": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/853: DENY (policy=default-policy)"
+  },
+  "eastwest_lateral": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/445,tcp/5985,tcp/135,tcp/3389: MIXED (policy=;default-policy)"
+  },
+  "exposed_mgmt_api": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/443: ALLOW (policy=Outbound_NPSA)"
+  },
+  "ftp_anonymous": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/21: ALLOW (policy=Outbound_NPSA)"
+  },
+  "http_smuggling": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/443: ALLOW (policy=Outbound_NPSA)"
+  },
+  "ja3_mimicry": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/443: ALLOW (policy=Outbound_NPSA)"
+  },
+  "kerberoast": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/88,tcp/389: ALLOW (policy=Outbound_NPSA)"
+  },
+  "kerberos_asrep": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/88: ALLOW (policy=Outbound_NPSA)"
+  },
+  "l7_enforce_443": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/443: ALLOW (policy=Outbound_NPSA)"
+  },
+  "ldap_null_bind": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/389: ALLOW (policy=Outbound_NPSA)"
+  },
+  "nopac": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/389,tcp/445,tcp/88: ALLOW (policy=;Outbound_NPSA)"
+  },
+  "petitpotam": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/445: ALLOW (policy=)"
+  },
+  "psexec": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/445: ALLOW (policy=)"
+  },
+  "samaccountname_spoof": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/389,tcp/445: ALLOW (policy=;Outbound_NPSA)"
+  },
+  "snmp_brute": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged udp/161: ALLOW (policy=Outbound_NPSA)"
+  },
+  "ssh_brute": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/22: ALLOW (policy=Outbound_NPSA)"
+  },
+  "syn_flood": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/80: ALLOW (policy=Outbound_NPSA)"
+  },
+  "tls_carrier": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/443: ALLOW (policy=Outbound_NPSA)"
+  },
+  "udp443_quic": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged udp/443: DENY (policy=default-policy)"
+  },
+  "waf_evasion": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/443: ALLOW (policy=Outbound_NPSA)"
+  },
+  "wmiexec": {
+    "source": "Sangfor M4500-F-1",
+    "note": "session-logged tcp/445,tcp/135: ALLOW (policy=)"
+  },
+  "icmp_flood": {
+    "source": "Sangfor M4500-F-1",
+    "note": "Sangfor IPS signature fired: 'ICMP flooding attack' [High] DENY x1 (prevention=yes)"
+  },
+  "log4shell": {
+    "source": "Sangfor M4500-F-1",
+    "note": "Sangfor IPS signature fired: 'web Vulnerability' [High/Medium] DENY x12 (prevention=yes)"
+  }
+}

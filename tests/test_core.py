@@ -107,8 +107,15 @@ class TestCredentials(unittest.TestCase):
 
     def test_password_default_empty(self):
         os.environ.pop("HARNESS_DC_PASS", None)
-        # (assumes no credentials.env present in the test env)
-        self.assertEqual(core.load_credentials()["dc_pass"], "")
+        # The BUILT-IN default password must be empty — no secret baked into
+        # source. A committed dummy-lab credentials.env now exists on disk, so
+        # isolate the file read to prove the default (not the lab file) is empty.
+        orig = core._read_cred_file
+        core._read_cred_file = lambda: {}
+        try:
+            self.assertEqual(core.load_credentials()["dc_pass"], "")
+        finally:
+            core._read_cred_file = orig
 
 
 class TestGetPort(unittest.TestCase):

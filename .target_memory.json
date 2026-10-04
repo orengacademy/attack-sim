@@ -1,0 +1,30 @@
+{
+  "192.168.122.209": {
+    "cloud": false,
+    "last_used": "2026-10-02T15:12:58.495561",
+    "domain": "lab.local",
+    "dc_user": "Administrator",
+    "dc_pass": "NewPass123!"
+  },
+  "127.0.0.1": {
+    "cloud": false,
+    "last_used": "2026-10-02T15:44:45.697250",
+    "ssh_user": "labadmin",
+    "ssh_pass": "Passw0rd!",
+    "site_id": "ORG2026-70"
+  },
+  "159.223.35.108": {
+    "cloud": true,
+    "smb_port": 4445,
+    "rpc_port": 1135,
+    "last_used": "2026-10-02T12:47:50.090870",
+    "ssh_port": 22
+  },
+  "167.71.222.169": {
+    "cloud": true,
+    "smb_port": 4445,
+    "rpc_port": 1135,
+    "last_used": "2026-10-03T16:10:40.111950",
+    "ssh_port": 22
+  }
+}

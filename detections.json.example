@@ -1,9 +1,0 @@
-{
-  "_comment": "Blue-team / SOC detections. Copy to detections.json (git-ignored) or point HARNESS_DETECTIONS at a file. During a purple-team run, after the SOC confirms which tests they SAW, list those attack ids here. Any attack that PASSES the boundary AND appears here is scored DETECTED (passed but alerted) instead of a silent finding (SUCCESS = passed-undetected). This turns the harness's block/pass result into the full Blocked / Detected / Passed-undetected verdict.",
-
-  "egress_tunnel_brokers": true,
-
-  "doh_multi": { "source": "SIEM", "note": "Splunk correlation TUN-014 fired on DoH to public resolver" },
-
-  "socks_pivot": { "source": "CrowdStrike EDR", "note": "flagged tunnel client + internal fan-out" }
-}
