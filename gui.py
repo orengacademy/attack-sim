@@ -847,11 +847,21 @@ class HarnessGUI:
         tgt = self.target.get().strip()
         if tgt:
             cmd += ["--target", tgt]
-        try:
-            p = _sp.run(cmd, capture_output=True, text=True, timeout=120)
-            out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
-        except Exception as e:
-            messagebox.showerror("Ingest failed", str(e)); return
+        # Run the ingest subprocess OFF the Tk main thread (up to 120s) so the GUI
+        # doesn't freeze/"not responding"; marshal the result back via root.after.
+        self._log(f"Correlating appliance log {os.path.basename(path)} … (background)")
+
+        def work():
+            try:
+                p = _sp.run(cmd, capture_output=True, text=True, timeout=120)
+                out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
+            except Exception as e:
+                self.root.after(0, lambda e=e: messagebox.showerror("Ingest failed", str(e)))
+                return
+            self.root.after(0, lambda: self._show_appliance_result(path, tgt, out))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_appliance_result(self, path, tgt, out):
         win = tk.Toplevel(self.root)
         win.title(f"Appliance-log correlation — {os.path.basename(path)}")
         win.geometry("900x620"); win.configure(bg=BG)
@@ -866,23 +876,16 @@ class HarnessGUI:
 
     def _preflight(self):
         selected = [m for (var, m) in self.vars.values() if var.get()] or self.modules
-        try:
-            report = core.format_preflight_report(core.preflight(selected))
-        except Exception as e:
-            messagebox.showerror("Preflight failed", str(e)); return
-        # probe BOTH targets' ports/services (target 1 honours the on-screen Cloud
-        # tick; target 2 uses its own remembered cloud config), so preflight covers
-        # the whole multi-target scan.
-        recon = ""
+        # Read the Tk widgets + apply per-target cloud port maps on the MAIN thread
+        # (Tk access must not happen off-thread); the blocking preflight + recon
+        # (socket probes) then run in a worker so the GUI never freezes.
         tgts = [(e.get().strip(), (i == 0)) for i, (e, _w, _f) in enumerate(self.target_rows)]
         tgts = [(t, scr) for t, scr in tgts if t]
-        if not tgts:
-            recon = "\n\n[recon skipped: enter a Target to also probe its ports/services]"
+        prepared = []
         for tgt, from_screen in tgts:
             ok, why = core.validate_target(tgt)
             if not ok:
-                recon += f"\n\n[recon skipped for {tgt}: invalid target — {why}]"
-                continue
+                prepared.append((tgt, False, f"invalid target — {why}")); continue
             try:
                 from modules import _portpatch
                 if from_screen:
@@ -893,11 +896,33 @@ class HarnessGUI:
                         _portpatch.CUSTOM_PORT_TARGETS[tgt] = cfg["cloud_map"]
                     else:
                         _portpatch.CUSTOM_PORT_TARGETS.pop(tgt, None)
-                recon += (f"\n\n───── recon: {tgt} ─────\n" if len(tgts) > 1 else "\n\n")
-                recon += core.format_reachability_report(core.reachability(tgt, selected))
+                prepared.append((tgt, True, None))
             except Exception as e:
-                recon += f"\n\n[recon error for {tgt}: {e}]"
+                prepared.append((tgt, False, str(e)))
+        self._log("Running preflight + recon … (background)")
 
+        def work():
+            try:
+                report = core.format_preflight_report(core.preflight(selected))
+            except Exception as e:
+                self.root.after(0, lambda e=e: messagebox.showerror("Preflight failed", str(e)))
+                return
+            recon = ""
+            if not prepared:
+                recon = "\n\n[recon skipped: enter a Target to also probe its ports/services]"
+            for tgt, okq, info in prepared:
+                if not okq:
+                    recon += f"\n\n[recon skipped for {tgt}: {info}]"
+                    continue
+                try:
+                    recon += (f"\n\n───── recon: {tgt} ─────\n" if len(prepared) > 1 else "\n\n")
+                    recon += core.format_reachability_report(core.reachability(tgt, selected))
+                except Exception as e:
+                    recon += f"\n\n[recon error for {tgt}: {e}]"
+            self.root.after(0, lambda: self._show_preflight_result(report, recon))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_preflight_result(self, report, recon):
         win = tk.Toplevel(self.root)
         win.title("Preflight + recon")
         win.geometry("860x600"); win.configure(bg=BG)

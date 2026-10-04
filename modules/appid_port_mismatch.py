@@ -42,14 +42,17 @@ META = {
 def run(target, ctx):
     out = [f"# App-ID protocol/port-mismatch test vs {target}"]
     allowed = []
+    connected = False   # at least one TCP flow actually established
+    reset = False       # at least one established flow was RESET (L7 enforcing)
     for port, payload, label in PAIRS:
         try:
             s = socket.create_connection((target, port), timeout=TIMEOUT)
+            connected = True
         except (socket.timeout, TimeoutError):
             out.append(f"{label}: no connect (filtered) — port blocked")
             continue
         except ConnectionRefusedError:
-            out.append(f"{label}: refused — port closed")
+            out.append(f"{label}: Connection refused — port closed (service absent)")
             continue
         except OSError as e:
             out.append(f"{label}: connect error ({e.__class__.__name__})")
@@ -69,6 +72,7 @@ def run(target, ctx):
             # the App-ID / firewall RESET the mismatched flow — the control WORKING.
             # Without this, the reset propagated out of run() -> recorded as a module
             # crash (NO-RESULT) instead of a block.
+            reset = True
             out.append(f"{label}: {e.__class__.__name__} — the mismatched protocol was "
                        "reset (App-ID/L7 enforcing, good)")
         except OSError as e:
@@ -79,6 +83,15 @@ def run(target, ctx):
     if allowed:
         out.append("[FINDING] SD-WAN is port-based (App-ID not enforcing L7) for: "
                    + ", ".join(allowed))
+    elif connected:
+        # a flow WAS established but no mismatch got through (reset/no reply) — this
+        # is the control (App-ID/L7) actually doing its job.
+        out.append("no mismatch allowed (App-ID or firewall enforcing L7)"
+                   + (" — mismatched flows reset" if reset else ""))
     else:
-        out.append("no mismatch allowed (App-ID or firewall enforcing L7)")
+        # nothing connected at all: the ports are closed/filtered, so there is no
+        # service to mismatch — this must NOT be credited to L7 enforcement (it
+        # would be a false BLOCKED). No blocked_regex marker here on purpose.
+        out.append("no ports reachable — service absent / ports closed "
+                   "(NOT an App-ID/L7 enforcement result)")
     return "\n".join(out)

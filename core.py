@@ -133,7 +133,10 @@ def _read_cfg_file():
             return json.load(f) or {}
     except FileNotFoundError:
         return {}
-    except Exception:
+    except Exception as e:
+        import sys
+        sys.stderr.write(f"[WARN] config.json could not be parsed ({e}) — using "
+                         "env/defaults only; your destinations may be inactive.\n")
         return {}
 
 
@@ -190,7 +193,10 @@ def load_detections():
             data = json.load(f)
     except FileNotFoundError:
         return {}
-    except Exception:
+    except Exception as e:
+        import sys
+        sys.stderr.write(f"[WARN] detections.json could not be parsed ({e}) — no "
+                         "blue-team detections loaded (attacks won't score DETECTED).\n")
         return {}
     out = {}
     if isinstance(data, dict):
@@ -358,6 +364,12 @@ def remember_target(target, **fields):
         try:
             with open(_TARGET_MEM, "w") as f:
                 json.dump(mem, f, indent=2)
+            # still enforce owner-only perms on the fallback path — this file can
+            # hold a DC/SSH password, and the primary path chmods 0600 too.
+            try:
+                os.chmod(_TARGET_MEM, 0o600)
+            except OSError:
+                pass
         except Exception:
             pass
 
@@ -734,12 +746,24 @@ class Evidence:
         # summary.json / INDEX.md are self-describing and a reader can see at a
         # glance how many verdicts are poisoned (SUSPECT = BLOCKED that may be an
         # IP ban; INCONCLUSIVE = never tested, source in IPS quarantine).
-        _dist, _suspect = {}, 0
+        # Dedup to ONE verdict per MODULE (its most-significant across iterations,
+        # per _V_ORDER) before tallying — otherwise with >1 iteration a module
+        # counts N times and finding/detected/blocked/suspect inflate past what the
+        # per-module table in report.txt / report.html / summary CSV actually shows.
+        _bymod = {}
         for r in self.records:
+            mid = r.get("attack_id") or r.get("attack")
             v = (r.get("appliance_result") if r.get("appliance_ip") is not None
                  else r.get("baseline_result")) or "?"
-            _dist[v] = _dist.get(v, 0) + 1
+            e = _bymod.setdefault(mid, {"vs": [], "suspect": False})
+            e["vs"].append(v)
             if "SUSPECT" in (r.get("verdict") or ""):
+                e["suspect"] = True
+        _dist, _suspect = {}, 0
+        for e in _bymod.values():
+            v = next((x for x in self._V_ORDER if x in e["vs"]), (e["vs"] or ["?"])[0])
+            _dist[v] = _dist.get(v, 0) + 1
+            if e["suspect"]:
                 _suspect += 1
         self.meta["verdicts"] = _dist
         self.meta["finding_count"] = _dist.get("SUCCESS", 0) + _dist.get("PASSED", 0)

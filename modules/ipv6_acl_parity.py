@@ -10,7 +10,6 @@ Needs an IPv6 target: pass an IPv6 literal as the target, set config
 MITRE T1599 (Network Boundary Bridging) / T1046.
 """
 import socket
-from modules import _util as U
 
 _PORTS = [(22, "SSH"), (445, "SMB"), (3389, "RDP"), (3306, "MySQL"),
           (1433, "MSSQL"), (5985, "WinRM"), (389, "LDAP"), (443, "HTTPS")]
