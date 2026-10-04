@@ -178,7 +178,10 @@ Copy the `*.example` and fill in; env vars override the files:
 | `requirements.txt` | — | Committed; Python libs for the in-process AD modules (`pip install -r`). Engine itself needs none. |
 
 Also: `HARNESS_PORT_<ID>` (custom port), `HARNESS_SOURCE_IP` (egress bind),
-`HARNESS_SITE_ID` (engagement/site tag), `HARNESS_DEBUG` (verbose tool trace).
+`HARNESS_SITE_ID` (engagement/site tag), `HARNESS_DEBUG` (verbose tool trace),
+`HARNESS_COOLDOWN` (pause before each brute/DoS module), `HARNESS_WAIT_UNBLOCK`
+(`--wait-unblock`: how long to wait for an IPS quarantine/source-blacklist to
+clear before marking the rest INCONCLUSIVE; default `max(30s, cooldown)`).
 
 **`--debug` / Debug checkbox** (`ctx.debug`): injects a verbose flag into an
 allowlisted set of tools (curl `-v`, ldapsearch `-v`, hydra `-d`, impacket
