@@ -150,6 +150,14 @@ def _build_parser():
 
 
 def run(target, ctx):
+    # No domain password -> the vendored noPac PoC falls back to
+    # getpass("Password:") and HANGS the whole run on an interactive prompt.
+    # (Running under sudo/root does NOT supply a DC credential — these are
+    # orthogonal.) Skip cleanly, exactly like psexec/dcsync/kerberoast.
+    if not (ctx.creds.get("dc_pass") or "").strip():
+        return (f"# noPac vs {target}\n\n[SKIP] no domain password configured "
+                "(set HARNESS_DC_PASS / --dc-pass / credentials.env) — noPac needs "
+                "valid domain creds; skipping to avoid an interactive password prompt.")
     is_custom = _portpatch.is_custom_port_target(target)
     header = f"# noPac (in-process, impact={IMPACT_MODE}) vs {target}"
     header += " [custom-port patch active]\n\n" if is_custom else "\n\n"

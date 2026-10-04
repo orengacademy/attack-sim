@@ -580,6 +580,28 @@ class TestWaitUnblockFlag(unittest.TestCase):
         self.assertAlmostEqual(sum(slept), 12.0, delta=0.01)   # waited ~12s, not 30
 
 
+class TestADModulesSkipWithoutPassword(unittest.TestCase):
+    """noPac / sAMAccountName must SKIP (not hang on the vendored getpass
+    "Password:" prompt) when no DC password is set. sudo/root does NOT supply a
+    DC credential, so running elevated does not avoid this."""
+    def _ctx(self):
+        return core.Context(credentials={"domain": "lab.local", "dc_user": "Administrator", "dc_pass": ""})
+
+    def test_nopac_skips_without_password(self):
+        try:
+            import modules.nopac as n
+        except Exception as e:
+            self.skipTest(f"nopac deps unavailable: {e}")
+        self.assertIn("[SKIP]", n.run("127.0.0.1", self._ctx()))
+
+    def test_samaccountname_skips_without_password(self):
+        try:
+            import modules.samaccountname_spoof as s
+        except Exception as e:
+            self.skipTest(f"samaccountname deps unavailable: {e}")
+        self.assertIn("[SKIP]", s.run("127.0.0.1", self._ctx()))
+
+
 class TestToolFaultNotBlocked(unittest.TestCase):
     """A harness-internal fault (module crash / watchdog-abandon) must score
     NO-RESULT even when recon shows the port filtered — crediting a crashed

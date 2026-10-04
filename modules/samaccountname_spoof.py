@@ -73,6 +73,13 @@ def _load_nopac_utils():
 
 
 def run(target, ctx):
+    # No domain password -> the vendored noPac/ldap PoC falls back to
+    # getpass("Password:") and HANGS the run on an interactive prompt (sudo/root
+    # does NOT supply a DC credential). Skip cleanly like psexec/dcsync/kerberoast.
+    if not (ctx.creds.get("dc_pass") or "").strip():
+        return (f"# sAMAccountName Spoofing vs {target}\n\n[SKIP] no domain password "
+                "configured (set HARNESS_DC_PASS / --dc-pass / credentials.env) — needs "
+                "valid domain creds; skipping to avoid an interactive password prompt.")
     is_custom = _portpatch.is_custom_port_target(target)
     header = f"# sAMAccountName Spoofing (in-process) vs {target}"
     header += " [custom-port patch active]\n\n" if is_custom else "\n\n"
