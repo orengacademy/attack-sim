@@ -580,6 +580,24 @@ class TestWaitUnblockFlag(unittest.TestCase):
         self.assertAlmostEqual(sum(slept), 12.0, delta=0.01)   # waited ~12s, not 30
 
 
+class TestToolFaultNotBlocked(unittest.TestCase):
+    """A harness-internal fault (module crash / watchdog-abandon) must score
+    NO-RESULT even when recon shows the port filtered — crediting a crashed
+    module's BLOCKED to the control fabricates a 'control worked' result."""
+    def test_crash_on_filtered_port_is_no_result_not_blocked(self):
+        m = types.SimpleNamespace()
+        m.META = {"id": "crashy", "name": "crashy", "category": "Test", "requires": [],
+                  "ports": [("tcp", 9)], "mitre": ["T1046"], "tactic": "Discovery",
+                  "success_regex": r"WIN", "blocked_regex": r"NEVERMATCH"}
+        def boom(t, c): raise RuntimeError("kaboom")
+        m.run = boom
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=True)
+        r = ev.records[0]
+        self.assertEqual(r["baseline_result"], "NO-RESULT")   # was BLOCKED before the fix
+        self.assertIn("tool fault", r["verdict"].lower())
+
+
 class TestDirectionFilter(unittest.TestCase):
     """--direction both must run EVERY direction, not only modules tagged
     direction='both'. A one-way filter still includes 'both'-tagged modules."""
