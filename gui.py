@@ -242,6 +242,7 @@ class HarnessGUI:
         self.user_entry = ttk.Entry(crf, width=14); self.user_entry.pack(side="left", padx=(4, 6))
         ttk.Label(crf, text="Pass").pack(side="left")
         self.pass_entry = ttk.Entry(crf, width=14, show="•"); self.pass_entry.pack(side="left", padx=(4, 6))
+        self._eye(crf, self.pass_entry)
         ttk.Label(crf, text="(DC/AD creds — per-target; blank = credentials.env)",
                   style="Muted.TLabel").pack(side="left")
 
@@ -253,6 +254,7 @@ class HarnessGUI:
         self.ssh_user_entry = ttk.Entry(srf, width=14); self.ssh_user_entry.pack(side="left", padx=(4, 6))
         ttk.Label(srf, text="SSH pass").pack(side="left")
         self.ssh_pass_entry = ttk.Entry(srf, width=14, show="•"); self.ssh_pass_entry.pack(side="left", padx=(4, 6))
+        self._eye(srf, self.ssh_pass_entry)
         ttk.Label(srf, text="(ssh_brute only; blank = fall back to the DC User/Pass)",
                   style="Muted.TLabel").pack(side="left")
 
@@ -549,6 +551,13 @@ class HarnessGUI:
                 out[mid] = int(v)
         return out
 
+    def _eye(self, parent, entry):
+        """Add a small show/hide (eye) toggle next to a masked password Entry."""
+        var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(parent, text="👁", width=2, variable=var,
+                        command=lambda: entry.config(show="" if var.get() else "•"),
+                        style="TCheckbutton").pack(side="left", padx=(0, 4))
+
     def _toggle_cloud_ports(self):
         state = "normal" if self.cloud_var.get() else "disabled"
         self._smb_entry.configure(state=state)
@@ -665,7 +674,8 @@ class HarnessGUI:
             except ValueError:
                 cloud_map = {445: 4445, 135: 1135, 22: 22}
         return {"creds": creds, "source": self.source_entry.get().strip() or None,
-                "cloud_map": cloud_map}
+                "cloud_map": cloud_map,
+                "mode": "whitebox" if self.whitebox_var.get() else "blackbox"}
 
     def _cfg_recalled(self, target):
         """Build a target's config from its remembered .target_memory.json entry
@@ -681,7 +691,8 @@ class HarnessGUI:
             cloud_map = {445: int(rec.get("smb_port") or 4445),
                          135: int(rec.get("rpc_port") or 1135),
                          22: int(rec.get("ssh_port") or 22)}
-        return {"creds": creds, "source": rec.get("source") or None, "cloud_map": cloud_map}
+        return {"creds": creds, "source": rec.get("source") or None, "cloud_map": cloud_map,
+                "mode": rec.get("mode") or "blackbox"}   # 2nd target: its OWN saved posture
 
     @staticmethod
     def _apply_cfg(runner, target, cfg):
@@ -1122,7 +1133,10 @@ class HarnessGUI:
                     runner.ctx.debug = debug
                     self._apply_cfg(runner, tgt, cfg)
                     ev = core.Evidence(label=(tgt if len(jobs) > 1 else None))
-                    root = runner.run(selected, iters, ev, mode=mode, site_id=site_id)
+                    # posture is PER TARGET: target 1 from the Whitebox tick, the
+                    # 2nd target from its own remembered mode (via _cfg_recalled).
+                    root = runner.run(selected, iters, ev,
+                                      mode=cfg.get("mode", mode), site_id=site_id)
                     roots.append((tgt, root))
                     if self.runner._stop:
                         break
