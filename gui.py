@@ -154,13 +154,15 @@ class HarnessGUI:
         tgf = ttk.Frame(f); tgf.grid(row=0, column=1, sticky="w", **pad)
         self.target = ttk.Entry(tgf, width=16)
         self.target.pack(side="left")
-        # Optional 2nd target so one scan hits A->B (kvdc) AND A->C (cloud) — the
-        # 2nd target uses ITS OWN remembered cloud/creds (from .target_memory.json),
-        # not the on-screen fields (those apply to target 1).
-        ttk.Label(tgf, text=" + ").pack(side="left")
-        self.target2 = ttk.Entry(tgf, width=16)
+        # Additional targets (comma-separated) so one scan hits A->B (kvdc), A->C
+        # (cloud), ... — each ADDITIONAL target uses ITS OWN remembered cloud/creds/
+        # posture (from .target_memory.json), not the on-screen fields (those apply
+        # to target 1). Unlimited N, same as the CLI's --target A,B,C.
+        ttk.Label(tgf, text=" + more ").pack(side="left")
+        self.target2 = ttk.Entry(tgf, width=30)
         self.target2.pack(side="left")
-        ttk.Label(tgf, text=" (2nd: own saved cfg)", style="Muted.TLabel").pack(side="left")
+        ttk.Label(tgf, text=" (comma-separated; each uses its own saved cfg)",
+                  style="Muted.TLabel").pack(side="left")
         # recall the last-used source/cloud options for a target when you leave the
         # field or press Enter (saved per target on RUN) — so re-running against the
         # next host doesn't need re-typing.
@@ -192,6 +194,12 @@ class HarnessGUI:
         self.source_entry.pack(side="left", padx=(4, 6))
         ttk.Label(sf, text="(bind egress — DC foothold / VRF)",
                   style="Muted.TLabel").pack(side="left")
+        # Wait for an IPS quarantine / source blacklist to clear before marking the
+        # rest INCONCLUSIVE (--wait-unblock; 0 = default max(30s, cooldown)).
+        ttk.Label(sf, text="   Wait-unblock(s)").pack(side="left")
+        self.wait_unblock = ttk.Entry(sf, width=6)
+        self.wait_unblock.insert(0, "0")
+        self.wait_unblock.pack(side="left", padx=(4, 0))
         # Site ID (engagement/site tag → recorded in evidence + headers) and a
         # Debug toggle (verbose tool trace + full raw output + per-module timing).
         ttk.Label(sf, text="   Site ID").pack(side="left")
@@ -833,7 +841,10 @@ class HarnessGUI:
         # tick; target 2 uses its own remembered cloud config), so preflight covers
         # the whole multi-target scan.
         recon = ""
-        tgts = [(self.target.get().strip(), True), (self.target2.get().strip(), False)]
+        tgts = [(self.target.get().strip(), True)]
+        for t in self.target2.get().replace(";", ",").split(","):
+            if t.strip():
+                tgts.append((t.strip(), False))
         tgts = [(t, scr) for t, scr in tgts if t]
         if not tgts:
             recon = "\n\n[recon skipped: enter a Target to also probe its ports/services]"
@@ -1067,19 +1078,25 @@ class HarnessGUI:
         # Build the target list: target 1 (uses the on-screen config) + an optional
         # target 2 (uses its OWN remembered config) so one scan hits A->B and A->C.
         jobs = []   # (target, cfg)
-        for tnum, (entry, from_screen) in enumerate(((self.target, True), (self.target2, False)), 1):
-            tip = entry.get().strip()
-            if not tip:
-                if tnum == 1:
-                    messagebox.showwarning("No target", "Enter the target IP."); return
-                continue
+
+        def _ok_target(tip):
             ok, why = core.validate_target(tip)
             if not ok:
-                messagebox.showwarning("Invalid target", f"{tip}: {why}"); return
+                messagebox.showwarning("Invalid target", f"{tip}: {why}"); return False
             allowed, areason = core.target_allowed(tip)
             if not allowed:
-                messagebox.showerror("Target not allowed", f"{tip}: {areason}"); return
-            jobs.append((tip, self._cfg_from_screen() if from_screen else self._cfg_recalled(tip)))
+                messagebox.showerror("Target not allowed", f"{tip}: {areason}"); return False
+            return True
+        # target 1: on-screen config. Additional (comma-separated): each its own cfg.
+        if not _ok_target(target_ip):
+            return
+        jobs.append((target_ip, self._cfg_from_screen()))
+        for tip in (t.strip() for t in self.target2.get().replace(";", ",").split(",")):
+            if not tip:
+                continue
+            if not _ok_target(tip):
+                return
+            jobs.append((tip, self._cfg_recalled(tip)))
         try:
             iters = max(1, int(self.iterations.get()))
         except (ValueError, TypeError):
@@ -1088,6 +1105,10 @@ class HarnessGUI:
             workers = max(1, int(self.workers.get()))
         except (ValueError, TypeError):
             workers = 1
+        try:
+            wait_unblock = max(0.0, float(self.wait_unblock.get() or 0))
+        except (ValueError, TypeError):
+            wait_unblock = 0.0
         port_overrides = self._collect_port_overrides()
         self._save_target(jobs[0][0])   # remember target 1's on-screen cfg
         # assessment posture from the Whitebox tick (per target, remembered + in evidence).
@@ -1127,6 +1148,8 @@ class HarnessGUI:
                         on_status=lambda aid, name, it, b, v, _t=tgt: self.q.put(("status", (aid, name, it, b, v, _t))))
                     self.runner = runner
                     runner.concurrency = workers
+                    if wait_unblock > 0:
+                        runner.wait_unblock = wait_unblock
                     if port_overrides:
                         runner.ctx.port_overrides = port_overrides
                     runner.ctx.allow_active = active
