@@ -27,6 +27,7 @@ import importlib.util
 
 from modules import _portpatch
 from modules import _dcompatch
+from modules import _impacket
 
 META = {
     "id": "wmiexec",
@@ -51,15 +52,27 @@ META = {
     ),
 }
 
-_WMIEXEC_SCRIPT = "/usr/share/doc/python3-impacket/examples/wmiexec.py"
-
-
 def _load_wmiexec_class():
-    spec = importlib.util.spec_from_file_location("_impacket_wmiexec_script", _WMIEXEC_SCRIPT)
+    # 1) pip/source impacket ships examples as an IMPORTABLE package — use it
+    #    directly (works on any OS / install layout, no hardcoded path).
+    try:
+        from impacket.examples.wmiexec import WMIEXEC
+        return WMIEXEC
+    except Exception:
+        pass
+    # 2) Kali/Debian ship the examples only as doc SCRIPTS — resolve the file via
+    #    _impacket.script_path (searches all known example dirs) and load the class
+    #    out of it. The old code hardcoded the Debian path, so every WMI run was
+    #    NO-RESULT on a pip/non-Debian impacket.
+    path = _impacket.script_path("wmiexec")
+    if not path:
+        raise FileNotFoundError(
+            "wmiexec.py not found: impacket.examples.wmiexec is not importable and no "
+            "example script exists under " + ", ".join(_impacket._example_dirs()))
+    spec = importlib.util.spec_from_file_location("_impacket_wmiexec_script", path)
     mod = importlib.util.module_from_spec(spec)
-    # Register before exec so impacket's NDR (de)marshalling can resolve
-    # classes via sys.modules[cls.__module__] — see the same fix in
-    # modules/psexec.py / modules/petitpotam.py.
+    # Register before exec so impacket's NDR (de)marshalling can resolve classes
+    # via sys.modules[cls.__module__] — see modules/psexec.py / petitpotam.py.
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod.WMIEXEC

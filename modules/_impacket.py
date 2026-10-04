@@ -49,6 +49,19 @@ def resolve(base):
     return None
 
 
+def script_path(base):
+    """The FILESYSTEM path of an impacket example script (``X.py``), for modules
+    that load a class OUT of it via importlib (spec_from_file_location) rather than
+    shelling out — e.g. wmiexec/psexec on a Kali/Debian layout where the examples
+    ship only as doc scripts. Returns None if not found. Prefer importing
+    ``impacket.examples.X`` directly where that package layout exists (pip/source)."""
+    for d in _example_dirs():
+        p = os.path.join(d, f"{base}.py")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def have_lib():
     """True if the impacket PYTHON library is importable (the real dependency)."""
     try:
