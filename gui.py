@@ -202,6 +202,12 @@ class HarnessGUI:
             self.site_entry.insert(0, _os.environ["HARNESS_SITE_ID"])
         self.debug_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(sf, text="Debug", variable=self.debug_var).pack(side="left", padx=(8, 0))
+        # Assessment posture (per target): ticked = WHITEBOX (allow-all baseline,
+        # confirms the attacks/services work); unticked = BLACKBOX (through the
+        # SD-WAN as-is). Recorded in the evidence + remembered per target.
+        self.whitebox_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sf, text="Whitebox (allow-all baseline)",
+                        variable=self.whitebox_var).pack(side="left", padx=(8, 0))
 
         # Cloud target: SMB/RPC are DNAT'd to alternate high ports (ISPs block
         # outbound 445). Ticking this maps 445->SMB and 135->RPC for the entered
@@ -585,6 +591,8 @@ class HarnessGUI:
             return
         if rec.get("source") and not self.source_entry.get().strip():
             self.source_entry.insert(0, rec["source"])
+        if rec.get("mode"):
+            self.whitebox_var.set(rec["mode"] == "whitebox")
         if "cloud" in rec:
             self.cloud_var.set(bool(rec["cloud"]))
             if rec.get("smb_port"):
@@ -621,7 +629,8 @@ class HarnessGUI:
                 dc_pass=self.pass_entry.get().strip() or None,
                 ssh_user=self.ssh_user_entry.get().strip() or None,
                 ssh_pass=self.ssh_pass_entry.get().strip() or None,
-                site_id=self.site_entry.get().strip() or None)
+                site_id=self.site_entry.get().strip() or None,
+                mode=("whitebox" if self.whitebox_var.get() else "blackbox"))
         except Exception:
             pass
 
@@ -1070,9 +1079,8 @@ class HarnessGUI:
             workers = 1
         port_overrides = self._collect_port_overrides()
         self._save_target(jobs[0][0])   # remember target 1's on-screen cfg
-        # white-box vs black-box posture is a cli.py-only flag now (--mode) —
-        # the GUI always runs black-box, so there's nothing to pick here.
-        self._run_mode = "blackbox"
+        # assessment posture from the Whitebox tick (per target, remembered + in evidence).
+        self._run_mode = "whitebox" if self.whitebox_var.get() else "blackbox"
         self._run_targets = [t for t, _c in jobs]   # cleared from _portpatch at run-end
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"

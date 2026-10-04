@@ -767,11 +767,11 @@ class Evidence:
         # output string straight through is correct — don't hand-escape it,
         # that would double-escape and corrupt the file.
         OUTPUT_CELL_LIMIT = 4000  # Excel caps a cell at 32,767 chars; stay well under it
-        cols = ["iteration", "test_type", "family", "direction",
-                "category", "attack", "ports", "tactic", "mitre", "cwe",
-                "control_tested", "fix_location", "baseline_result",
-                "appliance_result", "passed", "verdict", "output",
-                "detected_source", "duration_s", "timestamp"]
+        cols = ["iteration", "mode", "target_ip", "source_ip", "test_type",
+                "family", "direction", "category", "attack", "ports", "recon",
+                "policy", "tactic", "mitre", "cwe", "control_tested",
+                "fix_location", "baseline_result", "appliance_result", "passed",
+                "verdict", "detected_source", "duration_s", "timestamp", "output"]
 
         def _write_csv(f):
             w = csv.DictWriter(f, fieldnames=cols)
@@ -814,7 +814,8 @@ class Evidence:
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
                  f"  Run: {self.ts}   ·   Harness v{VERSION}"
-                 + (f" ({self.meta['engine_version']})" if self.meta.get("engine_version") else ""),
+                 + (f" ({self.meta['engine_version']})" if self.meta.get("engine_version") else "")
+                 + f"   ·   Posture: {self.meta.get('mode', 'blackbox').upper()}",
                  "=" * 64,
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
@@ -1167,7 +1168,7 @@ color:#f0d58c;padding:10px 12px;border-radius:6px;margin:12px 0;font-size:13px}}
 </style></head><body>
 <h1>Control Validation Harness — Results</h1>
 <div class=meta>{('SITE ' + e(site) + ' &middot; ') if site else ''}target <code>{e(tgt)}</code>
-&middot; run {e(m.get('run',''))} &middot; harness {ver}
+&middot; run {e(m.get('run',''))} &middot; harness {ver} &middot; posture {e(m.get('mode','blackbox'))}
 &middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
 {banner}
 {''.join(bars)}
@@ -2652,6 +2653,13 @@ class Runner:
             "detected_source": detected_source,
             "target_ip": self.target_ip,
             "appliance_ip": self.appliance_ip if self.dual else None,
+            # egress source bind (whitelisted-source tracking) + per-port recon
+            # state + boundary port-policy outcome — so each row is self-describing.
+            "source_ip": getattr(self.ctx, "source_ip", "") or "",
+            "recon": ", ".join(
+                f"{pr}/{p if p is not None else ''}:{st}"
+                for (pr, p, st) in ((recon_by_id.get(meta["id"]) or {}).get("probes") or [])),
+            "policy": (getattr(self, "_pol_by_id", {}).get(meta["id"], {}) or {}).get("outcome", ""),
             "reachability": recon_by_id.get(meta["id"]),
             "timestamp": datetime.now().isoformat(),
             # full raw tool output — result.json/summary.json keep it
