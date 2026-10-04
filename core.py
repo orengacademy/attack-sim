@@ -1074,7 +1074,13 @@ class Evidence:
                                     "mitre": ", ".join(r.get("mitre", []) or []),
                                     "cwe": ", ".join(r.get("cwe", []) or []),
                                     "dur": None, "vs": [], "verdicts": {}, "iters": []})
-            br = r.get("baseline_result", "?")
+            # In dual-path (appliance) mode the AUTHORITATIVE verdict is the
+            # appliance leg, not the allow-all baseline (which is only OK/AUTH-
+            # FAILED/FAIL-inconclusive). report.txt + summary.json already select
+            # appliance_result when appliance_ip is set; report.html must match, or
+            # the shareable HTML shows meaningless verdicts for the SD-WAN use case.
+            br = (r.get("appliance_result") if r.get("appliance_ip") is not None
+                  else r.get("baseline_result")) or "?"
             d["vs"].append(br)
             d["verdicts"][br] = r.get("verdict", "")
             # one entry per iteration, in run order, so the report can show how
@@ -1279,6 +1285,36 @@ def classify(meta, base_raw, app_raw):
     else:
         verdict = "REVIEW (no result through appliance — block vs monitor?)"
     return baseline_result, appliance_result, verdict
+
+
+def _detection_phrasing(note):
+    """Word a DETECTED verdict by the NATURE of the detection note, instead of a
+    blanket "detection works, prevention did not" (which over-claims for a plain
+    session-log ALLOW — that is the appliance LOGGING+ALLOWING a flow, i.e.
+    visibility, not an IPS alert, and nothing tried to prevent it). The notes are
+    produced by additional/sangfor_ingest.py with predictable substrings."""
+    n = (note or "").lower()
+    if "prevention=yes" in n or "signature" in n:
+        # a real IPS/AV signature fired (and claims prevention) — yet the attack
+        # still returned a result, so prevention did NOT actually stop this probe.
+        return ("an IPS/appliance SIGNATURE fired on this attack (a genuine detection) "
+                "but the probe still got through — detection works, prevention did not")
+    if "prevention=no" in n:
+        return ("an IPS/appliance signature matched in detect-only mode (no prevention) "
+                "— detection works, prevention is not enabled")
+    if "deny" in n:
+        return ("the appliance DENIED this flow at the policy/session level — confirm "
+                "against the raw log whether the attack was actually prevented, since it "
+                "still returned a result")
+    if "allow" in n or "session-logged" in n or "seen" in n:
+        # the crux of the user's question: a session-log ALLOW is VISIBILITY, not
+        # a security detection, and prevention was never in scope on an allowed policy.
+        return ("the appliance LOGGED and ALLOWED this flow — this is visibility / "
+                "telemetry only (NOT an IPS alert, and prevention was not in scope on an "
+                "allowed policy). Confirm your SOC actually ALERTS on it before counting "
+                "it as a detection")
+    return ("the appliance/SOC has a record of this attack (detection); prevention did "
+            "not block it")
 
 
 # ---------------------------------------------------------------------
@@ -2280,9 +2316,13 @@ class Runner:
 
     def _iterate(self, modules, iterations, ev, skip_unready, ready_ids,
                  pf_by_id, recon_by_id, log):
+        import sys
         import threading
         from concurrent.futures import ThreadPoolExecutor
 
+        # Snapshot the REAL stdout so _restore_process_globals can repair it if an
+        # in-process AD module is abandoned by the watchdog mid-`redirect_stdout`.
+        real_stdout = sys.stdout
         total = iterations * len(modules)
         prog = {"cur": 0}
         plock = threading.Lock()
@@ -2352,6 +2392,7 @@ class Runner:
                     list(ex.map(lambda mm: self._process_module(
                         mm, it, skip_unready, ready_ids, pf_by_id, recon_by_id,
                         ev, log, bump), parallel))
+                self._restore_process_globals(real_stdout)
             for i, m in enumerate(serial):
                 if self._stop:
                     break
@@ -2387,6 +2428,28 @@ class Runner:
                         _slept += 1.0
                 self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
                                      recon_by_id, ev, log, bump)
+                # Defensive: repair process-global state after EACH serial module,
+                # so an abandoned (hung) in-process AD module that never ran its
+                # finally can't leave socket.connect patched / stdout redirected
+                # and corrupt every later module.
+                self._restore_process_globals(real_stdout)
+
+    def _restore_process_globals(self, real_stdout):
+        """Undo any leftover _portpatch socket.connect monkeypatch and stdout
+        redirect. A no-op when the module cleaned up normally (the common case);
+        the repair only matters when a module was abandoned by the watchdog
+        mid-run (its `finally` never executed)."""
+        try:
+            from modules import _portpatch
+            _portpatch.remove()
+        except Exception:
+            pass
+        try:
+            import sys
+            if real_stdout is not None and sys.stdout is not real_stdout:
+                sys.stdout = real_stdout
+        except Exception:
+            pass
 
     def _await_unblacklist(self, log, where):
         """Wait for a blacklisted source to be let back in, re-probing the canary.
@@ -2464,7 +2527,34 @@ class Runner:
     def _process_module(self, m, it, skip_unready, ready_ids, pf_by_id,
                         recon_by_id, ev, log, bump):
         """Run (or skip) one module for one iteration and record the result.
-        Safe to call from worker threads (Evidence is locked, callbacks wrapped)."""
+        Safe to call from worker threads (Evidence is locked, callbacks wrapped).
+
+        Exception boundary: `m.run()` is already crash-wrapped in _safe_module_run,
+        but the SURROUNDING classify/recon/record code could also raise on odd
+        input. If it does, record this module as NO-RESULT and keep going — one bad
+        module must never abort the rest of the run (CLAUDE.md guardrail)."""
+        if self._stop:
+            return
+        meta = m.META
+        try:
+            self._process_module_inner(m, it, skip_unready, ready_ids, pf_by_id,
+                                       recon_by_id, ev, log, bump)
+        except Exception as e:
+            hint = f"{e.__class__.__name__}: {e}"
+            verdict = (f"engine error while processing this module ({hint}) — not a "
+                       "control result; the run continues")
+            for fn in (lambda: log(f"     target: [NO-RESULT]  -> {verdict}"),
+                       lambda: self.on_status(meta["id"], meta["name"], it, "NO-RESULT", verdict),
+                       lambda: self._record(ev, it, meta, "NO-RESULT", "-", verdict,
+                                            recon_by_id, output=""),
+                       bump):
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+    def _process_module_inner(self, m, it, skip_unready, ready_ids, pf_by_id,
+                              recon_by_id, ev, log, bump):
         if self._stop:
             return
         meta = m.META
@@ -2509,8 +2599,8 @@ class Runner:
                 det = self._detection(meta, app_raw)
                 if det:
                     a, detected_source = "DETECTED", det[0]
-                    verdict = (f"attack passed the appliance BUT was DETECTED "
-                               f"({det[1]}) — detection works, prevention did not")
+                    verdict = (f"attack passed the appliance but the appliance/SOC "
+                               f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
             log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
             output_for_record = target_raw + "\n\n--- through appliance ---\n\n" + app_raw
         else:
@@ -2546,8 +2636,8 @@ class Runner:
                 det = self._detection(meta, target_raw)
                 if det:
                     b, detected_source = "DETECTED", det[0]
-                    verdict = (f"attack passed the boundary BUT was DETECTED "
-                               f"({det[1]}) — detection works, prevention did not")
+                    verdict = (f"attack passed the boundary but the appliance/SOC "
+                               f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
                 else:
                     b, verdict = "SUCCESS", "attack succeeded against target (passed-undetected)"
             elif authfail:

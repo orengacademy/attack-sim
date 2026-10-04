@@ -584,6 +584,21 @@ def main():
             except Exception:
                 pass
 
+        # Apply an explicit --ssh-port even WITHOUT --cloud: a direct Linux target
+        # may run SSH on a non-standard port. Feed it to ssh_brute via
+        # port_overrides so the hydra subprocess actually targets it (previously
+        # --ssh-port was silently ignored unless --cloud was also set). Cloud mode
+        # already NATs 22->ssh via _portpatch above; an explicit
+        # `--port ssh_brute=N` still wins (setdefault).
+        if args.ssh_port and not cloud:
+            try:
+                po = dict(getattr(runner.ctx, "port_overrides", None) or {})
+                po.setdefault("ssh_brute", int(args.ssh_port))
+                runner.ctx.port_overrides = po
+                print(f"[ssh] ssh_brute -> port {args.ssh_port} (direct target)")
+            except (TypeError, ValueError):
+                print(f"[!] bad --ssh-port {args.ssh_port!r}", file=sys.stderr)
+
         # Per-target CREDENTIALS (DC + separate SSH) — flag > remembered.
         dom = args.domain or mem.get("domain")
         usr = args.dc_user or mem.get("dc_user")
@@ -617,7 +632,8 @@ def main():
         if args.mode is not None: cred_fields["mode"] = args.mode
         core.remember_target(target, source=source or None, cloud=bool(cloud),
                              smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
-                             ssh_port=(ssh_p_port if cloud else None), **cred_fields)
+                             ssh_port=(ssh_p_port if (cloud or args.ssh_port) else None),
+                             **cred_fields)
 
         t0 = time.time()
         try:

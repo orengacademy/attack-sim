@@ -207,6 +207,53 @@ class TestServiceVsBlocked(unittest.TestCase):
         self.assertEqual(ev.records[0]["baseline_result"], "BLOCKED")
 
 
+class TestDetectionPhrasing(unittest.TestCase):
+    """A DETECTED verdict must be worded by the NATURE of the note: a session-log
+    ALLOW is visibility/telemetry (NOT 'detection works'), while a real IPS
+    signature with prevention=yes is a genuine detection that prevention didn't stop."""
+
+    def test_session_allow_is_visibility_not_detection(self):
+        p = core._detection_phrasing("session-logged tcp/389: ALLOW (policy=Outbound_NPSA)").lower()
+        self.assertIn("visibility", p)
+        self.assertNotIn("detection works", p)
+
+    def test_ips_signature_prevention_yes(self):
+        p = core._detection_phrasing(
+            "Sangfor IPS signature fired 'web Vulnerability' DENY x12 (prevention=yes)").lower()
+        self.assertIn("signature", p)
+        self.assertIn("prevention did not", p)
+
+
+class TestProcessModuleExceptionBoundary(unittest.TestCase):
+    """A crash in the per-module CLASSIFY/RECORD code (not just m.run()) must record
+    that module NO-RESULT and let the run CONTINUE — one bad module must never abort
+    the rest of the batch (CLAUDE.md guardrail)."""
+
+    def _ok(self, mid):
+        m = types.SimpleNamespace()
+        m.META = {"id": mid, "name": mid, "category": "Test", "requires": [],
+                  "ports": [], "mitre": ["T1046"], "tactic": "Discovery",
+                  "success_regex": r"WIN", "blocked_regex": r"nope"}
+        m.run = lambda t, c: "WIN"
+        return m
+
+    def test_processing_error_records_no_result_and_continues(self):
+        m1, m2 = self._ok("boom"), self._ok("ok")
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        r = core.Runner("127.0.0.1")
+        orig = r._process_module_inner
+
+        def inner(mm, *a, **k):
+            if mm.META["id"] == "boom":
+                raise RuntimeError("engine processing crash")
+            return orig(mm, *a, **k)
+        r._process_module_inner = inner
+        r.run([m1, m2], 1, ev, skip_unready=False, recon=False)
+        by = {rec["attack"]: rec["baseline_result"] for rec in ev.records}
+        self.assertEqual(by.get("boom"), "NO-RESULT")  # recorded, not silently dropped
+        self.assertIn("ok", by)                         # the run continued past the crash
+
+
 class TestSkipNotScoredAsBlocked(unittest.TestCase):
     """A module that printed [SKIP] (did nothing) must NEVER score as BLOCKED —
     otherwise an unconfigured active module fabricates a 'control worked' verdict.
