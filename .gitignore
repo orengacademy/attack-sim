@@ -8,13 +8,32 @@ venv/
 # Runtime attack evidence (created at run time; may contain captured hashes)
 evidence/
 
-# Local secrets / target scope / operator infra — never commit these
-credentials.env
-allowlist.txt
-config.json
-detections.json
-port_policy.json
-.env
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTROLLED DUMMY LAB: the operator files are COMMITTED directly (real .env /
+# .json, NOT .example templates) so every clone of this throwaway lab is
+# plug-and-play — no copy-from-example dance, creds/targets prefill out of the
+# box. They hold only DUMMY lab creds (lab.local / Administrator) and lab target
+# IPs, never real-world secrets. If you ever point config.json at REAL infra,
+# set it via HARNESS_CFG_* env vars instead of editing the tracked file.
+# Tracked on purpose: credentials.env, config.json, port_policy.json,
+# allowlist.txt, detections.json, fleet.json, .target_memory.json
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Still NEVER committed — real secrets / a safety gate, not dummy-lab.
+# (gitignore has no inline comments, so each pattern is on its own line.)
+
+# ROE opt-in marker: committing it would auto-accept and bypass the attack gate.
+.roe_accepted
+
+# Real cloud infra secrets (Terraform state + tfvars).
+deploy/cloud/**/.terraform/
+deploy/cloud/**/*.tfstate
+deploy/cloud/**/*.tfstate.*
+deploy/cloud/**/terraform.tfvars
+deploy/cloud/**/.terraform.lock.hcl
+
+# Generated lab TLS private key/cert for the https-lab container.
+deploy/nginx/certs/
 
 # OS / editor
 desktop.ini
@@ -22,33 +41,3 @@ desktop.ini
 Thumbs.db
 .idea/
 .vscode/
-
-# Terraform (cloud deploy) — state may hold secrets; tfvars holds infra IPs
-deploy/cloud/**/.terraform/
-deploy/cloud/**/*.tfstate
-deploy/cloud/**/*.tfstate.*
-deploy/cloud/**/terraform.tfvars
-deploy/cloud/**/.terraform.lock.hcl
-
-# Fleet of targets (operator-specific infra / IPs)
-fleet.json
-
-# Per-target remembered options (source/cloud ports) — operator-specific
-.target_memory.json
-
-# Generated lab TLS cert for the https-lab container (never commit keys)
-deploy/nginx/certs/
-
-# Engagement log exports / screenshots dropped under devices/ (real IPs, threat
-# data) — operator evidence, never commit. The folder structure is fine; the
-# artifacts are not.
-devices/**/*.xlsx
-devices/**/*.xls
-devices/**/*.csv
-devices/**/*.jpeg
-devices/**/*.jpg
-devices/**/*.png
-devices/**/*.pdf
-
-# durable rules-of-engagement opt-in (operator-local, never commit)
-.roe_accepted

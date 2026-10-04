@@ -162,9 +162,27 @@ White-box vs black-box is a **posture recorded per result**, not different
 execution: run allow-all (white-box) to confirm an attack works, then black-box
 to see what the boundary stops. PASSED white-box + BLOCKED black-box = control works.
 
-## Operator files — ALL git-ignored, NEVER commit, no live infra in source
+## Operator files — COMMITTED directly (controlled dummy lab)
 
-Copy the `*.example` and fill in; env vars override the files:
+> **Convention (operator decision, ORG2026-70):** this is a **controlled,
+> throwaway DUMMY lab** — the operator files below are **committed as real
+> `.env`/`.json` files, not `.example` templates**, so every clone is
+> plug-and-play (creds + targets prefill out of the box, no copy-from-example
+> step). They hold only **dummy lab creds** (`lab.local` / `Administrator`) and
+> **lab target IPs**, never real-world secrets. **Do NOT re-add these to
+> `.gitignore`.** Env vars (`HARNESS_*`) still override the files. If you ever
+> need to point `config.json` at **real** infra, set it via `HARNESS_CFG_*` env
+> vars rather than editing the tracked file.
+>
+> **Still NEVER committed** (real secrets / a safety gate — kept git-ignored):
+> `.roe_accepted` (committing it would auto-accept ROE and bypass the
+> attack-confirmation gate), Terraform `*.tfstate`/`terraform.tfvars`, and
+> `deploy/nginx/certs/` (lab TLS private key). `requirements.txt` stays
+> committed. Password is still redacted (`***`) from all evidence, and the
+> built-in source **defaults** still never contain a secret (dc_pass default is
+> `""`; the dummy password lives only in the committed `credentials.env`).
+
+Env vars override the files:
 
 | File | Env | Purpose |
 |------|-----|---------|
@@ -172,7 +190,7 @@ Copy the `*.example` and fill in; env vars override the files:
 | `config.json` | `HARNESS_CFG_<KEY>` | Destinations the USS modules aim at (your VPS/domain/DoH/canary/pivot). Unset → the module `[SKIP]`s. **This is how "no live infra hardcoded" is enforced — keep it that way.** |
 | `allowlist.txt` | `HARNESS_ALLOWLIST` | Opt-in hard target allowlist. Unconfigured → any validated target allowed. |
 | `detections.json` | `HARNESS_DETECTIONS` | Blue-team confirmations that drive the DETECTED verdict. |
-| `port_policy.json` | `HARNESS_PORT_POLICY` | Boundary allow-list (SD-WAN/firewall). Default built-in = **Polisi Standard Security v1.3**. Checked pre-scan: a BLOCKED/NO-SERVICE on a policy-**denied** service port is labelled *expected segmentation* (not an IPS/WAF result). `port_policy.json.example` committed. |
+| `port_policy.json` | `HARNESS_PORT_POLICY` | Boundary allow-list (SD-WAN/firewall). Default built-in = **Polisi Standard Security v1.3**. Checked pre-scan: a BLOCKED/NO-SERVICE on a policy-**denied** service port is labelled *expected segmentation* (not an IPS/WAF result). `port_policy.json` is committed (the Polisi v1.3 default). |
 | `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`/`ssh_port`, per-target creds `domain`/`dc_user`/`dc_pass`, **separate `ssh_user`/`ssh_pass`**, and `site_id`. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted (the GUI also resumes the last-used target + its saved values on launch). |
 | `fleet.json` | — | N-target fleet for `fleet.py` (`targets`/`sources`/`runs`). |
 | `requirements.txt` | — | Committed; Python libs for the in-process AD modules (`pip install -r`). Engine itself needs none. |

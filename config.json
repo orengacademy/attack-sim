@@ -26,6 +26,15 @@
   "published_app_url": "",
   "_published_app_url": "a published-on-443 app URL for the WAF-evasion and exposed-management probes (family F).",
 
+  "lots_saas": [],
+  "_lots_saas": "OPTIONAL extra living-off-trusted-sites C2 endpoints for the LOTS SaaS module, on top of its built-in list (github/graph/slack/…). Each item is \"label=host\" or just \"host\" (e.g. \"mybucket=my.s3.amazonaws.com\").",
+
+  "switch_targets": [],
+  "_switch_targets": "OPTIONAL list of network-device mgmt IPs for the switch/router mgmt-plane module (e.g. [\"10.0.0.1\",\"10.0.0.2\"]). Empty = probe the scan target itself.",
+
+  "ipv6_target": "",
+  "_ipv6_target": "OPTIONAL IPv6 literal for the IPv6 ACL-parity sweep when the target has no AAAA record (e.g. \"2001:db8::10\"). Empty = derive from the target's AAAA, else the module [SKIP]s.",
+
   "external_resolver": "8.8.8.8",
   "_external_resolver": "a public resolver IP for the 'is the internal DNS resolver forced' test.",
 
