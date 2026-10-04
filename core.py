@@ -2004,8 +2004,13 @@ class Runner:
         genuine hang — every module's own subprocess/socket calls already carry
         their own, tighter timeouts. Overridable via self.module_hard_timeout."""
         import threading
-        mid = m.META.get("id", "?") if hasattr(m, "META") else "?"
-        cap = self.module_hard_timeout or ((self.ctx.timeout or DEFAULT_TIMEOUT) + 60)
+        meta = m.META if hasattr(m, "META") else {}
+        mid = meta.get("id", "?")
+        # A module may declare its OWN longer watchdog via META["hard_timeout_s"]
+        # (e.g. a time-spread stealth scan that deliberately runs for many minutes);
+        # self.module_hard_timeout (test/override) still wins when set.
+        cap = (self.module_hard_timeout or meta.get("hard_timeout_s")
+               or ((self.ctx.timeout or DEFAULT_TIMEOUT) + 60))
         box = {}
 
         def worker():

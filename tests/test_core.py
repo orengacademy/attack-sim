@@ -633,6 +633,48 @@ class TestNmapPolicyScan(unittest.TestCase):
         out = self._run("")                    # nmap returned nothing -> IPS likely blocked it
         self.assertIn("SCAN-BLOCKED", out)
 
+    def test_stealth_time_spreads_into_batches(self):
+        import os
+        import modules.nmap_policy_scan as n
+        env = {"HARNESS_SCAN_STEALTH": "1", "HARNESS_SCAN_BATCH_DELAY": "0",
+               "HARNESS_SCAN_BATCHES": "4", "HARNESS_SCAN_TCP_PORTS": "1-100"}
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        calls = {"tcp": 0}
+
+        class Ctx:
+            def run_cmd(self, tmpl, target):
+                if "-sS" in tmpl:
+                    calls["tcp"] += 1
+                    return ("Host: 10.0.0.5 ()\tPorts: 3389/open/tcp//rdp///\n"
+                            if calls["tcp"] == 1 else "")
+                return ""
+        try:
+            out = n.run("10.0.0.5", Ctx())
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.assertEqual(calls["tcp"], 4)          # 4 time-spread batches
+        self.assertIn("STEALTH TCP", out)
+        self.assertIn("POLICY-VIOLATION", out)     # 3389 violation found across batches
+
+
+class TestModuleHardTimeoutMeta(unittest.TestCase):
+    """A module may declare its own longer watchdog via META['hard_timeout_s']
+    (e.g. a time-spread stealth scan); the engine must honour it."""
+    def test_meta_hard_timeout_honoured(self):
+        import time
+        m = types.SimpleNamespace()
+        m.META = {"id": "slow", "name": "slow", "category": "T", "requires": [],
+                  "ports": [], "mitre": [], "tactic": "D",
+                  "success_regex": "WIN", "blocked_regex": "x", "hard_timeout_s": 1}
+        m.run = lambda t, c: time.sleep(10) or "never"
+        r = core.Runner("127.0.0.1")
+        start = time.time()
+        out = r._safe_module_run(m, "127.0.0.1")
+        self.assertLess(time.time() - start, 6)    # watchdog fired at ~1s (META), not +60
+        self.assertIn("watchdog", out.lower())
+
 
 class TestToolFaultNotBlocked(unittest.TestCase):
     """A harness-internal fault (module crash / watchdog-abandon) must score

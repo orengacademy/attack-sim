@@ -30,10 +30,20 @@ Verdicts:
 Env knobs: HARNESS_SCAN_TCP_PORTS (default "1-65535"), HARNESS_SCAN_TIMING
 (default "-T3"; use "-T1"/"-T2" for stealthier), HARNESS_SCAN_SRCPORT (override
 the bypass source port).
+
+TIME-SPREAD STEALTH MODE (HARNESS_SCAN_STEALTH=1): splits the TCP range into
+batches scanned slowly (-T1 + --scan-delay) with the source-port/fragment bypass
+and a pause between batches, so the per-time probe rate stays UNDER a rate-based
+port-scan IPS threshold — the realistic way to evade a modern NGFW's scan
+detection. Tunables: HARNESS_SCAN_BATCHES (default 8), HARNESS_SCAN_BATCH_DELAY
+seconds (default 20), HARNESS_SCAN_DELAY_MS per-probe (default "50ms"),
+HARNESS_SCAN_BUDGET total wall-clock seconds (default 1800; keep under ~3000 so
+it finishes within the module's 3600s watchdog).
 """
 import os
 import re
 import shlex
+import time
 
 META = {
     "id": "nmap_policy_scan",
@@ -53,6 +63,9 @@ META = {
     "serial": True,
     "run_last": True,            # trips the port-scan IPS / blacklists the source
     "trips_ips": True,
+    # stealth mode deliberately runs for many minutes (time-spread batches), so
+    # the module declares its own longer watchdog (engine honours hard_timeout_s).
+    "hard_timeout_s": 3600,
     "ports": [],                 # performs its own scan; recon would duplicate it
     "success_regex": r"^POLICY-VIOLATION",
     "blocked_regex": r"^SCAN-BLOCKED|^POLICY-ENFORCED|No route|Network is unreachable",
@@ -81,6 +94,24 @@ def _scan(ctx, target, argv_template):
     return ctx.run_cmd(argv_template, target)
 
 
+def _split_range(spec, n):
+    """Split a 'lo-hi' port range into n contiguous sub-ranges for time-spread
+    batching. A non-range spec (comma list etc.) is scanned as a single batch."""
+    m = re.match(r"^(\d+)-(\d+)$", spec)
+    if not m or n <= 1:
+        return [spec]
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if hi <= lo:
+        return [spec]
+    size = (hi - lo + 1 + n - 1) // n
+    out, p = [], lo
+    while p <= hi:
+        q = min(p + size - 1, hi)
+        out.append(f"{p}-{q}")
+        p = q + 1
+    return out
+
+
 def run(target, ctx):
     import core   # imported here (not at top) to avoid any import-order surprise
     pol = core.load_port_policy()
@@ -94,15 +125,55 @@ def run(target, ctx):
            f"# policy: {pol['name']}  |  IPS-bypass: --source-port {srcport} (allowed), "
            f"-f (fragment), {timing}, -Pn -n"]
 
-    # bounded well under the module watchdog (ctx.timeout + 60): TCP then UDP.
-    tcp_tmpl = (f"nmap -sS -p {shlex.quote(tcp_ports)} {timing} -g {srcport} -f "
-                f"--max-retries 1 --host-timeout 180s --open -n -Pn -oG - {{target}}")
-    udp_tmpl = (f"nmap -sU --top-ports 50 {timing} -g {srcport} "
-                f"--max-retries 1 --host-timeout 90s --open -n -Pn -oG - {{target}}")
+    stealth = (os.environ.get("HARNESS_SCAN_STEALTH", "").strip().lower()
+               in ("1", "true", "yes", "on"))
 
-    out.append(f"\n## TCP ({tcp_ports}, SYN, fragmented, src-port {srcport})")
-    tcp_raw = _scan(ctx, target, tcp_tmpl)
-    out.append(tcp_raw)
+    # ---- TCP ----------------------------------------------------------------
+    if stealth:
+        # TIME-SPREAD STEALTH: split the range into N batches, scan each slowly
+        # (-T1 + --scan-delay) with the source-port/fragment bypass, and sleep
+        # between batches so the per-time probe rate stays UNDER a rate-based
+        # port-scan IPS threshold. Bounded by a total wall-clock budget.
+        def _int(env, d):
+            try:
+                return max(1, int(float(os.environ.get(env) or d)))
+            except ValueError:
+                return d
+        batches = max(2, _int("HARNESS_SCAN_BATCHES", 8))
+        batch_delay = max(0, _int("HARNESS_SCAN_BATCH_DELAY", 20))
+        budget = max(60, _int("HARNESS_SCAN_BUDGET", 1800))
+        scan_delay = (os.environ.get("HARNESS_SCAN_DELAY_MS") or "50ms").strip()
+        s_timing = timing if timing in ("-T0", "-T1") else "-T1"
+        slices = _split_range(tcp_ports, batches)
+        per_host = max(60, budget // max(1, len(slices)))
+        out.append(f"\n## STEALTH TCP — {len(slices)} time-spread batch(es), {s_timing} "
+                   f"--scan-delay {scan_delay}, {batch_delay}s between batches, "
+                   f"budget {budget}s (stays under a rate-based scan IPS)")
+        parts, t0 = [], time.time()
+        for i, sl in enumerate(slices, 1):
+            if time.time() - t0 > budget:
+                out.append(f"[budget {budget}s reached — stopped after {i - 1}/{len(slices)} batches]")
+                break
+            tmpl = (f"nmap -sS -p {sl} {s_timing} --scan-delay {scan_delay} -g {srcport} -f "
+                    f"--max-retries 1 --host-timeout {per_host}s --open -n -Pn -oG - {{target}}")
+            out.append(f"\n# batch {i}/{len(slices)}: ports {sl}")
+            raw = _scan(ctx, target, tmpl)
+            out.append(raw); parts.append(raw)
+            if i < len(slices) and (time.time() - t0) < budget and batch_delay:
+                time.sleep(batch_delay)
+        tcp_raw = "\n".join(parts)
+    else:
+        # fast single pass, bounded under the default watchdog.
+        tcp_tmpl = (f"nmap -sS -p {shlex.quote(tcp_ports)} {timing} -g {srcport} -f "
+                    f"--max-retries 1 --host-timeout 180s --open -n -Pn -oG - {{target}}")
+        out.append(f"\n## TCP ({tcp_ports}, SYN, fragmented, src-port {srcport})")
+        tcp_raw = _scan(ctx, target, tcp_tmpl)
+        out.append(tcp_raw)
+
+    # ---- UDP (one pass; slower in stealth) ----------------------------------
+    udp_timing = "-T1" if stealth else timing
+    udp_tmpl = (f"nmap -sU --top-ports 50 {udp_timing} -g {srcport} "
+                f"--max-retries 1 --host-timeout 90s --open -n -Pn -oG - {{target}}")
     out.append("\n## UDP (top 50, src-port %d)" % srcport)
     udp_raw = _scan(ctx, target, udp_tmpl)
     out.append(udp_raw)
