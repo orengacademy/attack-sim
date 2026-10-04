@@ -24,16 +24,7 @@ for a non-22 port.
 """
 import os
 import shlex
-import socket
 import tempfile
-
-
-def _connectable(host, port, timeout=3):
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except Exception:
-        return False
 
 META = {
     "id": "ssh_brute",
@@ -63,11 +54,14 @@ DEFAULT_ATTEMPTS = 35   # > the Sangfor Fast threshold (30 / 1 min) so the signa
 
 
 def run(target, ctx):
-    port = ctx.get_port("ssh_brute", 22)   # overridable per-attack (GUI/env)
-    explicit = port != 22                  # user set a specific --port ssh_brute=<n>
-    # Cloud target: SSH may be NAT'd to an alternate port (default 2222, like
-    # 445->4445 / 135->1135). hydra is a subprocess so the _portpatch
-    # socket.connect redirect doesn't reach it — read the alt port from the map.
+    # SSH attacks hit port 22 by DEFAULT. An operator can override it per-target
+    # (GUI SSH field / --ssh-port / .target_memory.json "ssh_port") or per-attack
+    # (--port ssh_brute=N / HARNESS_PORT_SSH_BRUTE); when a port IS set it wins and
+    # we don't second-guess it (no service-probe fallback — "always 22 unless set").
+    # hydra is a subprocess so the _portpatch socket.connect redirect can't reach
+    # it; read any operator-set alt from the map here so an explicit cloud SSH port
+    # (e.g. a 22->2222 NAT) still reaches hydra. Absent an override this is 22.
+    port = ctx.get_port("ssh_brute", 22)
     if port == 22:
         try:
             from modules import _portpatch
@@ -76,19 +70,6 @@ def run(target, ctx):
                 port = int(alt)
         except Exception:
             pass
-
-    # The brute-force SIGNATURE only fires if the login attempts actually REACH an
-    # SSH service. A cloud 22->2222 NAT often points at a Windows DC with NO SSH
-    # server (connection refused) while the real weak SSH is the host on 22 — so
-    # hydra can't connect, sends ZERO attempts, and the IPS never sees the brute.
-    # If the chosen port isn't serving SSH but 22 is, fall back to 22 (unless the
-    # user explicitly pinned a port).
-    reach_note = ""
-    if not explicit and port != 22 and not _connectable(target, port) and _connectable(target, 22):
-        reach_note = (f"[info] SSH port {port} not serving (no SSH / filtered); the brute must "
-                      "reach a live SSH service to trip the signature — falling back to host "
-                      "SSH on 22.\n")
-        port = 22
     # SSH creds are SEPARATE from the DC creds (HARNESS_SSH_USER/PASS or the
     # per-target --ssh-user/--ssh-pass): a dual-role target is both an SSH host
     # and a DC front, and one identity can't serve both. Fall back to the DC
@@ -122,8 +103,6 @@ def run(target, ctx):
 
         out = [f"# ssh_brute vs {target}:{port} — {attempts} rapid attempts "
                f"({attempts - 1} wrong + 1 valid last) to exercise brute-force protection"]
-        if reach_note:
-            out.append(reach_note.rstrip())
         # -t 4 (SSH-friendly parallelism) still clears 35 attempts well inside a
         # minute; -f stops once the valid pair is accepted. -I = ignore any restore
         # file so repeated runs don't resume a prior session.

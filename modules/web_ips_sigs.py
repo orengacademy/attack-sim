@@ -33,6 +33,7 @@ META = {
     "cwe": ['CWE-89', 'CWE-79', 'CWE-78', 'CWE-22'],
     "tactic": 'Initial Access',
     "requires": ["curl"],
+    "trips_ips": True,   # SQLi/XSS/cmd-inj/webshell battery trips the IPS → source blacklist; run last
     "ports": [("tcp", 80)],
     "port_customizable": True,
     # delivered at least one signature -> IPS gap (finding)

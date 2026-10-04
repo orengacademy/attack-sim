@@ -54,6 +54,7 @@ STATUS_COLORS = {
     "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
     "AUTH-FAILED":    WARNC,   # bad creds, not a control result
     "NO-RESULT":      WARNC,   # inconclusive — review
+    "INCONCLUSIVE":   "#a371f7",  # purple — source in IPS quarantine, attack not tested
     "SKIPPED":        MUTED,   # module did nothing (n/a or unconfigured) — not a result
     "PREREQ-MISSING": MUTED,   # skipped (tooling/priv)
 }
@@ -115,7 +116,7 @@ def _apply_theme(root):
 class HarnessGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Control Validation Harness")
+        root.title(f"Control Validation Harness v{core.VERSION}")
         root.geometry("1240x860")
         root.minsize(980, 680)
         _apply_theme(root)
@@ -133,7 +134,8 @@ class HarnessGUI:
     # ----- header ------------------------------------------------------
     def _build_header(self):
         h = ttk.Frame(self.root); h.pack(fill="x", padx=14, pady=(12, 2))
-        ttk.Label(h, text="Control Validation Harness", style="H1.TLabel").pack(anchor="w")
+        ttk.Label(h, text=f"Control Validation Harness  ·  v{core.VERSION}",
+                  style="H1.TLabel").pack(anchor="w")
         ttk.Label(h, text="Breach & Attack Simulation · MITRE ATT&CK-mapped · "
                           f"{len(self.modules)} modules discovered",
                   style="Sub.TLabel").pack(anchor="w")
@@ -218,7 +220,7 @@ class HarnessGUI:
         self._rpc_entry = ttk.Entry(cf, textvariable=self.rpc_port, width=6, state="disabled")
         self._rpc_entry.pack(side="left")
         ttk.Label(cf, text="SSH").pack(side="left", padx=(8, 2))
-        self.ssh_port = tk.StringVar(value="2222")
+        self.ssh_port = tk.StringVar(value="22")
         self._ssh_port_entry = ttk.Entry(cf, textvariable=self.ssh_port, width=6, state="disabled")
         self._ssh_port_entry.pack(side="left")
         ttk.Label(cf, text="(445→SMB, 135→RPC, 22→SSH for the forwarded ports)",
@@ -459,6 +461,7 @@ class HarnessGUI:
                               (("●"), OKC, "BLOCKED — filtered/dropped by control (good)"),
                               (("●"), BLUEC, "NO-SERVICE — port closed, not a block"),
                               (("●"), WARNC, "NO-RESULT / AUTH — review"),
+                              (("●"), "#a371f7", "INCONCLUSIVE — source in IPS quarantine, not tested"),
                               (("●"), MUTED, "SKIPPED / PREREQ-MISSING — not run")):
             rowf = ttk.Frame(leg, style="Card.TFrame"); rowf.pack(anchor="w", fill="x")
             tk.Label(rowf, text=dot, fg=col, bg=PANEL).pack(side="left")
@@ -649,9 +652,9 @@ class HarnessGUI:
             try:
                 cloud_map = {445: int((self.smb_port.get() or "4445").strip()),
                              135: int((self.rpc_port.get() or "1135").strip()),
-                             22: int((self.ssh_port.get() or "2222").strip())}
+                             22: int((self.ssh_port.get() or "22").strip())}
             except ValueError:
-                cloud_map = {445: 4445, 135: 1135, 22: 2222}
+                cloud_map = {445: 4445, 135: 1135, 22: 22}
         return {"creds": creds, "source": self.source_entry.get().strip() or None,
                 "cloud_map": cloud_map}
 
@@ -668,7 +671,7 @@ class HarnessGUI:
         if rec.get("cloud"):
             cloud_map = {445: int(rec.get("smb_port") or 4445),
                          135: int(rec.get("rpc_port") or 1135),
-                         22: int(rec.get("ssh_port") or 2222)}
+                         22: int(rec.get("ssh_port") or 22)}
         return {"creds": creds, "source": rec.get("source") or None, "cloud_map": cloud_map}
 
     @staticmethod
@@ -705,7 +708,7 @@ class HarnessGUI:
         try:
             smb = int((self.smb_port.get() or "4445").strip())
             rpc = int((self.rpc_port.get() or "1135").strip())
-            ssh = int((self.ssh_port.get() or "2222").strip())
+            ssh = int((self.ssh_port.get() or "22").strip())
             _portpatch.CUSTOM_PORT_TARGETS[target_ip] = {445: smb, 135: rpc, 22: ssh}
             self._log(f"Cloud target: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh} for "
                       f"{target_ip} (AD modules + ssh_brute use the alternates).")

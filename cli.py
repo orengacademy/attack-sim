@@ -30,11 +30,12 @@ _VERDICT_STYLE = {
     "NO-SERVICE":     ("\033[34m", "○"),   # blue   — port closed, not a block
     "AUTH-FAILED":    ("\033[33m", "▲"),   # amber  — bad creds
     "NO-RESULT":      ("\033[33m", "?"),   # amber  — review
+    "INCONCLUSIVE":   ("\033[35m", "◌"),   # purple — source in IPS quarantine, not tested
     "SKIPPED":        ("\033[90m", "–"),   # grey   — did nothing
     "PREREQ-MISSING": ("\033[90m", "–"),
 }
 _VERDICT_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
-                  "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
+                  "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
 # one-letter code per verdict for the compact per-iteration ITER column —
 # the aggregate VERDICT column only ever shows the single most-significant
 # iteration (_VERDICT_ORDER), which hid a later iteration landing in a
@@ -42,7 +43,7 @@ _VERDICT_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
 # ambiguous band on one run and not another).
 _ITER_CODE = {"SUCCESS": "S", "PASSED": "S", "DETECTED": "D", "BLOCKED": "B",
               "NO-SERVICE": "O", "AUTH-FAILED": "A", "NO-RESULT": "N",
-              "SKIPPED": "-", "PREREQ-MISSING": "-"}
+              "INCONCLUSIVE": "I", "SKIPPED": "-", "PREREQ-MISSING": "-"}
 
 _ANSI = {
     "SUCCESS": "\033[31m", "PASSED": "\033[31m",   # red — got through undetected (finding)
@@ -50,6 +51,7 @@ _ANSI = {
     "BLOCKED": "\033[32m",                          # green — control worked
     "NO-SERVICE": "\033[34m",                       # blue — port closed, not a block
     "AUTH-FAILED": "\033[33m", "NO-RESULT": "\033[33m",  # amber — review
+    "INCONCLUSIVE": "\033[35m",                          # purple — IPS quarantine, not tested
     "SKIP": "\033[90m", "SKIPPED": "\033[90m", "PREREQ-MISSING": "\033[90m",  # grey — skipped
 }
 _RESET = "\033[0m"
@@ -125,6 +127,7 @@ _VERDICT_GLOSS = {
     "NO-SERVICE":     "port closed — service not present",
     "AUTH-FAILED":    "bad credentials — fix creds",
     "NO-RESULT":      "inconclusive — review raw log",
+    "INCONCLUSIVE":   "not tested — source in IPS quarantine (re-run whitelisted)",
     "SKIPPED":        "did nothing — n/a or unconfigured",
     "PREREQ-MISSING": "prerequisite missing — not run",
 }
@@ -133,7 +136,8 @@ _VERDICT_GLOSS = {
 _VERDICT_GLOSS_SHORT = {
     "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
     "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
-    "NO-RESULT": "review log", "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
+    "NO-RESULT": "review log", "INCONCLUSIVE": "IPS quarantine",
+    "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
 }
 
 
@@ -185,7 +189,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
               + _c("┃", ACC, no_color))
     print()
     print(_c("┏" + "━" * W + "┓", ACC, no_color))
-    _hline(f"  CONTROL VALIDATION — RESULTS" + (f"   ·   SITE {site}" if site else ""))
+    _hline(f"  CONTROL VALIDATION — RESULTS   ·   v{core.VERSION}"
+           + (f"   ·   SITE {site}" if site else ""))
     _hline(f"  {target}   ·   {args.mode}   ·   {n} module(s) × {args.iterations} iter"
            f"   ·   {elapsed:.0f}s")
     _hline(f"  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
@@ -279,6 +284,27 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
              + (f", {detected} detected" if detected else "")
              + f"; {blocked} blocked.", BOLD, no_color))
 
+    # Contamination banner: SUSPECT (BLOCKED that may be a source-IP ban) and
+    # INCONCLUSIVE (never tested; source in IPS quarantine) are NOT control wins.
+    # Call them out so a poisoned run isn't mistaken for a clean one.
+    recs = getattr(ev, "records", []) or []
+    inc_mods = sorted({r.get("attack", "?") for r in recs
+                       if r.get("baseline_result") == "INCONCLUSIVE"})
+    susp_mods = sorted({r.get("attack", "?") for r in recs
+                        if "SUSPECT" in (r.get("verdict") or "")})
+    if inc_mods or susp_mods:
+        warn = "\033[35m" if not no_color else ""
+        rst = _RESET if not no_color else ""
+        print(f"{warn}  ⚠ CONTAMINATED — re-run clean (whitelist the tester source / wait "
+              f"out the IPS quarantine):{rst}")
+        if inc_mods:
+            print(f"{warn}      INCONCLUSIVE (not tested): {', '.join(inc_mods)}{rst}")
+        if susp_mods:
+            print(f"{warn}      SUSPECT (BLOCKED may be the ban): {', '.join(susp_mods)}{rst}")
+        root = getattr(ev, "root", "")
+        if root:
+            print(f"{warn}      → python3 cli.py --suspect {root}{rst}")
+
 
 def _parse_ports(spec):
     out = {}
@@ -292,8 +318,10 @@ def _parse_ports(spec):
 
 
 def _list_suspect(evidence_dir):
-    """List modules whose BLOCKED was flagged SUSPECT (source blacklisted) in a
-    past run, and print the command to re-run just those (after whitelisting)."""
+    """List modules a source-blacklist contaminated in a past run — both BLOCKEDs
+    flagged SUSPECT and attacks recorded INCONCLUSIVE (not tested because the
+    source was in IPS quarantine) — and print the command to re-run just those
+    (after whitelisting the tester source on the appliance)."""
     import json
     path = os.path.join(evidence_dir, "summary.json") if os.path.isdir(evidence_dir) else evidence_dir
     try:
@@ -304,12 +332,14 @@ def _list_suspect(evidence_dir):
         return 2
     susp = {}
     for r in data.get("results", []):
-        if "SUSPECT" in (r.get("verdict") or ""):
+        # SUSPECT = a BLOCKED that may be the ban; INCONCLUSIVE = never tested
+        # because the source was already quarantined. Both need re-running clean.
+        if "SUSPECT" in (r.get("verdict") or "") or r.get("baseline_result") == "INCONCLUSIVE":
             susp.setdefault(r.get("target_ip", ""), set()).add(r.get("attack_id"))
     if not susp:
-        print("No SUSPECT (blacklist-contaminated) verdicts in that run — nothing to re-run.")
+        print("No SUSPECT / INCONCLUSIVE (blacklist-contaminated) verdicts in that run — nothing to re-run.")
         return 0
-    print("Blacklist-contaminated modules (their BLOCKED may be the ban, not a real control):\n")
+    print("Blacklist-contaminated modules (BLOCKED may be the ban; INCONCLUSIVE = not tested):\n")
     for tgt, ids in susp.items():
         idlist = ",".join(sorted(i for i in ids if i))
         print(f"  Target {tgt}: {len(ids)} suspect module(s).")
@@ -320,6 +350,8 @@ def _list_suspect(evidence_dir):
 
 def main():
     ap = argparse.ArgumentParser(description="Headless control-validation harness runner.")
+    ap.add_argument("--version", action="version",
+                    version=f"control-validation harness v{core.VERSION}")
     ap.add_argument("-t", "--target", default="127.0.0.1",
                     help="target IP/host; comma-separate for several in one scan, e.g. "
                          "the on-prem DC + the cloud DC: --target 192.168.122.209,159.223.35.108 "
@@ -370,7 +402,7 @@ def main():
                     help="force cloud mode OFF (ignore any remembered --cloud for this target)")
     ap.add_argument("--smb-port", type=int, default=None, help="cloud SMB alt port (default 4445)")
     ap.add_argument("--rpc-port", type=int, default=None, help="cloud RPC alt port (default 1135)")
-    ap.add_argument("--ssh-port", type=int, default=None, help="cloud SSH alt port for ssh_brute (default 2222)")
+    ap.add_argument("--ssh-port", type=int, default=None, help="SSH port for ssh_brute (default 22; set a NAT alt here, e.g. 2222)")
     # per-target credentials (override HARNESS_DC_*/credentials.env for THIS target
     # and are remembered for it — so a Linux target and a Windows DC can differ)
     ap.add_argument("--domain", help="AD domain for this target (e.g. lab.local)")
@@ -510,7 +542,7 @@ def main():
         cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
         smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
         rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
-        ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 2222
+        ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 22
         if source:
             runner.ctx.source_ip = source
             if args.source is None:

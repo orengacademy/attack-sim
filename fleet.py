@@ -168,7 +168,9 @@ def main():
         return 2
 
     ts = datetime.now().strftime("%d-%m-%H-%M")
-    base = os.path.join(args.evidence_dir, f"fleet_{ts}")
+    # Claim the fleet dir atomically (same minute-collision race as single runs —
+    # two fleet runs in one minute would otherwise share fleet_<ts> and interleave).
+    base = core._claim_run_dir(args.evidence_dir, f"fleet_{ts}")
     print(f"=== FLEET RUN {ts} — {len(jobs)} job(s) -> {base} ===")
     fleet_summary = {"started": datetime.now().isoformat(), "mode": args.mode, "jobs": []}
 
@@ -231,10 +233,11 @@ def main():
                         args.no_color))
 
     fleet_summary["finished"] = datetime.now().isoformat()
+    fleet_summary["harness_version"] = core.VERSION
     try:
         os.makedirs(base, exist_ok=True)
-        with open(os.path.join(base, "fleet_summary.json"), "w") as f:
-            json.dump(fleet_summary, f, indent=2, default=str)
+        core._atomic_write(os.path.join(base, "fleet_summary.json"),
+                           lambda f: json.dump(fleet_summary, f, indent=2, default=str))
     except Exception as e:
         print(f"[!] could not write fleet_summary.json: {e}", file=sys.stderr)
 

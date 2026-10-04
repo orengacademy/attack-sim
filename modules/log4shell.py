@@ -52,6 +52,10 @@ META = {
     "cwe": ['CWE-917'],
     "tactic": 'Initial Access',
     "requires": ["curl"],
+    # an inline IPS/WAF (Sangfor NGAF / Forcepoint) matches this payload and often
+    # BLACKLISTS the source for a window — run it after the quiet modules so the
+    # ban it may trip can't turn their verdicts into false BLOCKEDs.
+    "trips_ips": True,
     "ports": [("tcp", 8080)],
     "port_customizable": True,
     "success_regex": r"HTTP_CODE:[23]\d\d",
