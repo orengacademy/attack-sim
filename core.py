@@ -1213,6 +1213,18 @@ _WARN_MARKER = re.compile(r"\[WARN\].*$", re.MULTILINE)
 # module with no infra configured, or --active not set) — surface WHY so the
 # NO-RESULT verdict isn't a mystery.
 _SKIP_MARKER = re.compile(r"\[SKIP\].*$", re.MULTILINE)
+# Harness-INTERNAL failures: the module crashed (exception boundary), the
+# wall-clock watchdog abandoned a hang, it produced no output, or run_cmd could
+# not build/launch the command. These are TOOL faults, not the control blocking
+# the attack — so even when recon shows the port filtered they must score
+# NO-RESULT, never a false BLOCKED (which would credit the control for a crash).
+_TOOL_FAIL_MARKER = re.compile(
+    r"\[ERROR\] module crashed:"
+    r"|wall-clock watchdog and was abandoned"
+    r"|\[ERROR\] module produced no output"
+    r"|\[ERROR\] (?:bad command template|could not parse command"
+    r"|empty command after parsing|tool not found|could not execute command)",
+    re.IGNORECASE)
 
 
 def _error_hint(raw):
@@ -2501,6 +2513,9 @@ class Runner:
             refused = _match(target_raw, REFUSED_REGEX)
             timed_out = "[TIMEOUT]" in target_raw or _match(target_raw, r"timed out|timeout")
             blocked_out = _match(target_raw, meta.get("blocked_regex"))
+            # a harness-internal fault (crash / watchdog-abandon / no-output /
+            # command-parse / tool-not-found) — see _TOOL_FAIL_MARKER.
+            tool_failed = _TOOL_FAIL_MARKER.search(target_raw) is not None
             # recon is the tie-breaker between "port closed (service absent)" and
             # "port filtered (dropped in transit — likely the SD-WAN)".
             rr = recon_by_id.get(meta["id"])
@@ -2545,6 +2560,17 @@ class Runner:
                 verdict = ("port closed / connection refused — the service isn't running "
                            "or isn't accessible on the target; NOT an SD-WAN block "
                            "(attack could not apply)")
+            # TOOL-INTERNAL fault with NO network signal of its own -> NO-RESULT.
+            # Must come BEFORE the port_filtered->BLOCKED branch: recon's filtered
+            # port is a SEPARATE probe, and crediting a crashed/abandoned module's
+            # BLOCKED to the control fabricates a "control worked" result the test
+            # never produced. (A real network signal — refused/timeout/blocked_regex
+            # — is handled by the branches around this one and keeps its verdict.)
+            elif tool_failed and not (refused or timed_out or blocked_out):
+                hint = _error_hint(target_raw)
+                b = "NO-RESULT"
+                verdict = (f"no result (tool fault, not a control result) — {hint}"
+                           if hint else "no result — tool fault; review raw log")
             # FILTERED / dropped / timed out -> blocked in transit (likely the SD-WAN)
             elif port_filtered or timed_out:
                 b = "BLOCKED"
