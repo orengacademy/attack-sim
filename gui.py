@@ -177,27 +177,14 @@ class HarnessGUI:
         ttk.Label(f, text=f"(recommended {core.RECOMMENDED_WORKERS}; DoS/brute always serial)",
                   style="Muted.TLabel").grid(row=1, column=2, columnspan=2, sticky="w", **pad)
 
-        # black-box vs white-box posture (both run everything; recorded + announced)
-        ttk.Label(f, text="Mode").grid(row=2, column=0, sticky="w", **pad)
-        self.mode_var = tk.StringVar(value="blackbox")
-        mf = ttk.Frame(f); mf.grid(row=2, column=1, columnspan=3, sticky="w", padx=6)
-        ttk.Radiobutton(mf, text="Black-box (not whitelisted)", value="blackbox",
-                        variable=self.mode_var).pack(side="left")
-        ttk.Radiobutton(mf, text="White-box (whitelisted)", value="whitebox",
-                        variable=self.mode_var).pack(side="left", padx=(12, 0))
-        ttk.Label(f, text="run both, then compare: PASSED in white-box but BLOCKED "
-                          "in black-box = control working",
-                  style="Muted.TLabel").grid(row=3, column=0, columnspan=4, sticky="w",
-                                             padx=6, pady=(0, 2))
-
         # USS runtime options: active establishment + egress source binding
         # (its own row — the checkbox label alone is long enough to clip
         # whatever followed it on a 70%-width panel)
         self.active_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="Active establishment (build real tunnels/pivots/exfil — needs config.json)",
-                        variable=self.active_var).grid(row=4, column=0, columnspan=4, sticky="w",
+                        variable=self.active_var).grid(row=2, column=0, columnspan=4, sticky="w",
                                                        padx=6, pady=(4, 2))
-        sf = ttk.Frame(f); sf.grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+        sf = ttk.Frame(f); sf.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
         ttk.Label(sf, text="Source IP").pack(side="left")
         self.source_entry = ttk.Entry(sf, width=16)
         self.source_entry.pack(side="left", padx=(4, 6))
@@ -218,7 +205,7 @@ class HarnessGUI:
         # outbound 445). Ticking this maps 445->SMB and 135->RPC for the entered
         # target so the impacket modules (dcsync/psexec/wmiexec/nopac/sama/petit)
         # reach the forwarded ports (same as modules/_portpatch.py, but per-run).
-        cf = ttk.Frame(f); cf.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        cf = ttk.Frame(f); cf.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
         self.cloud_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(cf, text="Cloud target (NAT'd SMB/RPC)", variable=self.cloud_var,
                         command=self._toggle_cloud_ports).pack(side="left")
@@ -240,7 +227,7 @@ class HarnessGUI:
         # Per-target credentials — override credentials.env/HARNESS_DC_* for THIS
         # target (a Linux SSH lab and a Windows DC need different creds), remembered
         # per target. Blank = fall back to credentials.env / env.
-        crf = ttk.Frame(f); crf.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        crf = ttk.Frame(f); crf.grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
         ttk.Label(crf, text="Domain").pack(side="left")
         self.domain_entry = ttk.Entry(crf, width=12); self.domain_entry.pack(side="left", padx=(4, 6))
         ttk.Label(crf, text="User").pack(side="left")
@@ -253,7 +240,7 @@ class HarnessGUI:
         # SSH creds are SEPARATE from the DC creds: a dual-role target is both an
         # SSH host and a DC front, and one identity can't serve both. ssh_brute
         # uses these and falls back to the DC User/Pass above only when blank.
-        srf = ttk.Frame(f); srf.grid(row=8, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        srf = ttk.Frame(f); srf.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
         ttk.Label(srf, text="SSH user").pack(side="left")
         self.ssh_user_entry = ttk.Entry(srf, width=14); self.ssh_user_entry.pack(side="left", padx=(4, 6))
         ttk.Label(srf, text="SSH pass").pack(side="left")
@@ -279,9 +266,9 @@ class HarnessGUI:
 
         self._priv_frame = f
         self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=9, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+        self._priv_label.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
         self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
-        self._unlock_btn.grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
+        self._unlock_btn.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
         self._refresh_privilege()
         self._prefill_last_target()
 
@@ -481,13 +468,12 @@ class HarnessGUI:
         # tree + BOTH scrollbars in a grid frame (packing the scrollbar after an
         # expanding tree squeezes it to zero width — the old "can't scroll" bug).
         tf = ttk.Frame(left); tf.pack(fill="both", expand=True, padx=2, pady=2)
-        cols = ("no", "time", "tgt", "ports", "mode", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
+        cols = ("no", "time", "tgt", "ports", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
         self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
         self._sort_state = {}   # col -> last sort was descending
         # click any heading to sort by that column (toggles asc/desc)
         for c, t, w, a in (("no", "#", 34, "center"), ("time", "Time", 64, "center"),
                            ("tgt", "Target", 104, "w"), ("ports", "Ports", 72, "w"),
-                           ("mode", "M", 30, "center"),
                            ("dir", "Dir", 38, "center"), ("cat", "Category", 118, "w"),
                            ("attack", "Attack", 150, "w"), ("iter", "It", 26, "center"),
                            ("result", "Result", 96, "center"), ("mitre", "MITRE", 110, "w"),
@@ -956,13 +942,12 @@ class HarnessGUI:
 
     def _add_status(self, aid, name, it, result, direction="", mitre="", cwe="",
                     category="", target="", ports=""):
-        m = "WB" if getattr(self, "_run_mode", "blackbox") == "whitebox" else "BB"
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         import time as _t
         ts = _t.strftime("%H:%M:%S")   # when this result landed (completion time)
         iid = self.status_tree.insert(
             "", "end",
-            values=(self._status_seq, ts, target, ports, m, direction, category, name, it, result, mitre, cwe),
+            values=(self._status_seq, ts, target, ports, direction, category, name, it, result, mitre, cwe),
             tags=(result,))
         self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
@@ -1082,7 +1067,9 @@ class HarnessGUI:
             workers = 1
         port_overrides = self._collect_port_overrides()
         self._save_target(jobs[0][0])   # remember target 1's on-screen cfg
-        self._run_mode = self.mode_var.get()
+        # white-box vs black-box posture is a cli.py-only flag now (--mode) —
+        # the GUI always runs black-box, so there's nothing to pick here.
+        self._run_mode = "blackbox"
         self._run_targets = [t for t, _c in jobs]   # cleared from _portpatch at run-end
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"

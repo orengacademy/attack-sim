@@ -35,6 +35,14 @@ _VERDICT_STYLE = {
 }
 _VERDICT_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
                   "AUTH-FAILED", "NO-RESULT", "SKIPPED", "PREREQ-MISSING"]
+# one-letter code per verdict for the compact per-iteration ITER column —
+# the aggregate VERDICT column only ever shows the single most-significant
+# iteration (_VERDICT_ORDER), which hid a later iteration landing in a
+# different bucket (e.g. icmp_flood's loss-delta sometimes falling in the
+# ambiguous band on one run and not another).
+_ITER_CODE = {"SUCCESS": "S", "PASSED": "S", "DETECTED": "D", "BLOCKED": "B",
+              "NO-SERVICE": "O", "AUTH-FAILED": "A", "NO-RESULT": "N",
+              "SKIPPED": "-", "PREREQ-MISSING": "-"}
 
 _ANSI = {
     "SUCCESS": "\033[31m", "PASSED": "\033[31m",   # red — got through undetected (finding)
@@ -120,6 +128,13 @@ _VERDICT_GLOSS = {
     "SKIPPED":        "did nothing — n/a or unconfigured",
     "PREREQ-MISSING": "prerequisite missing — not run",
 }
+# short form of the same gloss, for the per-iteration ITERATIONS column where
+# N copies of it (one per iteration) have to fit in one table cell.
+_VERDICT_GLOSS_SHORT = {
+    "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
+    "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
+    "NO-RESULT": "review log", "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
+}
 
 
 def _cell(text, w, color, no_color):
@@ -144,11 +159,12 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         d = by_mod.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
                                     "mitre": ", ".join(r.get("mitre", []) or []),
                                     "dir": r.get("direction", ""), "vs": [],
-                                    "verdicts": {}, "outputs": {}})
+                                    "verdicts": {}, "outputs": {}, "iters": []})
         br = r.get("baseline_result", "?")
         d["vs"].append(br)
         d["verdicts"][br] = r.get("verdict", "")
         d["outputs"][br] = r.get("output", "") or ""
+        d["iters"].append((r.get("iteration"), br))
         if r.get("duration_s") is not None:
             d["dur"] = max(d.get("dur", 0.0), r["duration_s"])
     for d in by_mod.values():
@@ -189,8 +205,18 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
 
     # ---- the table -----------------------------------------------------
     debug = getattr(args, "debug", False)
-    NUM, VER, MOD, CAT, DET = 3, 13, 36, 20, 34
-    cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT), ("DETAIL", DET)]
+    # With >1 iteration, ITERATIONS replaces DETAIL outright (same single
+    # table, same column count) and carries each iteration's own verdict +
+    # gloss — the aggregate VERDICT column only ever shows the single
+    # most-significant iteration (_VERDICT_ORDER), which otherwise hid a
+    # later iteration landing in a different bucket entirely (e.g.
+    # icmp_flood's loss-delta falling in the ambiguous band on one run and
+    # not another).
+    show_iters = args.iterations > 1
+    NUM, VER, MOD, CAT, DET = 3, 13, 30, 16, 32
+    ITERS_W = 22 * min(args.iterations, 4)   # grows with iteration count, caps at 4x
+    cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT),
+            (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET))]
     if debug:
         cols.append(("TIME", 7))   # per-module wall-clock (debug only)
     inner = [w for _, w in cols]
@@ -229,8 +255,16 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
                 detail = "rate-limited/shaped (boundary policed the flood)"
-        cells = [str(i), f"{icon} {d['v']}", d["name"], cat, detail]
-        colors = [DIM, col, None, ACC, DIM]
+        cells = [str(i), f"{icon} {d['v']}", d["name"], cat]
+        colors = [DIM, col, None, ACC]
+        if show_iters:
+            iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
+                                   key=lambda it: it[0])
+            cells.append(" | ".join(
+                f"{n}:{v} ({_VERDICT_GLOSS_SHORT.get(v, '?')})" for n, v in iters_sorted))
+        else:
+            cells.append(detail)
+        colors.append(DIM)
         if debug:
             cells.append(f"{d.get('dur', 0.0):.1f}s")
             colors.append(DIM)

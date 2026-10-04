@@ -572,7 +572,7 @@ class Evidence:
         # output string straight through is correct — don't hand-escape it,
         # that would double-escape and corrupt the file.
         OUTPUT_CELL_LIMIT = 4000  # Excel caps a cell at 32,767 chars; stay well under it
-        cols = ["iteration", "mode", "test_type", "family", "direction",
+        cols = ["iteration", "test_type", "family", "direction",
                 "category", "attack", "ports", "tactic", "mitre", "cwe",
                 "control_tested", "fix_location", "baseline_result",
                 "appliance_result", "passed", "verdict", "output",
@@ -618,7 +618,7 @@ class Evidence:
             s[bucket] += 1
 
         lines = ["=" * 64, "  CONTROL VALIDATION HARNESS — REPORT",
-                 f"  Run: {self.ts}   Mode: {self.meta.get('mode', 'blackbox').upper()}",
+                 f"  Run: {self.ts}",
                  "=" * 64,
                  "  Verdicts: GAP=passed-undetected (finding) · DETECT=passed but "
                  "SOC alerted · OK=blocked · REVIEW=mixed", ""]
@@ -794,6 +794,14 @@ class Evidence:
     _V_COLOR = {"SUCCESS": "#e5484d", "PASSED": "#e5484d", "DETECTED": "#f5a524",
                 "BLOCKED": "#30a46c", "NO-SERVICE": "#4493f8", "AUTH-FAILED": "#e2a336",
                 "NO-RESULT": "#e2a336", "SKIPPED": "#8b949e", "PREREQ-MISSING": "#8b949e"}
+    # short gloss per verdict for the per-iteration ITERATIONS column (mirrors
+    # cli.py's _VERDICT_GLOSS_SHORT so the HTML report and the terminal table
+    # read the same way) — N copies of it (one per iteration) share one cell.
+    _V_GLOSS_SHORT = {
+        "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
+        "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
+        "NO-RESULT": "review log", "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
+    }
 
     def _write_html(self, f):
         """A self-contained, shareable HTML evidence summary (inline CSS, no deps):
@@ -831,28 +839,32 @@ class Evidence:
         def color(v):
             return self._V_COLOR.get(v, "#8b949e")
 
+        # ONE table throughout. With >1 iteration, ITERATIONS replaces DETAIL
+        # outright (same column count, mirrors cli.py's terminal table exactly)
+        # and carries each iteration's own verdict + short gloss — the
+        # aggregate Verdict column only ever shows the single most-significant
+        # iteration (_V_ORDER), which otherwise hid a later iteration landing
+        # in a different bucket entirely (e.g. icmp_flood's loss-delta falling
+        # in the ambiguous band on one run and not another).
+        show_iters = any((r.get("iteration") or 1) > 1 for r in recs)
         rows = []
         for i, d in enumerate(sorted(by.values(), key=lambda x: (
                 x["cat"], self._V_ORDER.index(x["v"]) if x["v"] in self._V_ORDER else 9, x["name"])), 1):
-            vt = e(d["verdicts"].get(d["v"], ""))
-            # per-iteration pills (run order) — the aggregate Verdict column shows
-            # only the single most-significant iteration (_V_ORDER), which hid a
-            # later iteration landing in a different bucket (e.g. icmp_flood's
-            # loss-delta sometimes falling in the ambiguous 20-30% band on one
-            # run and not another). title="..." carries that iteration's own
-            # detail line on hover, no JS needed.
-            iter_pills = "".join(
-                f'<span class=ipill style="background:{color(it["v"])}" '
-                f'title="iteration {it["n"]}: {e(it["detail"])}">{it["n"]}&#58;{e(it["v"])}</span>'
-                for it in d["iters"])
+            if show_iters:
+                iters_sorted = sorted((it for it in d["iters"] if it["n"] is not None),
+                                       key=lambda it: it["n"])
+                last_cell = " | ".join(
+                    f'{it["n"]}:{e(it["v"])} ({e(self._V_GLOSS_SHORT.get(it["v"], "?"))})'
+                    for it in iters_sorted)
+            else:
+                last_cell = e(d["verdicts"].get(d["v"], ""))
             rows.append(
                 f'<tr><td class=num>{i}</td>'
                 f'<td><span class=pill style="background:{color(d["v"])}">{e(d["v"])}</span></td>'
                 f'<td>{e(d["name"])}</td><td class=dim>{e(d["cat"])}</td>'
                 f'<td class=dim>{e(d["mitre"])}</td><td class=dim>{e(d["cwe"])}</td>'
                 f'<td class=dim>{("%.1fs" % d["dur"]) if d["dur"] is not None else ""}</td>'
-                f'<td class=iters>{iter_pills}</td>'
-                f'<td class=verdict>{vt}</td></tr>')
+                f'<td class=verdict>{last_cell}</td></tr>')
         bars = []
         for v in self._V_ORDER:
             if v not in dist:
@@ -872,9 +884,6 @@ th,td{{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d;vertical
 th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
 .num{{color:#6e7681;width:28px}} .dim{{color:#8b949e}} .verdict{{color:#8b949e;font-size:12px;max-width:380px}}
 .pill{{color:#fff;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}}
-.iters{{white-space:nowrap}}
-.ipill{{display:inline-block;color:#fff;padding:1px 6px;border-radius:8px;font-size:11px;
-font-weight:600;white-space:nowrap;margin:1px 2px 1px 0;cursor:default}}
 .bar{{display:flex;align-items:center;gap:8px;margin:3px 0}} .lbl{{width:120px;font-weight:600}}
 .meter{{flex:0 0 220px;height:10px;background:#21262d;border-radius:5px;overflow:hidden}}
 .meter>span{{display:block;height:100%}} .cnt{{color:#8b949e}}
@@ -882,11 +891,11 @@ font-weight:600;white-space:nowrap;margin:1px 2px 1px 0;cursor:default}}
 </style></head><body>
 <h1>Control Validation Harness — Results</h1>
 <div class=meta>{('SITE ' + e(site) + ' &middot; ') if site else ''}target <code>{e(tgt)}</code>
-&middot; mode {e(m.get('mode',''))} &middot; run {e(m.get('run',''))}
+&middot; run {e(m.get('run',''))}
 &middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
 {''.join(bars)}
 <table><thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th>
-<th>MITRE</th><th>CWE</th><th>Time</th><th>Iterations</th><th>Detail</th></tr></thead>
+<th>MITRE</th><th>CWE</th><th>Time</th><th>{"Iterations" if show_iters else "Detail"}</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 <div class=foot>&rarr; {findings} finding(s) got through &middot; {dist.get('DETECTED',0)} detected
 &middot; {dist.get('BLOCKED',0)} blocked</div>
