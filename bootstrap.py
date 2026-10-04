@@ -112,9 +112,18 @@ def install_core():
         if not _apt_install_one(pkg):
             print(f"  [!] {pkg} not installable here (Kali-only? no usable alias)")
     still_missing = _which_missing(missing)
-    if still_missing:
-        c(f"  [!] still missing after install attempt: {', '.join(still_missing)}", "1;31")
-    return still_missing
+    # A Kali-only package (alias explicitly None, e.g. responder) has no Debian
+    # package — report it but DON'T fail the bootstrap over it, or a clean
+    # Debian/Ubuntu run exits 1 even though every genuinely-core tool installed.
+    kali_only = {p for p, a in APT_ALIASES.items() if a is None}
+    optional = [p for p in still_missing if p in kali_only]
+    fatal = [p for p in still_missing if p not in kali_only]
+    if optional:
+        c(f"  [i] optional Kali-only package(s) not installed (non-fatal): "
+          f"{', '.join(optional)}", "0;33")
+    if fatal:
+        c(f"  [!] still missing after install attempt: {', '.join(fatal)}", "1;31")
+    return fatal
 
 
 def ensure_impacket_module():

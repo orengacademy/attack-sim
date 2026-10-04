@@ -26,7 +26,6 @@ import sys
 import random
 import string
 import logging
-import importlib.util
 
 from modules import _portpatch
 
@@ -61,7 +60,6 @@ _NOPAC_VENDOR_DIR = __import__("os").path.join(
 def _load_nopac_utils():
     """Reuse the AddComputerSAMR/LDAP helpers already vendored for
     modules/nopac.py instead of duplicating them."""
-    import os
     if _NOPAC_VENDOR_DIR not in sys.path:
         sys.path.insert(0, _NOPAC_VENDOR_DIR)
     import argparse

@@ -144,7 +144,16 @@ def _load_rows(path):
     row by content (an 'Action' column + a destination column) so vendor preamble
     rows are skipped, and normalises column names via _CANON so downstream code is
     vendor-independent."""
-    rows = _read_csv(path) if path.lower().endswith(".csv") else _read_xlsx(path)
+    try:
+        rows = _read_csv(path) if path.lower().endswith(".csv") else _read_xlsx(path)
+    except SystemExit:
+        raise
+    except Exception as e:
+        # a malformed/corrupt/password-protected .xlsx used to crash with a raw
+        # zipfile.BadZipFile / ElementTree traceback — degrade to a friendly message.
+        raise SystemExit(f"[!] could not parse '{path}' ({e.__class__.__name__}: {e}). "
+                         "If it's an .xlsx, re-export as .csv, or check the file isn't "
+                         "corrupt / password-protected / truncated.")
     hidx = header = None
     for i, row in enumerate(rows):
         canon = [_canon(c) for c in row]

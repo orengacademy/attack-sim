@@ -224,6 +224,24 @@ class TestDetectionPhrasing(unittest.TestCase):
         self.assertIn("prevention did not", p)
 
 
+class TestFinalizePerModuleCounts(unittest.TestCase):
+    """meta finding/detected/blocked counts must be PER MODULE (most-significant
+    verdict across iterations), not per (module x iteration) — otherwise >1
+    iteration inflates them past the per-module table the reports show."""
+
+    def test_finding_count_is_per_module_not_per_iteration(self):
+        m = types.SimpleNamespace()
+        m.META = {"id": "win", "name": "win", "category": "Test", "requires": [],
+                  "ports": [], "mitre": ["T1046"], "tactic": "Discovery",
+                  "success_regex": r"WIN", "blocked_regex": r"nope"}
+        m.run = lambda t, c: "WIN"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1").run([m], 3, ev, skip_unready=False, recon=False)
+        self.assertEqual(len(ev.records), 3)              # 3 iterations recorded
+        self.assertEqual(ev.meta["finding_count"], 1)     # but ONE module
+        self.assertEqual(ev.meta["verdicts"].get("SUCCESS"), 1)
+
+
 class TestProcessModuleExceptionBoundary(unittest.TestCase):
     """A crash in the per-module CLASSIFY/RECORD code (not just m.run()) must record
     that module NO-RESULT and let the run CONTINUE — one bad module must never abort

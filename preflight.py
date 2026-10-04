@@ -64,7 +64,7 @@ def main():
                 _portpatch.CUSTOM_PORT_TARGETS[tgt] = {
                     445: int(mem.get("smb_port") or 4445),
                     135: int(mem.get("rpc_port") or 1135),
-                    22: int(mem.get("ssh_port") or 2222)}
+                    22: int(mem.get("ssh_port") or 22)}  # match cli/gui default (was 2222)
             recon[tgt] = core.reachability(tgt, modules)
         except Exception as e:
             recon[tgt] = {"error": str(e)}
