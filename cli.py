@@ -478,7 +478,9 @@ def main():
               "otherwise they run as non-destructive indicators.")
         return 0
 
-    target_defaulted = not any(a in ("-t", "--target") for a in sys.argv)
+    target_defaulted = not any(
+        a in ("-t", "--target") or a.startswith(("--target=", "-t"))
+        for a in sys.argv)
     if target_defaulted:
         print(f"[default] no --target given → using {args.target} (the local lab). "
               "Pass --target <ip> for a remote target.")
@@ -503,12 +505,12 @@ def main():
     _iters = max(1, args.iterations)
 
     def _run_one_target(target, label=None, mods=None):
-        run_set = mods if mods is not None else selected
         """Prepare + run the selected modules against ONE target, applying that
         target's own recalled source/cloud/creds/site. Returns (root, exit_code).
         Called once per --target so a single scan can hit A->B (kvdc, direct
         ports/creds) AND A->C (cloud DO, NAT'd ports/creds) — each target pulls
         its OWN remembered config, so the two don't clash."""
+        run_set = mods if mods is not None else selected
         _total = len(run_set) * _iters
         _prog = {"n": 0}
 
