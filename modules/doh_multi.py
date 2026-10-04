@@ -68,6 +68,12 @@ def run(target, ctx):
     att = ctx.cfg("attacker_doh")
     if att:
         providers.append(att)
+    if not providers:
+        # No resolvers configured and no attacker DoH → nothing to probe. Returning
+        # the "all blocked" line here would score a false BLOCKED (control win) for a
+        # test that never ran.
+        return U.skip("no doh_providers / attacker_doh configured (config.json) — "
+                      "nothing to probe for the multi-resolver DoH test.")
     out = ["# multi-resolver DoH bypass test (Family B)"]
     resolved = []
     for url in providers:

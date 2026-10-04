@@ -58,16 +58,15 @@ def run(target, ctx):
         out.append(U.skip("--active not set — not attempting remote exec (indicator only)."))
         return "\n".join(out)
 
-    creds = ctx.creds
-    tmpl = "{domain}/{dc_user}:{dc_pass}@{target}".format(target=target, **creds)
-    # WMI first (135), then WinRM (5985) — whichever tool is present.
+    # WMI first (135), then WinRM (5985) — whichever tool is present. run_cmd
+    # substitutes {domain}/{dc_user}/{dc_pass}/{target} itself.
     if any(p.startswith("135") for p in reachable) and U.have("impacket-wmiexec"):
         out.append("[ACTIVE] impacket-wmiexec whoami …")
         res = ctx.run_cmd('impacket-wmiexec {domain}/{dc_user}:{dc_pass}@{target} '
                           '"cmd /c whoami"', target)
         out.append(res)
         low = res.lower()
-        if "nt authority" in low or "\\" in res and "error" not in low:
+        if "nt authority" in low or ("\\" in res and "error" not in low):
             out.append("EXEC-OK — remote command executed via WMI (T1047). [FINDING]")
         else:
             out.append("WMI exec did not confirm — review raw output.")

@@ -13,8 +13,12 @@ META = {
     "requires": [],                 # resolved at runtime across impacket flavours
     "requires_py": ["impacket"],    # the real dependency (the CLI name varies)
     "ports": [("tcp", 88), ("tcp", 389)],
-    "success_regex": r"\$krb5tgs\$|ServicePrincipalName|MSSQL/",
-    "blocked_regex": r"timed out|Connection refused|unreachable|Errno",
+    # Success = an actual roastable TGS hash was returned. The old regex also
+    # matched the "ServicePrincipalName" column HEADER (printed whenever any SPN
+    # account exists, even when no ticket was granted) and a loose "MSSQL/",
+    # scoring enumeration-only / blocked-roast runs as a false finding.
+    "success_regex": r"\$krb5tgs\$",
+    "blocked_regex": r"timed out|Connection refused|unreachable|Errno|No entries",
 }
 
 def run(target, ctx):

@@ -11,7 +11,6 @@ Needs hping3 + root (raw sockets); self-elevates via `sudo -n` (see README). Lin
 Low packet volume (NOT a flood). Config: eval_port (default 445). MITRE T1205.
 """
 import subprocess
-import shutil
 from modules import _util as U
 import core
 
@@ -34,7 +33,7 @@ META = {
     "serial": True,             # raw-socket probes — run alone, don't skew others
     "ports": [],
     "success_regex": r"^EVASION-",
-    "blocked_regex": r"no evasion gap|hping3 not",
+    "blocked_regex": r"no evasion gap",
 }
 
 

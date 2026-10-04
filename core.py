@@ -2517,7 +2517,11 @@ class Runner:
             ok = _match(target_raw, meta.get("success_regex"))
             authfail = _match(target_raw, AUTHFAIL_REGEX)
             refused = _match(target_raw, REFUSED_REGEX)
-            timed_out = "[TIMEOUT]" in target_raw or _match(target_raw, r"timed out|timeout")
+            # Anchor to REAL timeout markers — a bare "timeout" substring matches
+            # benign text (a tool's `--timeout`, `timeout=5`, help output) and would
+            # fabricate a BLOCKED (crediting the control for a non-event).
+            timed_out = "[TIMEOUT]" in target_raw or _match(
+                target_raw, r"timed out|connection timed out|operation timed out|recv timeout")
             blocked_out = _match(target_raw, meta.get("blocked_regex"))
             # a harness-internal fault (crash / watchdog-abandon / no-output /
             # command-parse / tool-not-found) — see _TOOL_FAIL_MARKER.
