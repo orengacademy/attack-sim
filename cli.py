@@ -370,6 +370,10 @@ def main():
     ap.add_argument("--cooldown", type=float, default=None,
                     help="seconds to wait before each brute/DoS (run_last) module so a "
                          "triggered rate-limit clears (also HARNESS_COOLDOWN)")
+    ap.add_argument("--wait-unblock", type=float, default=None, metavar="SECONDS",
+                    help="how long to wait for an IPS quarantine / source blacklist to "
+                         "clear before marking the rest INCONCLUSIVE (re-probes the canary "
+                         "every 5s). Default max(30s, cooldown); also HARNESS_WAIT_UNBLOCK")
     ap.add_argument("--force", action="store_true",
                     help="run modules even if prerequisites are missing (default: skip)")
     ap.add_argument("--port", help='per-attack port overrides, e.g. "log4shell=8983,ssh_brute=2222"')
@@ -529,6 +533,8 @@ def main():
         runner.concurrency = max(1, args.workers)
         if args.cooldown is not None:
             runner.cooldown = max(0.0, args.cooldown)
+        if args.wait_unblock is not None:
+            runner.wait_unblock = max(0.0, args.wait_unblock)
         runner.ctx.debug = bool(args.debug)
         overrides = _parse_ports(args.port)
         if overrides:

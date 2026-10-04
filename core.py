@@ -1958,6 +1958,15 @@ class Runner:
             self.cooldown = float(os.environ.get("HARNESS_COOLDOWN", "0") or 0)
         except ValueError:
             self.cooldown = 0.0
+        # How long to WAIT for an IPS quarantine / source-blacklist to clear before
+        # giving up and marking the rest INCONCLUSIVE. 0 = use the default
+        # (max(30s, cooldown)). Set it higher than cooldown to sleep longer for a
+        # ban to release without also lengthening the per-module cooldown. Env
+        # HARNESS_WAIT_UNBLOCK / CLI --wait-unblock.
+        try:
+            self.wait_unblock = float(os.environ.get("HARNESS_WAIT_UNBLOCK", "0") or 0)
+        except ValueError:
+            self.wait_unblock = 0.0
 
     def stop(self):
         self._stop = True
@@ -2352,13 +2361,15 @@ class Runner:
                                      recon_by_id, ev, log, bump)
 
     def _await_unblacklist(self, log, where):
-        """Wait up to max(30s, cooldown) for a blacklisted source to be let back
-        in, re-probing the canary. On recovery clear the latch and return True;
-        otherwise return False. Shared by the between-iterations guard and the
-        mid-run (per-module) quarantine recovery."""
+        """Wait for a blacklisted source to be let back in, re-probing the canary.
+        On recovery clear the latch and return True; otherwise return False.
+        Shared by the between-iterations guard and the mid-run (per-module)
+        quarantine recovery. The wait window is --wait-unblock/HARNESS_WAIT_UNBLOCK
+        when set, else max(30s, cooldown)."""
         if not (self._blacklisted and self._canary):
             return True
-        wait = max(30.0, self.cooldown or 0.0)
+        wait = self.wait_unblock if (getattr(self, "wait_unblock", 0) or 0) > 0 \
+            else max(30.0, self.cooldown or 0.0)
         log(f"  [blacklist] source appears quarantined — waiting up to {wait:.0f}s for the "
             f"canary {self._canary[1] or 'icmp'}/{self._canary[0]} to recover before {where} "
             "(whitelist the tester source on the appliance to avoid this).")

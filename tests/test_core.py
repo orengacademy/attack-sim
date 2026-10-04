@@ -545,5 +545,29 @@ class TestPortPolicy(unittest.TestCase):
         self.assertEqual(ev.meta["port_policy"]["blocked_by_policy"], 1)
 
 
+class TestWaitUnblockFlag(unittest.TestCase):
+    """--wait-unblock / HARNESS_WAIT_UNBLOCK sets how long the engine sleeps for an
+    IPS quarantine to clear, independent of --cooldown. Default off (0) -> the
+    engine falls back to max(30s, cooldown)."""
+    def test_default_off(self):
+        self.assertEqual(core.Runner("127.0.0.1").wait_unblock, 0.0)
+
+    def test_wait_window_uses_the_flag(self):
+        import time as _t, threading
+        r = core.Runner("127.0.0.1")
+        r._canary = ("tcp", 9); r._blacklisted = True
+        r._bl_lock = threading.Lock(); r._stop = False
+        r.cooldown = 0.0; r.wait_unblock = 12.0           # would be 30 without the flag
+        r._canary_reachable = lambda: False               # never recovers
+        slept, orig = [], _t.sleep
+        _t.sleep = lambda s: slept.append(s)
+        try:
+            ok = r._await_unblacklist(lambda *a: None, "x")
+        finally:
+            _t.sleep = orig
+        self.assertFalse(ok)                               # stayed banned -> False
+        self.assertAlmostEqual(sum(slept), 12.0, delta=0.01)   # waited ~12s, not 30
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
