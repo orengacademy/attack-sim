@@ -117,7 +117,7 @@ class HarnessGUI:
     def __init__(self, root):
         self.root = root
         root.title(f"Control Validation Harness v{core.VERSION}")
-        root.geometry("1240x860")
+        root.geometry("1240x920")
         root.minsize(980, 680)
         _apply_theme(root)
 
@@ -142,128 +142,122 @@ class HarnessGUI:
 
     # ----- config ------------------------------------------------------
     def _build_config(self, parent):
+        # Vertically STACKED, section-by-section layout (pack, not one wide grid):
+        # this panel lives in a ~70%-width left column, so every field + its hint
+        # sits on its OWN line and can't overflow/clip off the right edge (the old
+        # grid packed entries and long hints on the same row, which pushed the
+        # password box, eye toggle and NAT port boxes past the visible edge -- they
+        # looked "missing"). Section separators keep it readable.
         f = ttk.LabelFrame(parent, text="Target & run")
         f.pack(fill="x", padx=12, pady=8)
-        pad = dict(padx=6, pady=6)
 
-        # one short row of inputs; everything with its own hint/long label
-        # gets its own row below — this panel now lives in a ~70%-width
-        # column (not the full window), so packing long hints onto the same
-        # row as a field used to clip them off the edge.
-        # Dynamic, TOP-TO-BOTTOM target list. Each row = an IP/host + a per-target
-        # WHITEBOX tick (ticked = allow-all baseline; unticked = blackbox). Row 1
-        # uses the on-screen creds/cloud/source below; added rows use their OWN
-        # remembered cfg. "+ add target" appends a row (unlimited N, like CLI
-        # --target A,B,C). The "−" on a row removes it.
-        ttk.Label(f, text="Targets").grid(row=0, column=0, sticky="nw", **pad)
-        tgf = ttk.Frame(f); tgf.grid(row=0, column=1, sticky="w", **pad)
-        hdr = ttk.Frame(tgf); hdr.pack(anchor="w", pady=(0, 2))
-        ttk.Button(hdr, text="+ add target", width=12,
-                   command=self._add_target_row).pack(side="left")
-        ttk.Label(hdr, text="  (tick = whitebox baseline · row 1 uses the fields below)",
+        def _sep():
+            ttk.Separator(f, orient="horizontal").pack(fill="x", padx=10, pady=(3, 2))
+
+        def _hint(text):
+            ttk.Label(f, text=text, style="Muted.TLabel", wraplength=720,
+                      justify="left").pack(anchor="w", padx=10, pady=(0, 1))
+
+        # ---------- TARGETS (dynamic, top-to-bottom rows) ----------
+        trow = ttk.Frame(f); trow.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Label(trow, text="TARGETS", style="Sub.TLabel").pack(side="left")
+        ttk.Button(trow, text="+ add", width=7,
+                   command=self._add_target_row).pack(side="left", padx=(8, 6))
+        ttk.Label(trow, text="tick a row = whitebox (allow-all) baseline",
                   style="Muted.TLabel").pack(side="left")
-        self._rows_frame = ttk.Frame(tgf); self._rows_frame.pack(anchor="w")
+        # Each row = an IP/host + a per-target WHITEBOX tick. Row 1 uses the
+        # on-screen creds/cloud/source below; added rows use their OWN remembered
+        # cfg. "+ add" appends a row (unlimited N, like CLI --target A,B,C).
+        self._rows_frame = ttk.Frame(f); self._rows_frame.pack(fill="x", padx=10, pady=(2, 2))
         self.target_rows = []          # [(entry, whitebox_var, row_frame)]
         self._add_target_row(primary=True)
 
-        ttk.Label(f, text="Iterations").grid(row=0, column=2, sticky="ne", **pad)
-        self.iterations = ttk.Spinbox(f, from_=1, to=20, width=5)
-        self.iterations.set(1)
-        self.iterations.grid(row=0, column=3, sticky="nw", **pad)
-
-        ttk.Label(f, text="Workers").grid(row=1, column=0, sticky="w", **pad)
-        self.workers = ttk.Spinbox(f, from_=1, to=16, width=5)
+        # ---------- iterations / workers ----------
+        rw = ttk.Frame(f); rw.pack(fill="x", padx=10, pady=(2, 4))
+        ttk.Label(rw, text="Iterations").pack(side="left")
+        self.iterations = ttk.Spinbox(rw, from_=1, to=20, width=4); self.iterations.set(1)
+        self.iterations.pack(side="left", padx=(4, 14))
+        ttk.Label(rw, text="Workers").pack(side="left")
+        self.workers = ttk.Spinbox(rw, from_=1, to=16, width=4)
         self.workers.set(core.RECOMMENDED_WORKERS)
-        self.workers.grid(row=1, column=1, sticky="w", **pad)
-        ttk.Label(f, text=f"(recommended {core.RECOMMENDED_WORKERS}; DoS/brute always serial)",
-                  style="Muted.TLabel").grid(row=1, column=2, columnspan=2, sticky="w", **pad)
-
-        # USS runtime options: active establishment + egress source binding
-        # (its own row — the checkbox label alone is long enough to clip
-        # whatever followed it on a 70%-width panel)
-        self.active_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(f, text="Active establishment (build real tunnels/pivots/exfil — needs config.json)",
-                        variable=self.active_var).grid(row=2, column=0, columnspan=4, sticky="w",
-                                                       padx=6, pady=(4, 2))
-        sf = ttk.Frame(f); sf.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
-        ttk.Label(sf, text="Source IP").pack(side="left")
-        self.source_entry = ttk.Entry(sf, width=16)
-        self.source_entry.pack(side="left", padx=(4, 6))
-        ttk.Label(sf, text="(bind egress — DC foothold / VRF)",
+        self.workers.pack(side="left", padx=(4, 8))
+        ttk.Label(rw, text=f"(rec. {core.RECOMMENDED_WORKERS}; DoS/brute always serial)",
                   style="Muted.TLabel").pack(side="left")
+
+        # ---------- CREDENTIALS (aligned grid, always visible) ----------
+        _sep()
+        ttk.Label(f, text="CREDENTIALS", style="Sub.TLabel").pack(anchor="w", padx=10)
+        cg = ttk.Frame(f); cg.pack(fill="x", padx=10, pady=(2, 0))
+        ttk.Label(cg, text="Domain").grid(row=0, column=0, sticky="w", pady=2)
+        self.domain_entry = ttk.Entry(cg, width=16)
+        self.domain_entry.grid(row=0, column=1, sticky="w", padx=(4, 16), pady=2)
+        ttk.Label(cg, text="DC user").grid(row=0, column=2, sticky="w", pady=2)
+        self.user_entry = ttk.Entry(cg, width=18)
+        self.user_entry.grid(row=0, column=3, sticky="w", padx=(4, 0), pady=2)
+        ttk.Label(cg, text="DC pass").grid(row=1, column=0, sticky="w", pady=2)
+        pcell = ttk.Frame(cg); pcell.grid(row=1, column=1, columnspan=3, sticky="w", padx=(4, 0), pady=2)
+        self.pass_entry = ttk.Entry(pcell, width=18, show="•"); self.pass_entry.pack(side="left")
+        self._eye(pcell, self.pass_entry)
+        ttk.Label(cg, text="SSH user").grid(row=2, column=0, sticky="w", pady=2)
+        self.ssh_user_entry = ttk.Entry(cg, width=16)
+        self.ssh_user_entry.grid(row=2, column=1, sticky="w", padx=(4, 16), pady=2)
+        ttk.Label(cg, text="SSH pass").grid(row=2, column=2, sticky="w", pady=2)
+        scell = ttk.Frame(cg); scell.grid(row=2, column=3, sticky="w", padx=(4, 0), pady=2)
+        self.ssh_pass_entry = ttk.Entry(scell, width=18, show="•"); self.ssh_pass_entry.pack(side="left")
+        self._eye(scell, self.ssh_pass_entry)
+        _hint("Blank = credentials.env / env. SSH creds separate; blank -> DC creds. "
+              "Passwords redacted (***) in evidence.")
+
+        # ---------- CLOUD / NAT ports (always editable) ----------
+        _sep()
+        cf = ttk.Frame(f); cf.pack(fill="x", padx=10, pady=(2, 0))
+        self.cloud_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cf, text="Cloud target (NAT'd ports)", variable=self.cloud_var,
+                        command=self._toggle_cloud_ports).pack(side="left")
+        ttk.Label(cf, text="SMB").pack(side="left", padx=(12, 2))
+        self.smb_port = tk.StringVar(value="4445")
+        self._smb_entry = ttk.Entry(cf, textvariable=self.smb_port, width=6)
+        self._smb_entry.pack(side="left")
+        ttk.Label(cf, text="RPC").pack(side="left", padx=(10, 2))
+        self.rpc_port = tk.StringVar(value="1135")
+        self._rpc_entry = ttk.Entry(cf, textvariable=self.rpc_port, width=6)
+        self._rpc_entry.pack(side="left")
+        ttk.Label(cf, text="SSH").pack(side="left", padx=(10, 2))
+        self.ssh_port = tk.StringVar(value="22")
+        self._ssh_port_entry = ttk.Entry(cf, textvariable=self.ssh_port, width=6)
+        self._ssh_port_entry.pack(side="left")
+        _hint("Tick to apply the 445->SMB / 135->RPC / 22->SSH NAT mapping (impacket + "
+              "ssh_brute reach the forwarded ports). Boxes stay editable either way.")
+
+        # ---------- OPTIONS ----------
+        _sep()
+        self.active_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(f, text="Active establishment (build real tunnels/pivots/exfil -- needs config.json)",
+                        variable=self.active_var).pack(anchor="w", padx=10, pady=(0, 2))
+        og = ttk.Frame(f); og.pack(fill="x", padx=10, pady=(0, 2))
+        ttk.Label(og, text="Source IP").pack(side="left")
+        self.source_entry = ttk.Entry(og, width=15)
+        self.source_entry.pack(side="left", padx=(4, 14))
         # Wait for an IPS quarantine / source blacklist to clear before marking the
         # rest INCONCLUSIVE (--wait-unblock; 0 = default max(30s, cooldown)).
-        ttk.Label(sf, text="   Wait-unblock(s)").pack(side="left")
-        self.wait_unblock = ttk.Entry(sf, width=6)
-        self.wait_unblock.insert(0, "0")
-        self.wait_unblock.pack(side="left", padx=(4, 0))
-        # Site ID (engagement/site tag → recorded in evidence + headers) and a
-        # Debug toggle (verbose tool trace + full raw output + per-module timing).
-        ttk.Label(sf, text="   Site ID").pack(side="left")
-        self.site_entry = ttk.Entry(sf, width=14)
-        self.site_entry.pack(side="left", padx=(4, 6))
+        ttk.Label(og, text="Wait-unblock(s)").pack(side="left")
+        self.wait_unblock = ttk.Entry(og, width=5); self.wait_unblock.insert(0, "0")
+        self.wait_unblock.pack(side="left", padx=(4, 14))
+        ttk.Label(og, text="Site ID").pack(side="left")
+        self.site_entry = ttk.Entry(og, width=14)
+        self.site_entry.pack(side="left", padx=(4, 12))
         import os as _os
         if _os.environ.get("HARNESS_SITE_ID"):
             self.site_entry.insert(0, _os.environ["HARNESS_SITE_ID"])
         self.debug_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(sf, text="Debug", variable=self.debug_var).pack(side="left", padx=(8, 0))
-        # (posture is now a per-target "whitebox" tick on each Target row above)
-
-        # Cloud target: SMB/RPC are DNAT'd to alternate high ports (ISPs block
-        # outbound 445). Ticking this maps 445->SMB and 135->RPC for the entered
-        # target so the impacket modules (dcsync/psexec/wmiexec/nopac/sama/petit)
-        # reach the forwarded ports (same as modules/_portpatch.py, but per-run).
-        cf = ttk.Frame(f); cf.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
-        self.cloud_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(cf, text="Cloud target (NAT'd SMB/RPC)", variable=self.cloud_var,
-                        command=self._toggle_cloud_ports).pack(side="left")
-        ttk.Label(cf, text="SMB").pack(side="left", padx=(8, 2))
-        self.smb_port = tk.StringVar(value="4445")
-        self._smb_entry = ttk.Entry(cf, textvariable=self.smb_port, width=6, state="disabled")
-        self._smb_entry.pack(side="left")
-        ttk.Label(cf, text="RPC").pack(side="left", padx=(8, 2))
-        self.rpc_port = tk.StringVar(value="1135")
-        self._rpc_entry = ttk.Entry(cf, textvariable=self.rpc_port, width=6, state="disabled")
-        self._rpc_entry.pack(side="left")
-        ttk.Label(cf, text="SSH").pack(side="left", padx=(8, 2))
-        self.ssh_port = tk.StringVar(value="22")
-        self._ssh_port_entry = ttk.Entry(cf, textvariable=self.ssh_port, width=6, state="disabled")
-        self._ssh_port_entry.pack(side="left")
-        ttk.Label(cf, text="(445→SMB, 135→RPC, 22→SSH for the forwarded ports)",
-                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
-
-        # Per-target credentials — override credentials.env/HARNESS_DC_* for THIS
-        # target (a Linux SSH lab and a Windows DC need different creds), remembered
-        # per target. Blank = fall back to credentials.env / env.
-        crf = ttk.Frame(f); crf.grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
-        ttk.Label(crf, text="Domain").pack(side="left")
-        self.domain_entry = ttk.Entry(crf, width=12); self.domain_entry.pack(side="left", padx=(4, 6))
-        ttk.Label(crf, text="User").pack(side="left")
-        self.user_entry = ttk.Entry(crf, width=14); self.user_entry.pack(side="left", padx=(4, 6))
-        ttk.Label(crf, text="Pass").pack(side="left")
-        self.pass_entry = ttk.Entry(crf, width=14, show="•"); self.pass_entry.pack(side="left", padx=(4, 6))
-        self._eye(crf, self.pass_entry)
-        ttk.Label(crf, text="(DC/AD creds — per-target; blank = credentials.env)",
-                  style="Muted.TLabel").pack(side="left")
-
-        # SSH creds are SEPARATE from the DC creds: a dual-role target is both an
-        # SSH host and a DC front, and one identity can't serve both. ssh_brute
-        # uses these and falls back to the DC User/Pass above only when blank.
-        srf = ttk.Frame(f); srf.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
-        ttk.Label(srf, text="SSH user").pack(side="left")
-        self.ssh_user_entry = ttk.Entry(srf, width=14); self.ssh_user_entry.pack(side="left", padx=(4, 6))
-        ttk.Label(srf, text="SSH pass").pack(side="left")
-        self.ssh_pass_entry = ttk.Entry(srf, width=14, show="•"); self.ssh_pass_entry.pack(side="left", padx=(4, 6))
-        self._eye(srf, self.ssh_pass_entry)
-        ttk.Label(srf, text="(ssh_brute only; blank = fall back to the DC User/Pass)",
-                  style="Muted.TLabel").pack(side="left")
+        ttk.Checkbutton(og, text="Debug", variable=self.debug_var).pack(side="left")
 
         # Pre-fill from the RESOLVED defaults (env > credentials.env > the
-        # non-secret built-ins: lab.local / Administrator). This is why Domain and
-        # User are populated out of the box; the password shows ONLY if the
-        # operator configured one via HARNESS_DC_PASS / credentials.env — we never
-        # bake a secret into source. A per-target value (remembered in
-        # .target_memory.json) overrides these in _recall_target().
+        # non-secret built-ins: lab.local / Administrator). Domain + DC user are
+        # populated out of the box; the password shows ONLY if the operator
+        # configured one via HARNESS_DC_PASS / credentials.env -- we never bake a
+        # secret into source. A remembered per-target value (.target_memory.json)
+        # overrides these in _recall_target().
         try:
             dflt = core.load_credentials()
             for ent, k in ((self.domain_entry, "domain"), (self.user_entry, "dc_user"),
@@ -274,27 +268,47 @@ class HarnessGUI:
         except Exception:
             pass
 
-        self._priv_frame = f
-        self._priv_label = ttk.Label(f, text="", style="Muted.TLabel")
-        self._priv_label.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
-        self._unlock_btn = ttk.Button(f, text="Unlock sudo", command=self._unlock_sudo)
-        self._unlock_btn.grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
+        # ---------- privilege + a visible "what loaded" line ----------
+        _sep()
+        self._priv_frame = ttk.Frame(f); self._priv_frame.pack(fill="x", padx=10, pady=(0, 2))
+        self._priv_label = ttk.Label(self._priv_frame, text="", style="Muted.TLabel")
+        self._priv_label.pack(side="left")
+        self._unlock_btn = ttk.Button(self._priv_frame, text="Unlock sudo", command=self._unlock_sudo)
+        # (_unlock_btn is packed/unpacked by _refresh_privilege)
+        # One-line status so "did my password load?" is answered at a glance --
+        # a check means a value is in the field, a dash means empty (SSH blank
+        # falls back to the DC creds).
+        self._prefill_note = ttk.Label(f, text="", style="Muted.TLabel",
+                                        wraplength=720, justify="left")
+        self._prefill_note.pack(anchor="w", padx=10, pady=(0, 4))
+
         self._refresh_privilege()
         self._prefill_last_target()
+        self._update_prefill_note()
+
+    def _update_prefill_note(self):
+        """Refresh the one-line 'what loaded' indicator under the credentials."""
+        if not hasattr(self, "_prefill_note"):
+            return
+        def mk(entry):
+            return "✓" if entry.get().strip() else "—"
+        self._prefill_note.configure(
+            text=(f"Loaded:  domain {mk(self.domain_entry)}   DC user {mk(self.user_entry)}   "
+                  f"DC pass {mk(self.pass_entry)}   |   SSH user {mk(self.ssh_user_entry)}   "
+                  f"SSH pass {mk(self.ssh_pass_entry)}     (dash = empty; SSH blank -> DC creds)"))
 
     def _refresh_privilege(self):
         ps = core.privilege_status(self.modules)
         if not ps["needs_root_modules"]:
-            self._priv_label.grid_remove(); self._unlock_btn.grid_remove(); return
+            self._priv_frame.pack_forget(); return
         icon = "✓" if (ps["root"] or ps["sudo_nopasswd"]) else ("⚠" if not ps["sudo_present"] else "ℹ")
         style = ("Muted.TLabel" if (ps["root"] or ps["sudo_nopasswd"])
                  else "Err.TLabel" if not ps["sudo_present"] else "Warn.TLabel")
         self._priv_label.configure(text=f"{icon} Privilege: {ps['how']}", style=style)
-        self._priv_label.grid()
         if ps["can_unlock"]:
-            self._unlock_btn.grid()
+            self._unlock_btn.pack(side="left", padx=(8, 0))
         else:
-            self._unlock_btn.grid_remove()
+            self._unlock_btn.pack_forget()
 
     def _unlock_sudo(self):
         from tkinter import simpledialog
@@ -581,10 +595,12 @@ class HarnessGUI:
                         style="TCheckbutton").pack(side="left", padx=(0, 4))
 
     def _toggle_cloud_ports(self):
-        state = "normal" if self.cloud_var.get() else "disabled"
-        self._smb_entry.configure(state=state)
-        self._rpc_entry.configure(state=state)
-        self._ssh_port_entry.configure(state=state)
+        # The SMB/RPC/SSH port boxes stay ALWAYS editable/visible now (a disabled,
+        # greyed-out box read as "missing input"). The Cloud tick only decides
+        # whether the NAT map is APPLIED for the run — see _cfg_from_screen /
+        # _apply_cloud_ports, which both gate on self.cloud_var. Kept as a method
+        # because the checkbutton command and _recall_target still call it.
+        return
 
     def _prefill_last_target(self):
         """On launch, resume the most-recently-used target: set the Target field
@@ -644,6 +660,7 @@ class HarnessGUI:
             if rec.get(key):
                 entry.delete(0, "end")
                 entry.insert(0, rec[key])
+        self._update_prefill_note()   # reflect this target's loaded creds
 
     def _save_target(self, target):
         """Remember this target's source/cloud/creds options for next time."""
