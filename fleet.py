@@ -73,7 +73,9 @@ def build_jobs(fleet, args):
     if getattr(args, "from_zone", None):
         zs = {z.strip() for z in args.from_zone.split(",") if z.strip()}
         jobs = [j for j in jobs if j["source"].get("zone") in zs]
-    if args.direction:
+    # "both" means ALL directions (like cli._select), so only filter jobs for a
+    # specific a2b/b2a; filtering on "both" would drop every directional job.
+    if args.direction and args.direction != "both":
         jobs = [j for j in jobs
                 if j["direction"] is None or j["direction"] == args.direction]
     return jobs

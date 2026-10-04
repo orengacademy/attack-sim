@@ -53,6 +53,14 @@ class TestFleetJobs(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["direction"], "b2a")
 
+    def test_direction_both_keeps_all_jobs(self):
+        # "both" means ALL directions — it must NOT filter jobs down (regression:
+        # it used to drop every a2b/b2a job, yielding fewer than the no-filter run).
+        all_jobs = fleet.build_jobs(FLEET, _args())
+        both = fleet.build_jobs(FLEET, _args(direction="both"))
+        self.assertEqual(len(both), len(all_jobs))
+        self.assertGreater(len(both), 1)
+
     def test_no_runs_defaults_to_all_targets(self):
         jobs = fleet.build_jobs({"targets": FLEET["targets"]}, _args())
         self.assertEqual(len(jobs), 3)
