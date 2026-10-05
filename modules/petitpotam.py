@@ -244,11 +244,14 @@ def run(target, ctx):
                                       "Connection refused", "RPC_S_ACCESS_DENIED"))
     if coerced and not captured and not refused:
         out.append(
-            f"[INCONCLUSIVE] coercion fired (RPC accepted by {target}) but Responder "
-            f"captured no NTLM hash within {CAPTURE_WAIT}s — the target->attacker callback "
-            f"was not observed. Ensure the Responder listener IP ({listener_ip}) is routable "
-            "from the target (a public / in-path address, not RFC1918), then re-run; if it "
-            "already is, confirm via the SD-WAN/host logs whether the callback (SMB/HTTP from "
-            "the target) was dropped in transit.")
+            f"[INCONCLUSIVE] coercion fired (RPC accepted by {target}) but no coerced "
+            f"SMB/HTTP callback returned to the Responder listener ({listener_ip}) within "
+            f"{CAPTURE_WAIT}s. Black-box through the SD-WAN, this is consistent with the "
+            "BOUNDARY CONTAINING the coerced callback on the return path (segmentation / "
+            "SD-WAN holding — a likely CONTROL WIN): the target was coerced but its "
+            "authentication never reached the tester behind the boundary. Confirm via the "
+            "appliance session/threat log (additional/sangfor_ingest.py) whether the "
+            "target->tester SMB(445)/HTTP callback was DENIED; only if the appliance shows "
+            "it ALLOWED yet nothing arrived should you check the return route to the listener.")
         full = "\n".join(out)
     return full
