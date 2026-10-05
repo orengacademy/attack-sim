@@ -415,341 +415,397 @@ def _list_runs(limit=40):
 # ---------------------------------------------------------------------------
 PAGE = r"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>Control Validation Harness — Web</title>
+<title>Control Validation Harness</title>
+<link rel=preconnect href="https://fonts.googleapis.com">
+<link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel=stylesheet>
 <style>
 :root{
- --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --surf:#21262d; --line:#2b313c;
- --fg:#e6edf3; --muted:#8b949e; --accent:#7c6cf0; --accent2:#9385f4;
- --red:#e5484d; --orange:#f5a524; --green:#30a46c; --blue:#4493f8; --purple:#a371f7; --amber:#e2a336;
+ --base:#0c1014; --base2:#0f151b; --surf:#141c24; --surf2:#1a242e;
+ --line:#212d37; --line2:#30424f; --hair:#1a242d;
+ --fg:#e7eef5; --muted:#8597a8; --faint:#56687a;
+ --edge:#79e3e8;                 /* cold cyan: interactive affordance ONLY */
+ /* signal palette = the only colour on the page (verdict semantics) */
+ --got:#ff5a5a; --det:#f5a33c; --blk:#3fd08a; --svc:#4c8dff; --inc:#a98bff; --skip:#5f7083;
+ --ui:'Space Grotesk',ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif;
+ --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
 }
-*{box-sizing:border-box} html,body{margin:0}
-body{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
-a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
-.wrap{max-width:1500px;margin:0 auto;padding:16px}
-header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
-header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px}
-.badge{background:var(--surf);color:var(--muted);font-size:12px;padding:2px 9px;border-radius:20px;border:1px solid var(--line)}
-.grow{flex:1}
-button{font:inherit;border:0;border-radius:8px;padding:8px 14px;background:var(--surf);color:var(--fg);cursor:pointer;border:1px solid var(--line)}
-button:hover{background:var(--panel2)}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-button.primary:hover{background:var(--accent2)}
-button.danger{background:#45202b;border-color:#5b2733;color:#ffb4bd}
-button:disabled{opacity:.5;cursor:not-allowed}
-.bento{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
-.card h2{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
-.col3{grid-column:span 3} .col4{grid-column:span 4} .col5{grid-column:span 5}
-.col6{grid-column:span 6} .col7{grid-column:span 7} .col8{grid-column:span 8} .col12{grid-column:span 12}
-@media(max-width:1100px){.col3,.col4,.col5,.col6,.col7,.col8{grid-column:span 12}}
-label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
-input,select,textarea{width:100%;background:var(--surf);border:1px solid var(--line);color:var(--fg);
- border-radius:8px;padding:7px 9px;font:inherit}
-textarea{resize:vertical;min-height:52px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
-.row{display:flex;gap:8px;flex-wrap:wrap} .row>*{flex:1}
-.inline{display:flex;align-items:center;gap:7px} .inline input[type=checkbox]{width:auto}
-.seg{display:flex;background:var(--surf);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg button{border:0;border-radius:0;background:transparent;flex:1;padding:7px}
-.seg button.on{background:var(--accent);color:#fff}
-.meters .bar{display:flex;align-items:center;gap:9px;margin:5px 0;font-size:12px}
-.meters .lbl{width:118px;font-weight:600} .meters .track{flex:1;height:9px;background:var(--surf);border-radius:5px;overflow:hidden}
-.meters .track>span{display:block;height:100%;width:0;transition:width .3s} .meters .cnt{width:46px;text-align:right;color:var(--muted)}
-.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
-.kpi b{display:block;font-size:22px} .kpi span{font-size:11px;color:var(--muted)}
-.progress{height:6px;background:var(--surf);border-radius:4px;overflow:hidden;margin-top:8px}
-.progress>span{display:block;height:100%;width:0;background:var(--accent);transition:width .25s}
-.mods{max-height:360px;overflow:auto;padding-right:4px}
-.catgrp{margin-bottom:8px}
-.catgrp .ct{font-size:11px;color:var(--blue);font-weight:700;margin:8px 0 4px;position:sticky;top:0;background:var(--panel);padding:2px 0}
-.chip{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:7px}
-.chip:hover{background:var(--panel2)} .chip input{width:auto}
-.chip .nm{flex:1} .chip .mi{color:var(--muted);font-size:11px;font-family:ui-monospace,monospace}
-.tag{font-size:9px;padding:1px 5px;border-radius:5px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
-.tag.new{background:#2a1d3a;border-color:#52307a;color:#c89bff}
-.tag.root{background:#3a2a16;border-color:#6a4a16;color:#f0c879}
-.log{height:300px;overflow:auto;background:#0b0e14;border:1px solid var(--line);border-radius:10px;
- padding:9px 11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap}
-.log .finding{color:var(--red)} .log .good{color:var(--green)} .log .info{color:var(--blue)}
-.log .warn{color:var(--amber)} .log .hdr{color:var(--accent2)} .log .muted{color:var(--muted)}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--panel);cursor:pointer}
-.tblwrap{max-height:360px;overflow:auto}
-.pill{color:#fff;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;white-space:nowrap}
-.detail{color:var(--muted);max-width:420px}
-.tabs{display:flex;gap:6px;margin-bottom:8px}
-.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-.hidden{display:none}
-.note{font-size:11px;color:var(--muted);margin-top:6px}
-.runs a{display:inline-block;margin-right:8px}
-details summary{cursor:pointer;color:var(--muted);font-size:12px;margin:6px 0}
-</style></head><body><div class=wrap>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--base);color:var(--fg);font-family:var(--ui);font-size:14px;line-height:1.5;
+ -webkit-font-smoothing:antialiased}
+a{color:var(--edge);text-decoration:none} a:hover{text-decoration:underline}
+::selection{background:#28414a;color:#fff}
+:focus-visible{outline:2px solid var(--edge);outline-offset:1px;border-radius:3px}
 
-<header>
- <h1>Control Validation Harness</h1>
- <span class=badge id=ver>web</span>
- <span class=badge id=polname></span>
- <span class=grow></span>
- <span class=badge id=modcount></span>
- <button class=primary id=runbtn>▶ RUN</button>
- <button class=danger id=stopbtn disabled>■ STOP</button>
+/* ---- scaffolding: topbar + console (rail | theatre) ---- */
+.shell{min-height:100%;display:flex;flex-direction:column}
+.topbar{display:flex;align-items:center;gap:18px;padding:14px 22px;border-bottom:1px solid var(--line);
+ background:linear-gradient(180deg,var(--base2),var(--base))}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.mark{width:30px;height:30px;color:var(--edge);flex:none}
+.title{font-weight:600;font-size:17px;letter-spacing:-.01em}
+.sub{display:flex;gap:0;color:var(--muted);font-size:12px;font-family:var(--mono);margin-top:1px;flex-wrap:wrap}
+.sub>span{padding:0 10px;border-left:1px solid var(--line2)} .sub>span:first-child{padding-left:0;border-left:0}
+.cmd{margin-left:auto;display:flex;align-items:center;gap:12px}
+.roe{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;cursor:pointer;user-select:none}
+.btn{font-family:var(--ui);font-weight:600;font-size:14px;border:1px solid var(--line2);background:var(--surf);
+ color:var(--fg);border-radius:7px;padding:9px 18px;cursor:pointer;transition:background .12s,border-color .12s}
+.btn:hover{background:var(--surf2)}
+.btn.run{background:var(--fg);color:#0a0e12;border-color:var(--fg)}
+.btn.run:hover{background:#fff} .btn.run:disabled{background:var(--surf2);color:var(--faint);border-color:var(--line);cursor:not-allowed}
+.btn.stop{color:var(--got);border-color:#4a2630} .btn.stop:hover{background:#2a1419}
+.btn.stop:disabled{color:var(--faint);border-color:var(--line);background:transparent;cursor:not-allowed}
+
+.console{flex:1;display:grid;grid-template-columns:minmax(330px,380px) 1fr;gap:0;min-height:0}
+.rail{border-right:1px solid var(--line);overflow:auto;background:var(--base)}
+.theatre{overflow:auto;background:var(--base2);min-width:0}
+@media(max-width:920px){.console{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line)}}
+
+/* ---- rail: grouped controls, hairline-separated (NOT identical cards) ---- */
+.group{padding:16px 20px;border-bottom:1px solid var(--hair)}
+.glabel{font-weight:600;font-size:13px;margin:0 0 10px;letter-spacing:-.01em}
+.field{margin-bottom:10px} .field:last-child{margin-bottom:0}
+.field>label{display:block;font-size:12px;color:var(--muted);margin:0 0 4px}
+input[type=text],input[type=password],input[type=number],textarea,select{width:100%;background:var(--base2);
+ border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:8px 10px;font:inherit;font-size:13px}
+input:focus,textarea:focus{border-color:var(--line2);background:var(--surf)}
+textarea{font-family:var(--mono);font-size:12.5px;resize:vertical;min-height:50px}
+.rowf{display:flex;gap:8px} .rowf>*{flex:1;min-width:0}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg);cursor:pointer}
+.chk input{accent-color:var(--edge)}
+.mini{font-size:11.5px;color:var(--faint);margin-top:6px;line-height:1.45}
+details{margin-top:8px} details>summary{cursor:pointer;color:var(--muted);font-size:12px;list-style:none;
+ padding:4px 0;user-select:none} details>summary::before{content:'+ ';color:var(--edge)} details[open]>summary::before{content:'– '}
+
+/* posture segmented control */
+.seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--base2)}
+.seg button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;padding:8px;cursor:pointer}
+.seg button.on{background:var(--surf2);color:var(--fg);box-shadow:inset 0 -2px 0 var(--edge)}
+
+/* prefill readout */
+.loaded{display:flex;flex-wrap:wrap;gap:4px 12px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.loaded b{color:var(--fg);font-weight:500} .ok{color:var(--blk)} .no{color:var(--faint)}
+
+/* preset controls + attack battery */
+.presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.presets button{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--base2);color:var(--muted);
+ border-radius:20px;padding:4px 11px;cursor:pointer} .presets button:hover{color:var(--fg);border-color:var(--line2)}
+.selcount{font-family:var(--mono);font-size:12px;color:var(--edge)}
+.battery{max-height:420px;overflow:auto;margin:0 -4px}
+.cat{margin:10px 0 2px;display:flex;align-items:center;gap:8px;position:sticky;top:0;background:var(--base);padding:4px}
+.cat .cn{font-size:11px;color:var(--muted);font-weight:600} .cat .cl{flex:1;height:1px;background:var(--hair)}
+.atk{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:6px;cursor:pointer}
+.atk:hover{background:var(--surf)} .atk input{accent-color:var(--edge);flex:none}
+.atk .nm{flex:1;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.atk .mi{font-family:var(--mono);font-size:11px;color:var(--faint);flex:none}
+.flag{font-family:var(--mono);font-size:9.5px;padding:0 4px;border:1px solid var(--line2);border-radius:3px;color:var(--muted);flex:none}
+.flag.new{color:var(--inc);border-color:#3a2f55} .flag.root{color:var(--det);border-color:#4a3a1e}
+
+/* ---- theatre: the signal hero ---- */
+.hero{padding:20px 24px 16px;border-bottom:1px solid var(--line);display:grid;
+ grid-template-columns:auto 1fr;gap:28px;align-items:center}
+@media(max-width:620px){.hero{grid-template-columns:1fr;gap:14px}}
+.tally{min-width:150px}
+.big{font-family:var(--mono);font-weight:700;font-size:64px;line-height:.9;color:var(--got);letter-spacing:-.02em}
+.big.zero{color:var(--faint)}
+.biglabel{font-size:13px;color:var(--muted);margin-top:4px}
+.subtally{display:flex;gap:16px;margin-top:12px;font-size:12.5px;color:var(--muted)}
+.subtally .dot{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:6px;vertical-align:1px}
+.spectrum{height:34px;display:flex;border-radius:5px;overflow:hidden;background:var(--base);border:1px solid var(--line)}
+.spectrum i{display:block;height:100%;transition:width .35s ease}
+.spectrum .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:12px;font-family:var(--mono)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:11px;font-size:12px;color:var(--muted)}
+.legend .li{display:flex;align-items:center;gap:7px}
+.legend .sw{width:9px;height:9px;border-radius:2px;flex:none}
+.legend b{color:var(--fg);font-family:var(--mono);font-weight:500}
+
+.progress{height:2px;background:var(--line)} .progress>i{display:block;height:100%;width:0;background:var(--edge);transition:width .25s}
+.runmeta{padding:9px 24px;color:var(--muted);font-size:12.5px;font-family:var(--mono);border-bottom:1px solid var(--hair)}
+
+/* results / log panel */
+.panel{padding:0 0 10px}
+.tabbar{display:flex;align-items:center;gap:4px;padding:10px 24px 8px}
+.tab{font:inherit;font-size:13px;border:0;background:transparent;color:var(--muted);padding:5px 2px;margin-right:14px;cursor:pointer;border-bottom:2px solid transparent}
+.tab.on{color:var(--fg);border-bottom-color:var(--edge)}
+.evidence{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.wrap{max-height:48vh;overflow:auto;padding:0 12px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{position:sticky;top:0;background:var(--base2);text-align:left;font-weight:500;color:var(--muted);
+ font-size:11.5px;padding:7px 10px;border-bottom:1px solid var(--line);cursor:default}
+tbody td{padding:7px 10px;border-bottom:1px solid var(--hair);vertical-align:top}
+tbody tr:hover{background:var(--surf)}
+.vcell{white-space:nowrap;font-weight:500} .vbar{width:3px;height:13px;border-radius:2px;display:inline-block;margin-right:8px;vertical-align:-2px}
+.mono{font-family:var(--mono);color:var(--muted)} .dim{color:var(--muted)}
+.detail{color:var(--muted);max-width:440px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.log{height:46vh;overflow:auto;margin:0 24px;padding:10px 12px;background:var(--base);border:1px solid var(--line);
+ border-radius:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;line-height:1.55}
+.log .c-got{color:var(--got)} .log .c-blk{color:var(--blk)} .log .c-svc{color:var(--svc)}
+.log .c-det{color:var(--det)} .log .c-hdr{color:var(--edge)} .log .c-mut{color:var(--faint)}
+.hidden{display:none}
+
+.runsbar{padding:14px 24px;border-top:1px solid var(--hair);color:var(--muted);font-size:12.5px}
+.runsbar h3{font-size:12px;font-weight:600;color:var(--fg);margin:0 0 8px}
+.runrow{font-family:var(--mono);font-size:12px;padding:3px 0;display:flex;gap:12px;align-items:baseline}
+.runrow b{color:var(--fg);font-weight:500}
+.warnline{color:var(--det);font-size:11.5px;margin-top:10px;line-height:1.5}
+</style></head>
+<body><div class=shell>
+
+<header class=topbar>
+ <div class=brand>
+  <svg class=mark viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.5 aria-hidden=true>
+   <circle cx=12 cy=12 r=7.5/><path d="M12 1.5V6M12 18v4.5M1.5 12H6M18 12h4.5"/><circle cx=12 cy=12 r=1.8 fill=currentColor stroke=none/>
+  </svg>
+  <div>
+   <div class=title>Control Validation Harness</div>
+   <div class=sub id=subline><span>connecting…</span></div>
+  </div>
+ </div>
+ <div class=cmd>
+  <label class=roe><input type=checkbox id=roe> Rules of engagement confirmed</label>
+  <button class="btn stop" id=stopbtn disabled>Stop</button>
+  <button class="btn run" id=runbtn>Run battery</button>
+ </div>
 </header>
 
-<div class=bento>
-
- <!-- Target & run -->
- <div class="card col4">
-  <h2>Target &amp; run</h2>
-  <label>Targets (one per line, or comma-separated)</label>
-  <textarea id=targets placeholder="159.223.35.108&#10;167.71.222.169"></textarea>
-  <label>Posture</label>
-  <div class=seg id=modeseg>
-    <button data-v=blackbox class=on>Black-box</button>
-    <button data-v=whitebox>White-box (allow-all)</button>
-  </div>
-  <div class=row>
-    <div><label>Iterations</label><input id=iters type=number min=1 max=20 value=1></div>
-    <div><label>Workers</label><input id=workers type=number min=1 max=16 value=4></div>
-    <div><label>Wait-unblock s</label><input id=wait type=number min=0 value=0></div>
-  </div>
-  <div class=row>
-    <div><label>Site ID</label><input id=site placeholder="ORG2026-70"></div>
-    <div><label>Source IP</label><input id=source placeholder="(egress bind)"></div>
-  </div>
-  <div class=row>
-    <div><label>Appliance IP (dual-path)</label><input id=appliance placeholder="through-appliance IP — blank = single-target"></div>
-  </div>
-  <div class=row style="margin-top:8px">
-    <label class=inline><input type=checkbox id=active> Active establishment</label>
-    <label class=inline><input type=checkbox id=debug> Debug</label>
-  </div>
-  <details>
-    <summary>Cloud NAT ports &amp; credentials</summary>
-    <label class=inline><input type=checkbox id=cloud> Cloud target (NAT'd ports)</label>
-    <div class=row>
-      <div><label>SMB</label><input id=smb value=4445></div>
-      <div><label>RPC</label><input id=rpc value=1135></div>
-      <div><label>SSH</label><input id=sshp value=22></div>
+<main class=console>
+ <!-- command rail -->
+ <section class=rail>
+  <div class=group>
+   <h2 class=glabel>Targets</h2>
+   <div class=field>
+    <textarea id=targets placeholder="one host per line&#10;159.223.35.108&#10;167.71.222.169"></textarea>
+   </div>
+   <div class=field>
+    <label>Posture</label>
+    <div class=seg id=modeseg>
+     <button data-v=blackbox class=on>Black-box</button>
+     <button data-v=whitebox>White-box (allow-all)</button>
     </div>
-    <div class=row><div><label>Domain</label><input id=domain></div><div><label>DC user</label><input id=dcuser></div></div>
-    <div class=row><div><label>DC pass</label><input id=dcpass type=password></div></div>
-    <div class=row><div><label>SSH user</label><input id=sshuser></div><div><label>SSH pass</label><input id=sshpass type=password></div></div>
-    <div class=note id=crednote></div>
-  </details>
-  <label class=inline style="margin-top:10px"><input type=checkbox id=roe> Rules-of-engagement confirmed</label>
-  <div class=note>Runs REAL attacks. Keep this on a trusted lab segment.</div>
- </div>
-
- <!-- Verdict distribution -->
- <div class="card col4">
-  <h2>Verdict distribution</h2>
-  <div class=meters id=meters></div>
-  <div class=kpis style="margin-top:10px">
-    <div class=kpi><b id=k_find style="color:var(--red)">0</b><span>findings</span></div>
-    <div class=kpi><b id=k_det style="color:var(--orange)">0</b><span>detected</span></div>
-    <div class=kpi><b id=k_block style="color:var(--green)">0</b><span>blocked</span></div>
+   </div>
+   <div class=rowf>
+    <div class=field><label>Iterations</label><input id=iters type=number min=1 max=20 value=1></div>
+    <div class=field><label>Workers</label><input id=workers type=number min=1 max=16 value=4></div>
+    <div class=field><label>Wait-unblock s</label><input id=wait type=number min=0 value=0></div>
+   </div>
+   <div class=rowf>
+    <div class=field><label>Site</label><input id=site type=text placeholder="ORG2026-70"></div>
+    <div class=field><label>Source IP</label><input id=source type=text placeholder="egress bind"></div>
+   </div>
+   <div class=field><label>Appliance IP — dual-path (blank = single-target)</label><input id=appliance type=text placeholder="run baseline + through-appliance and compare"></div>
+   <label class=chk style="margin-top:4px"><input type=checkbox id=active> Active establishment (build real tunnels / pivots / exfil)</label>
+   <label class=chk style="margin-top:6px"><input type=checkbox id=debug> Debug (verbose tools + timing)</label>
+   <details>
+    <summary>Credentials &amp; cloud NAT ports</summary>
+    <label class=chk style="margin:8px 0"><input type=checkbox id=cloud> Cloud target (NAT'd SMB/RPC/SSH)</label>
+    <div class=rowf>
+     <div class=field><label>SMB</label><input id=smb type=number value=4445></div>
+     <div class=field><label>RPC</label><input id=rpc type=number value=1135></div>
+     <div class=field><label>SSH</label><input id=sshp type=number value=22></div>
+    </div>
+    <div class=rowf><div class=field><label>Domain</label><input id=domain type=text></div><div class=field><label>DC user</label><input id=dcuser type=text></div></div>
+    <div class=field><label>DC password</label><input id=dcpass type=password></div>
+    <div class=rowf><div class=field><label>SSH user</label><input id=sshuser type=text></div><div class=field><label>SSH password</label><input id=sshpass type=password></div></div>
+    <div class=loaded id=loaded></div>
+   </details>
   </div>
-  <div class=progress><span id=prog></span></div>
-  <div class=note id=runmeta>Idle.</div>
- </div>
 
- <!-- Attacks -->
- <div class="card col4">
-  <h2>Attacks <span id=selcount class=badge></span></h2>
-  <div class=row style="margin-bottom:6px">
+  <div class=group>
+   <h2 class=glabel>Attack battery <span class=selcount id=selcount></span></h2>
+   <div class=presets>
     <button data-preset=original>Original</button>
     <button data-preset=attack_sim>USS A–G</button>
     <button data-preset=added>Added</button>
     <button data-preset=all>All</button>
-    <button data-preset=none>Clear</button>
+    <button data-preset=none>None</button>
+   </div>
+   <div class=battery id=battery></div>
   </div>
-  <div class=mods id=mods></div>
- </div>
+ </section>
 
- <!-- Live + results -->
- <div class="card col12">
-  <div class=tabs>
-    <button id=tab_res class=on>Results</button>
-    <button id=tab_log>Live log</button>
-    <span class=grow></span>
-    <span class=badge id=evlinks></span>
+ <!-- signal theatre -->
+ <section class=theatre>
+  <div class=hero>
+   <div class=tally>
+    <div class="big zero" id=findtally>0</div>
+    <div class=biglabel>got through, undetected</div>
+    <div class=subtally>
+     <span><i class=dot style="background:var(--det)"></i><b id=t_det>0</b> detected</span>
+     <span><i class=dot style="background:var(--blk)"></i><b id=t_blk>0</b> held</span>
+    </div>
+   </div>
+   <div>
+    <div class=spectrum id=spectrum><div class=empty>no results yet</div></div>
+    <div class=legend id=legend></div>
+   </div>
   </div>
-  <div id=pane_res>
-    <div class=tblwrap><table id=restbl>
-      <thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th><th>Target</th>
-      <th>Ports</th><th>MITRE</th><th>It</th><th>Detail</th></tr></thead>
-      <tbody></tbody></table></div>
+  <div class=progress><i id=prog></i></div>
+  <div class=runmeta id=runmeta>Idle — pick a target and run the battery.</div>
+
+  <div class=panel>
+   <div class=tabbar>
+    <button class="tab on" id=tabRes>Results</button>
+    <button class=tab id=tabLog>Live log</button>
+    <span class=evidence id=evidence></span>
+   </div>
+   <div id=paneRes>
+    <div class=wrap><table>
+     <thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th><th>Target</th><th>Ports</th><th>ATT&amp;CK</th><th>It</th><th>Detail</th></tr></thead>
+     <tbody id=resbody></tbody></table></div>
+   </div>
+   <div id=paneLog class=hidden><div class=log id=log></div></div>
   </div>
-  <div id=pane_log class=hidden><div class=log id=log></div></div>
- </div>
 
- <!-- Recent runs -->
- <div class="card col12">
-  <h2>Recent evidence</h2>
-  <div class=runs id=runs>—</div>
- </div>
-
-</div></div>
+  <div class=runsbar>
+   <h3>Recent evidence</h3>
+   <div id=runs>—</div>
+  </div>
+ </section>
+</main>
+</div>
 
 <script>
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let BOOT=null, MODE="blackbox", ES=null, COUNTS={}, TOTAL=0, RESROWS=0;
-
-function esc(s){return (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+let BOOT=null, MODE="blackbox", ES=null, COUNTS={}, RESN=0;
+const KIND={SUCCESS:"got",PASSED:"got",DETECTED:"det",BLOCKED:"blk","NO-SERVICE":"svc",
+ "AUTH-FAILED":"det","NO-RESULT":"det",INCONCLUSIVE:"inc",SKIPPED:"skip","PREREQ-MISSING":"skip"};
+const HEX={got:"#ff5a5a",det:"#f5a33c",blk:"#3fd08a",svc:"#4c8dff",inc:"#a98bff",skip:"#5f7083"};
+const LABEL={got:"got through",det:"detected / review",blk:"held",svc:"no service",inc:"inconclusive",skip:"skipped"};
+const ORDER=["got","det","blk","svc","inc","skip"];
+const esc=s=>(s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const kindOf=v=>KIND[v]||"det";
 
 async function boot(){
-  BOOT=await (await fetch("api/bootstrap")).json();
-  $("#ver").textContent="v"+BOOT.version+(BOOT.engine?(" ("+BOOT.engine+")"):"");
-  $("#polname").textContent=BOOT.policy||"";
-  $("#modcount").textContent=BOOT.modules.length+" modules";
-  $("#workers").value=BOOT.workers;
-  $("#roe").checked=BOOT.roe;
-  const cl=BOOT.creds_loaded;
-  $("#crednote").textContent="Loaded: "+Object.entries(cl).map(([k,v])=>k+" "+(v?"✓":"—")).join("  ");
-  if(BOOT.targets&&BOOT.targets.length) $("#targets").value=BOOT.targets.join("\n");
-  renderMeters(); renderMods(); applyPreset("original"); loadRuns();
+ BOOT=await (await fetch("api/bootstrap")).json();
+ const s=$("#subline"); s.innerHTML="";
+ const bits=["v"+BOOT.version+(BOOT.engine?(" ("+BOOT.engine+")"):""), BOOT.policy||"no policy", BOOT.modules.length+" modules"];
+ bits.forEach(t=>{const x=document.createElement("span");x.textContent=t;s.appendChild(x);});
+ $("#workers").value=BOOT.workers; $("#roe").checked=BOOT.roe;
+ const cl=BOOT.creds_loaded, L=$("#loaded"); L.innerHTML="";
+ Object.entries(cl).forEach(([k,v])=>{const e=document.createElement("span");
+  e.innerHTML=k.replace("_"," ")+" <b class="+(v?"ok":"no")+">"+(v?"set":"—")+"</b>";L.appendChild(e);});
+ if(BOOT.targets&&BOOT.targets.length) $("#targets").value=BOOT.targets.join("\n");
+ buildBattery(); applyPreset("original"); refresh(); loadRuns();
 }
 
-function renderMeters(){
-  const m=$("#meters"); m.innerHTML="";
-  BOOT.verdict_order.forEach(v=>{
-    const c=BOOT.verdict_colors[v]||"#8b949e";
-    m.insertAdjacentHTML("beforeend",
-     `<div class=bar><span class=lbl style="color:${c}">${v}</span>`
-     +`<span class=track><span id="mt_${v}" style="background:${c}"></span></span>`
-     +`<span class=cnt id="mc_${v}">0</span></div>`);
+function buildBattery(){
+ const host=$("#battery"); host.innerHTML="";
+ const byCat={}; BOOT.modules.forEach(m=>{(byCat[m.category]=byCat[m.category]||[]).push(m);});
+ Object.keys(byCat).sort().forEach(cat=>{
+  host.insertAdjacentHTML("beforeend",`<div class=cat><span class=cn>${esc(cat)}</span><span class=cl></span></div>`);
+  byCat[cat].forEach(m=>{
+   const flags=(m.added?'<span class="flag new">new</span>':'')+(m.needs_root?'<span class="flag root">root</span>':'');
+   host.insertAdjacentHTML("beforeend",
+    `<label class=atk title="${esc(m.control||'')}"><input type=checkbox data-id="${m.id}">`
+    +`<span class=nm>${esc(m.name)}</span>${flags}<span class=mi>${esc((m.mitre||[])[0]||'')}</span></label>`);
   });
+ });
+ host.addEventListener("change",updSel);
 }
-function renderMods(){
-  const host=$("#mods"); host.innerHTML="";
-  const byCat={};
-  BOOT.modules.forEach(m=>{(byCat[m.category]=byCat[m.category]||[]).push(m);});
-  Object.keys(byCat).sort().forEach(cat=>{
-    const g=document.createElement("div"); g.className="catgrp";
-    g.innerHTML=`<div class=ct>${esc(cat)}</div>`;
-    byCat[cat].forEach(m=>{
-      const tags=(m.added?'<span class="tag new">NEW</span>':'')+(m.needs_root?'<span class="tag root">root</span>':'');
-      g.insertAdjacentHTML("beforeend",
-       `<label class=chip title="${esc(m.control||'')}"><input type=checkbox data-id="${m.id}">`
-       +`<span class=nm>${esc(m.name)} ${tags}</span>`
-       +`<span class=mi>${esc(m.mitre.join(", "))}</span></label>`);
-    });
-    host.appendChild(g);
-  });
-  host.addEventListener("change",updSel);
-}
-function applyPreset(p){
-  const ids=p==="none"?[]:(BOOT.presets[p]||[]);
-  $$("#mods input").forEach(cb=>cb.checked=ids.includes(cb.dataset.id));
-  updSel();
-}
-function updSel(){ $("#selcount").textContent=$$("#mods input:checked").length+" sel"; }
-function selectedIds(){ return $$("#mods input:checked").map(cb=>cb.dataset.id); }
+function applyPreset(p){const ids=p==="none"?[]:(BOOT.presets[p]||[]);
+ $$("#battery input").forEach(cb=>cb.checked=ids.includes(cb.dataset.id));updSel();}
+function updSel(){$("#selcount").textContent=$$("#battery input:checked").length+" armed";}
+const selectedIds=()=>$$("#battery input:checked").map(cb=>cb.dataset.id);
 
-function logLine(t){
-  const low=t.toLowerCase(); let cls="";
-  if(low.includes("success")||low.includes("[finding]")) cls="finding";
-  else if(low.includes("no-service")) cls="info";
-  else if(low.includes("blocked")||low.includes("control working")) cls="good";
-  else if(low.includes("[warn]")||low.includes("[error]")||low.includes("no-result")||low.includes("auth-failed")) cls="warn";
-  else if(t.startsWith("===")||t.startsWith("[")||t.startsWith("Platform")||t.startsWith("Recon")||t.startsWith("Preflight")) cls="hdr";
-  const d=document.createElement("div"); if(cls)d.className=cls; d.textContent=t;
-  const L=$("#log"); L.appendChild(d); L.scrollTop=L.scrollHeight;
+function refresh(){
+ const groups={}; let total=0;
+ Object.entries(COUNTS).forEach(([v,n])=>{const k=kindOf(v);groups[k]=(groups[k]||0)+n;total+=n;});
+ const spec=$("#spectrum");
+ if(!total){spec.innerHTML='<div class=empty>no results yet</div>';}
+ else{spec.innerHTML=ORDER.filter(k=>groups[k]).map(k=>
+   `<i style="width:${100*groups[k]/total}%;background:${HEX[k]}" title="${LABEL[k]}: ${groups[k]}"></i>`).join("");}
+ $("#legend").innerHTML=ORDER.map(k=>
+  `<span class=li><i class=sw style="background:${HEX[k]}"></i>${LABEL[k]} <b>${groups[k]||0}</b></span>`).join("");
+ const got=groups.got||0;
+ const ft=$("#findtally"); ft.textContent=got; ft.classList.toggle("zero",got===0);
+ $("#t_det").textContent=groups.det||0; $("#t_blk").textContent=groups.blk||0;
 }
+
 function addRow(e){
-  const c=BOOT.verdict_colors[e.verdict]||"#8b949e";
-  const tb=$("#restbl tbody");
-  const tr=document.createElement("tr");
-  tr.innerHTML=`<td>${++RESROWS}</td><td><span class=pill style="background:${c}">${e.verdict}</span></td>`
-    +`<td>${esc(e.name)}</td><td style="color:var(--muted)">${esc(e.category)}</td>`
-    +`<td style="color:var(--muted)">${esc(e.target)}</td><td style="color:var(--muted)">${esc(e.ports)}</td>`
-    +`<td style="color:var(--muted)">${esc(e.mitre)}</td><td>${e.it}</td>`
-    +`<td class=detail>${esc(e.detail)}</td>`;
-  tb.appendChild(tr);
-  COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1; refreshCounts();
+ const k=kindOf(e.verdict), c=HEX[k];
+ const tr=document.createElement("tr");
+ tr.innerHTML=`<td class=mono>${++RESN}</td>`
+  +`<td class=vcell style="color:${c}"><span class=vbar style="background:${c}"></span>${esc(e.verdict)}</td>`
+  +`<td>${esc(e.name)}</td><td class=dim>${esc(e.category)}</td>`
+  +`<td class=mono>${esc(e.target)}</td><td class=mono>${esc(e.ports)}</td>`
+  +`<td class=mono>${esc(e.mitre)}</td><td class=mono>${e.it}</td>`
+  +`<td class=detail title="${esc(e.detail)}">${esc(e.detail)}</td>`;
+ $("#resbody").appendChild(tr);
+ COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1; refresh();
 }
-function refreshCounts(){
-  const tot=Object.values(COUNTS).reduce((a,b)=>a+b,0)||1;
-  BOOT.verdict_order.forEach(v=>{
-    const n=COUNTS[v]||0;
-    const mt=$("#mt_"+v), mc=$("#mc_"+v);
-    if(mt)mt.style.width=(100*n/tot)+"%"; if(mc)mc.textContent=n;
-  });
-  $("#k_find").textContent=(COUNTS["SUCCESS"]||0)+(COUNTS["PASSED"]||0);
-  $("#k_det").textContent=COUNTS["DETECTED"]||0;
-  $("#k_block").textContent=COUNTS["BLOCKED"]||0;
+function logLine(t){
+ const l=t.toLowerCase(); let c="";
+ if(l.includes("success")||l.includes("[finding]")||l.includes("got through")) c="c-got";
+ else if(l.includes("no-service")) c="c-svc";
+ else if(l.includes("blocked")||l.includes("control working")||l.includes("held")) c="c-blk";
+ else if(l.includes("[warn]")||l.includes("[error]")||l.includes("no-result")||l.includes("auth-failed")||l.includes("detected")) c="c-det";
+ else if(t.startsWith("====")||t.startsWith("[")||t.startsWith("Platform")||t.startsWith("Recon")||t.startsWith("Preflight")||t.startsWith("Port policy")) c="c-hdr";
+ const d=document.createElement("div"); if(c)d.className=c; d.textContent=t;
+ const L=$("#log"); L.appendChild(d); L.scrollTop=L.scrollHeight;
 }
 
 function startRun(){
-  const targets=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
-  const body={
-    targets, module_ids:selectedIds(), mode:MODE,
-    iterations:+$("#iters").value, workers:+$("#workers").value,
-    wait_unblock:+$("#wait").value, site_id:$("#site").value, source:$("#source").value,
-    appliance:$("#appliance").value,
-    active:$("#active").checked, debug:$("#debug").checked, confirm_roe:$("#roe").checked,
-    cloud:$("#cloud").checked, smb_port:+$("#smb").value, rpc_port:+$("#rpc").value, ssh_port:+$("#sshp").value,
-    creds:{domain:$("#domain").value,dc_user:$("#dcuser").value,dc_pass:$("#dcpass").value,
-           ssh_user:$("#sshuser").value,ssh_pass:$("#sshpass").value}
-  };
-  fetch("api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
-   .then(r=>r.json()).then(j=>{
-     if(j.error){alert(j.error);return;}
-     // reset
-     COUNTS={};RESROWS=0;$("#restbl tbody").innerHTML="";$("#log").innerHTML="";refreshCounts();
-     $("#evlinks").textContent="";$("#prog").style.width="0";
-     $("#runbtn").disabled=true;$("#stopbtn").disabled=false;$("#stopbtn").dataset.id=j.run_id;
-     stream(j.run_id);
-   });
+ const targets=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+ const body={targets,module_ids:selectedIds(),mode:MODE,
+  iterations:+$("#iters").value,workers:+$("#workers").value,wait_unblock:+$("#wait").value,
+  site_id:$("#site").value,source:$("#source").value,appliance:$("#appliance").value,
+  active:$("#active").checked,debug:$("#debug").checked,confirm_roe:$("#roe").checked,
+  cloud:$("#cloud").checked,smb_port:+$("#smb").value,rpc_port:+$("#rpc").value,ssh_port:+$("#sshp").value,
+  creds:{domain:$("#domain").value,dc_user:$("#dcuser").value,dc_pass:$("#dcpass").value,
+         ssh_user:$("#sshuser").value,ssh_pass:$("#sshpass").value}};
+ fetch("api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
+  .then(r=>r.json()).then(j=>{
+   if(j.error){$("#runmeta").textContent=j.error;$("#runmeta").style.color="var(--got)";return;}
+   $("#runmeta").style.color="";
+   COUNTS={};RESN=0;$("#resbody").innerHTML="";$("#log").innerHTML="";$("#evidence").textContent="";$("#prog").style.width="0";refresh();
+   $("#runbtn").disabled=true;$("#stopbtn").disabled=false;$("#stopbtn").dataset.id=j.run_id;
+   stream(j.run_id);
+  });
 }
 function stream(id){
-  if(ES)ES.close();
-  ES=new EventSource("api/run/"+id+"/stream");
-  ES.onmessage=ev=>{
-    const e=JSON.parse(ev.data);
-    if(e.type==="log") logLine(e.line);
-    else if(e.type==="status"){ addRow(e); }
-    else if(e.type==="progress"){ $("#prog").style.width=(e.total?100*e.done/e.total:0)+"%"; }
-    else if(e.type==="started"){ $("#runmeta").textContent=`Running ${e.count} module(s) · ${e.mode} · ${e.iterations} it · ${e.workers} workers`+(e.site_id?` · ${e.site_id}`:"")+(e.active?" · ACTIVE":""); }
-    else if(e.type==="target"){ logLine(`\n==== TARGET ${e.index}/${e.total}: ${e.target} ====`); }
-    else if(e.type==="target_done"){ showEvidence(e.root); }
-    else if(e.type==="done"){ finish(e.roots); }
-    else if(e.type==="error"){ logLine("[ERROR] "+e.error); finish(e.roots||[]); }
-  };
-  ES.onerror=()=>{};
+ if(ES)ES.close(); ES=new EventSource("api/run/"+id+"/stream");
+ ES.onmessage=ev=>{const e=JSON.parse(ev.data);
+  if(e.type==="log")logLine(e.line);
+  else if(e.type==="status")addRow(e);
+  else if(e.type==="progress")$("#prog").style.width=(e.total?100*e.done/e.total:0)+"%";
+  else if(e.type==="started")$("#runmeta").textContent=`running ${e.count} modules   ${e.mode}   ${e.iterations} iteration(s)   ${e.workers} workers`+(e.site_id?`   site ${e.site_id}`:"")+(e.active?"   active":"");
+  else if(e.type==="target")logLine(`\n==== target ${e.index}/${e.total}: ${e.target} ====`);
+  else if(e.type==="target_done")showEvidence(e.root);
+  else if(e.type==="done")finish();
+  else if(e.type==="error"){logLine("[error] "+e.error);finish();}
+ };
+ ES.onerror=()=>{};
 }
 function showEvidence(root){
-  const base="evidence/"+root.replace(/^evidence\//,"")+"/";
-  $("#evlinks").innerHTML="Evidence: "
-   +`<a target=_blank href="${base}report.html">report.html</a> · `
-   +`<a target=_blank href="${base}summary.json">summary.json</a> · `
-   +`<a target=_blank href="${base}report.txt">report.txt</a>`;
+ const b="evidence/"+root.replace(/^evidence\//,"")+"/";
+ $("#evidence").innerHTML="evidence: "
+  +`<a target=_blank href="${b}report.html">report</a> `
+  +`<a target=_blank href="${b}summary.json">json</a> `
+  +`<a target=_blank href="${b}report.txt">txt</a>`;
 }
-function finish(roots){
-  $("#runbtn").disabled=false;$("#stopbtn").disabled=true;
-  $("#runmeta").textContent="Done. "+Object.entries(COUNTS).map(([k,v])=>k+" "+v).join(" · ");
-  if(ES)ES.close(); loadRuns();
+function finish(){
+ $("#runbtn").disabled=false;$("#stopbtn").disabled=true;
+ const got=Object.entries(COUNTS).filter(([v])=>kindOf(v)==="got").reduce((a,[,n])=>a+n,0);
+ $("#runmeta").textContent=got?`run complete — ${got} got through`:"run complete";
+ if(ES)ES.close(); loadRuns();
 }
 async function loadRuns(){
-  const j=await (await fetch("api/runs")).json();
-  $("#runs").innerHTML=(j.runs||[]).map(r=>{
-    const b="evidence/"+r.name+"/";
-    const links=["report.html","summary.json","report.txt"].filter(f=>r.files[f])
-      .map(f=>`<a target=_blank href="${b}${f}">${f.split('.').pop()}</a>`).join(" ");
-    return `<div style="margin:3px 0"><b>${r.name}</b> ${links||'<span style="color:var(--muted)">(no summary)</span>'}</div>`;
-  }).join("")||"—";
+ const j=await (await fetch("api/runs")).json();
+ $("#runs").innerHTML=(j.runs||[]).slice(0,12).map(r=>{
+  const b="evidence/"+r.name+"/";
+  const links=["report.html","summary.json"].filter(f=>r.files[f]).map(f=>`<a target=_blank href="${b}${f}">${f.split(".")[1]||f}</a>`).join(" ");
+  return `<div class=runrow><b>${r.name}</b> ${links||'<span class=dim>no summary</span>'}</div>`;
+ }).join("")||"—";
 }
 
-$("#modeseg").addEventListener("click",e=>{
-  if(!e.target.dataset.v)return;
-  MODE=e.target.dataset.v; $$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE));
-});
+$("#modeseg").addEventListener("click",e=>{if(!e.target.dataset.v)return;
+ MODE=e.target.dataset.v;$$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE));});
 $$("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
 $("#runbtn").addEventListener("click",startRun);
 $("#stopbtn").addEventListener("click",()=>fetch("api/run/"+$("#stopbtn").dataset.id+"/stop",{method:"POST"}));
-$("#tab_res").addEventListener("click",()=>{$("#tab_res").classList.add("on");$("#tab_log").classList.remove("on");$("#pane_res").classList.remove("hidden");$("#pane_log").classList.add("hidden");});
-$("#tab_log").addEventListener("click",()=>{$("#tab_log").classList.add("on");$("#tab_res").classList.remove("on");$("#pane_log").classList.remove("hidden");$("#pane_res").classList.add("hidden");});
+$("#tabRes").addEventListener("click",()=>{$("#tabRes").classList.add("on");$("#tabLog").classList.remove("on");$("#paneRes").classList.remove("hidden");$("#paneLog").classList.add("hidden");});
+$("#tabLog").addEventListener("click",()=>{$("#tabLog").classList.add("on");$("#tabRes").classList.remove("on");$("#paneLog").classList.remove("hidden");$("#paneRes").classList.add("hidden");});
 boot();
 </script>
 </body></html>"""
