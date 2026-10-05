@@ -279,6 +279,9 @@ class Handler(BaseHTTPRequestHandler):
         body = text.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        # never let a browser serve a stale cached copy of the dashboard — a
+        # redesign should show on the next load, not after a manual hard-refresh.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
