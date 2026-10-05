@@ -407,6 +407,12 @@ def main():
                          "inside the authorised window.")
     ap.add_argument("--source", help="source IP to bind egress sockets to (e.g. a DC "
                     "foothold interface / VRF); default = OS route")
+    ap.add_argument("--appliance", default=None, metavar="IP",
+                    help="DUAL-PATH mode: also run each attack THROUGH this appliance "
+                         "IP/path and compare. --target is the direct (allow-all) baseline "
+                         "that proves the attack works; --appliance is the controlled path. "
+                         "Verdicts: baseline OK + appliance BLOCKED = control works; "
+                         "baseline OK + appliance PASSED = finding. Omit for single-target.")
     ap.add_argument("--cloud", dest="cloud", action="store_const", const=True, default=None,
                     help="cloud target: SMB/RPC are on alternate ports (default 445->4445, "
                          "135->1135). Maps them for the AD modules AND the recon. If omitted, "
@@ -539,8 +545,8 @@ def main():
             verd = _c(f"{icon} {b:<13}", col, args.no_color)
             print(f"  {idx} {verd} {name}")
 
-        runner = core.Runner(target, None, on_log=_on_log, on_output=_on_output,
-                             on_status=_on_status)
+        runner = core.Runner(target, args.appliance or None, on_log=_on_log,
+                             on_output=_on_output, on_status=_on_status)
         runner.concurrency = max(1, args.workers)
         if args.cooldown is not None:
             runner.cooldown = max(0.0, args.cooldown)

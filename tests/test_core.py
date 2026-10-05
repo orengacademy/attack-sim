@@ -48,6 +48,43 @@ class TestClassify(unittest.TestCase):
         b, a, v = core.classify(self.META, "WIN", "[TIMEOUT] ...")
         self.assertEqual(a, "BLOCKED")
 
+    def test_refused_through_appliance_is_no_service(self):
+        # a RST through the appliance, when the module's blocked_regex does NOT
+        # claim refused, is service-absent (NO-SERVICE), not a control BLOCKED.
+        meta = {"success_regex": r"WIN", "blocked_regex": r"timed out"}
+        b, a, v = core.classify(meta, "WIN here", "Connection refused")
+        self.assertEqual(a, "NO-SERVICE")
+        self.assertIn("NO-SERVICE", v)
+
+    def test_appliance_auth_failed_is_its_own_bucket(self):
+        meta = {"success_regex": r"WIN", "blocked_regex": r"blocked"}
+        b, a, v = core.classify(meta, "WIN here", "STATUS_LOGON_FAILURE")
+        self.assertEqual(a, "AUTH-FAILED")
+        self.assertIn("AUTH-FAILED", v)
+
+
+class TestDualPathParity(unittest.TestCase):
+    """Dual-path (--appliance) mode: the appliance leg carries the full verdict
+    set, and `passed` reflects the APPLIANCE leg (it was always False before,
+    because baseline_result is only OK/AUTH-FAILED/FAIL)."""
+
+    def _mod(self):
+        m = types.SimpleNamespace()
+        m.META = {"id": "d", "name": "d", "category": "Test", "requires": [],
+                  "ports": [], "mitre": ["T1046"], "tactic": "Discovery",
+                  "success_regex": r"WIN", "blocked_regex": r"nope"}
+        m.run = lambda t, c: "WIN"
+        return m
+
+    def test_passed_reflects_appliance_leg(self):
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1", "127.0.0.2").run(
+            [self._mod()], 1, ev, skip_unready=False, recon=False)
+        r = ev.records[0]
+        self.assertTrue(r["appliance_ip"])                 # dual mode engaged
+        self.assertEqual(r["appliance_result"], "PASSED")
+        self.assertTrue(r["passed"])
+
 
 class TestRedaction(unittest.TestCase):
     def test_password_redacted(self):
