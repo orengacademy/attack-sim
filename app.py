@@ -188,6 +188,7 @@ def _run_worker(run_id, params, targets, module_ids):
     debug = bool(params.get("debug"))
     creds = {k: v for k, v in (params.get("creds") or {}).items() if v}
     source = (params.get("source") or "").strip() or None
+    appliance = (params.get("appliance") or "").strip() or None   # dual-path 2nd leg
     cloud = bool(params.get("cloud"))
     try:
         from modules import _portpatch
@@ -212,7 +213,7 @@ def _run_worker(run_id, params, targets, module_ids):
                 else:
                     _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
             runner = core.Runner(
-                target, None,
+                target, appliance,
                 on_log=lambda m: emit({"type": "log", "line": str(m)}),
                 on_progress=lambda c, t: emit({"type": "progress", "done": c, "total": t}),
                 on_output=lambda aid, name, it, raw: emit({"type": "output", "id": aid, "name": name, "it": it}),
@@ -516,6 +517,9 @@ details summary{cursor:pointer;color:var(--muted);font-size:12px;margin:6px 0}
     <div><label>Site ID</label><input id=site placeholder="ORG2026-70"></div>
     <div><label>Source IP</label><input id=source placeholder="(egress bind)"></div>
   </div>
+  <div class=row>
+    <div><label>Appliance IP (dual-path)</label><input id=appliance placeholder="through-appliance IP — blank = single-target"></div>
+  </div>
   <div class=row style="margin-top:8px">
     <label class=inline><input type=checkbox id=active> Active establishment</label>
     <label class=inline><input type=checkbox id=debug> Debug</label>
@@ -683,6 +687,7 @@ function startRun(){
     targets, module_ids:selectedIds(), mode:MODE,
     iterations:+$("#iters").value, workers:+$("#workers").value,
     wait_unblock:+$("#wait").value, site_id:$("#site").value, source:$("#source").value,
+    appliance:$("#appliance").value,
     active:$("#active").checked, debug:$("#debug").checked, confirm_roe:$("#roe").checked,
     cloud:$("#cloud").checked, smb_port:+$("#smb").value, rpc_port:+$("#rpc").value, ssh_port:+$("#sshp").value,
     creds:{domain:$("#domain").value,dc_user:$("#dcuser").value,dc_pass:$("#dcpass").value,

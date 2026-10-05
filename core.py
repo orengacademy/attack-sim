@@ -2815,7 +2815,10 @@ class Runner:
                             "service-down / upstream-edge / host filter, not a control result]")
             log(f"     target: [{b}]  -> {verdict}")
 
-        self.on_status(meta["id"], meta["name"], it, b, verdict)
+        # Live status shows the meaningful verdict: in dual mode that is the
+        # APPLIANCE result (PASSED/BLOCKED/NO-SERVICE/DETECTED), not the baseline
+        # (which is only OK/AUTH-FAILED/FAIL). Single-target shows b as before.
+        self.on_status(meta["id"], meta["name"], it, (a if self.dual else b), verdict)
         self._record(ev, it, meta, b, a, verdict, recon_by_id,
                      detected_source=detected_source, output=output_for_record,
                      duration=duration)

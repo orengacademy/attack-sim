@@ -235,22 +235,30 @@ class HarnessGUI:
         ttk.Checkbutton(f, text="Active establishment (build real tunnels/pivots/exfil -- needs config.json)",
                         variable=self.active_var).pack(anchor="w", padx=10, pady=(0, 2))
         og = ttk.Frame(f); og.pack(fill="x", padx=10, pady=(0, 2))
-        ttk.Label(og, text="Source IP").pack(side="left")
-        self.source_entry = ttk.Entry(og, width=15)
-        self.source_entry.pack(side="left", padx=(4, 14))
+        ttk.Label(og, text="Source").pack(side="left")
+        self.source_entry = ttk.Entry(og, width=13)
+        self.source_entry.pack(side="left", padx=(4, 10))
+        # Dual-path mode: also run each attack THROUGH this appliance IP and compare
+        # (each Target row above is the direct allow-all BASELINE). Blank = off.
+        ttk.Label(og, text="Appliance").pack(side="left")
+        self.appliance_entry = ttk.Entry(og, width=13)
+        self.appliance_entry.pack(side="left", padx=(4, 10))
         # Wait for an IPS quarantine / source blacklist to clear before marking the
         # rest INCONCLUSIVE (--wait-unblock; 0 = default max(30s, cooldown)).
-        ttk.Label(og, text="Wait-unblock(s)").pack(side="left")
+        ttk.Label(og, text="Wait(s)").pack(side="left")
         self.wait_unblock = ttk.Entry(og, width=5); self.wait_unblock.insert(0, "0")
-        self.wait_unblock.pack(side="left", padx=(4, 14))
+        self.wait_unblock.pack(side="left", padx=(4, 12))
         ttk.Label(og, text="Site ID").pack(side="left")
-        self.site_entry = ttk.Entry(og, width=14)
-        self.site_entry.pack(side="left", padx=(4, 12))
+        self.site_entry = ttk.Entry(og, width=12)
+        self.site_entry.pack(side="left", padx=(4, 10))
         import os as _os
         if _os.environ.get("HARNESS_SITE_ID"):
             self.site_entry.insert(0, _os.environ["HARNESS_SITE_ID"])
         self.debug_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(og, text="Debug", variable=self.debug_var).pack(side="left")
+        ttk.Label(f, text="Appliance IP = dual-path: baseline (Target) + through-appliance "
+                  "compared (blank = single-target).", style="Muted.TLabel",
+                  wraplength=720, justify="left").pack(anchor="w", padx=10, pady=(0, 1))
 
         # Pre-fill from the RESOLVED defaults (env > credentials.env > the
         # non-secret built-ins: lab.local / Administrator). Domain + DC user are
@@ -1194,6 +1202,10 @@ class HarnessGUI:
 
         mode = self._run_mode
         site_id = self.site_entry.get().strip() or None
+        # Dual-path: read the Appliance IP on the MAIN thread; passed as the 2nd
+        # Runner arg (core.Runner engages dual mode only when it differs from the
+        # target). Blank = single-target.
+        appliance = self.appliance_entry.get().strip() or None
 
         def work():
             roots = []
@@ -1201,7 +1213,7 @@ class HarnessGUI:
                 for ti, (tgt, cfg) in enumerate(jobs, 1):
                     self.q.put(("new_target", (ti, len(jobs), tgt)))
                     runner = core.Runner(
-                        tgt, None,
+                        tgt, appliance,
                         on_log=lambda m: self.q.put(("log", m)),
                         on_progress=lambda c, t: self.q.put(("progress", (c, t))),
                         on_output=lambda aid, name, it, raw: self.q.put(("output", (aid, name, it, raw))),
