@@ -30,6 +30,11 @@ META = {
     "id": "ssh_brute",
     "name": "SSH Brute Force",
     "category": "Network Exploitation",
+    # Pinned near the end (order 98, just before icmp_flood at 99) — the brute
+    # burst trips an SSH-brute signature that BLACKLISTS the tester source, so
+    # it runs after all the quiet modules; only icmp_flood (the DoS flood) runs
+    # after it.
+    "order": 98,
     "test_type": "va",
     "control": "Brute-force protection / rate-limit (SSH)",
     "fix": "SD-WAN",

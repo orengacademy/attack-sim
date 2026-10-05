@@ -59,6 +59,13 @@ META = {
     "id": "icmp_flood",
     "name": "ICMP Flood (DoS)",
     "category": "Network Exploitation",
+    # Pinned DEAD LAST (order 99) — the single very last module in the batch,
+    # after ssh_brute (order 98) and every trips_ips IPS-signature attack. The
+    # engine's defer-last stable sort keeps loader order within the deferred
+    # group, so the highest `order` runs last. Both DoS/brute floods run at the
+    # very end so the anti-DoS rate-limit / blacklist they trip can't
+    # contaminate any other module's verdict.
+    "order": 99,
     "test_type": "dos",
     "control": "ICMP rate-limit / flood (DoS) protection",
     "fix": "SD-WAN",
