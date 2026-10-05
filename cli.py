@@ -10,7 +10,7 @@ Examples:
   python3 cli.py --target 10.0.0.5 --port log4shell=8983,ssh_brute=2222 --confirm-roe
 
 Everything the GUI does, from the command line. Results are colour-coded with the
-purple-team convention: RED = attack PASSED (got through — finding), GREEN =
+purple-team convention: RED = attack got through (finding), GREEN =
 BLOCKED (control worked), BLUE = NO-SERVICE (port closed, not a block).
 """
 import argparse
@@ -24,7 +24,6 @@ import loader
 # verdict -> (ANSI colour, icon) for the modern summary
 _VERDICT_STYLE = {
     "SUCCESS":        ("\033[31m", "●"),   # red    — got through undetected (finding)
-    "PASSED":         ("\033[31m", "●"),
     "DETECTED":       ("\033[38;5;208m", "◐"),  # orange — passed but SOC alerted
     "BLOCKED":        ("\033[32m", "■"),   # green  — control worked
     "NO-SERVICE":     ("\033[34m", "○"),   # blue   — port closed, not a block
@@ -34,19 +33,19 @@ _VERDICT_STYLE = {
     "SKIPPED":        ("\033[90m", "–"),   # grey   — did nothing
     "PREREQ-MISSING": ("\033[90m", "–"),
 }
-_VERDICT_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
+_VERDICT_ORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE",
                   "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
 # one-letter code per verdict for the compact per-iteration ITER column —
 # the aggregate VERDICT column only ever shows the single most-significant
 # iteration (_VERDICT_ORDER), which hid a later iteration landing in a
 # different bucket (e.g. icmp_flood's loss-delta sometimes falling in the
 # ambiguous band on one run and not another).
-_ITER_CODE = {"SUCCESS": "S", "PASSED": "S", "DETECTED": "D", "BLOCKED": "B",
+_ITER_CODE = {"SUCCESS": "S", "DETECTED": "D", "BLOCKED": "B",
               "NO-SERVICE": "O", "AUTH-FAILED": "A", "NO-RESULT": "N",
               "INCONCLUSIVE": "I", "SKIPPED": "-", "PREREQ-MISSING": "-"}
 
 _ANSI = {
-    "SUCCESS": "\033[31m", "PASSED": "\033[31m",   # red — got through undetected (finding)
+    "SUCCESS": "\033[31m",   # red — got through undetected (finding)
     "DETECTED": "\033[38;5;208m",                   # orange — passed but SOC alerted
     "BLOCKED": "\033[32m",                          # green — control worked
     "NO-SERVICE": "\033[34m",                       # blue — port closed, not a block
@@ -124,7 +123,6 @@ DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"
 # one-line human gloss per verdict, for the table's DETAIL column
 _VERDICT_GLOSS = {
     "SUCCESS":        "got through — undetected (finding)",
-    "PASSED":         "got through — undetected (finding)",
     "DETECTED":       "got through but SOC alerted",
     "BLOCKED":        "control worked — attack stopped",
     "NO-SERVICE":     "port closed — service not present",
@@ -137,7 +135,7 @@ _VERDICT_GLOSS = {
 # short form of the same gloss, for the per-iteration ITERATIONS column where
 # N copies of it (one per iteration) have to fit in one table cell.
 _VERDICT_GLOSS_SHORT = {
-    "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
+    "SUCCESS": "finding", "DETECTED": "SOC alerted",
     "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
     "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
     "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
@@ -282,7 +280,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         print(row(cells, colors))
     print(rule("└", "┴", "┘"))
 
-    findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+    findings = dist.get("SUCCESS", 0)
     detected = dist.get("DETECTED", 0)
     blocked = dist.get("BLOCKED", 0)
     print()
@@ -412,7 +410,7 @@ def main():
                          "IP/path and compare. --target is the direct (allow-all) baseline "
                          "that proves the attack works; --appliance is the controlled path. "
                          "Verdicts: baseline OK + appliance BLOCKED = control works; "
-                         "baseline OK + appliance PASSED = finding. Omit for single-target.")
+                         "baseline OK + appliance SUCCESS = finding. Omit for single-target.")
     ap.add_argument("--cloud", dest="cloud", action="store_const", const=True, default=None,
                     help="cloud target: SMB/RPC are on alternate ports (default 445->4445, "
                          "135->1135). Maps them for the AD modules AND the recon. If omitted, "

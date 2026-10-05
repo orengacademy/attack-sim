@@ -52,7 +52,6 @@ _VORDER = getattr(core.Evidence, "_V_ORDER",
 # cli.py's _VERDICT_GLOSS so terminal and web read the same).
 _VGLOSS = {
     "SUCCESS": "got through, undetected — the finding",
-    "PASSED": "got through, undetected — the finding",
     "DETECTED": "got through but a signature/SOC alert fired — detection worked, prevention did not",
     "BLOCKED": "stopped in transit (dropped/filtered/rejected) — the control held",
     "NO-SERVICE": "port closed/refused — service absent, NOT a control block",
@@ -800,7 +799,7 @@ tbody tr{cursor:pointer} tbody tr:hover{background:var(--surf)}
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 let BOOT=null, MODE="blackbox", ES=null, COUNTS={}, RESN=0;
 let ROWS=[], RUNID=null, SORT={col:"n",dir:1};   // results data model (filter/sort/export/click)
-const KIND={SUCCESS:"got",PASSED:"got",DETECTED:"det",BLOCKED:"blk","NO-SERVICE":"svc",
+const KIND={SUCCESS:"got",DETECTED:"det",BLOCKED:"blk","NO-SERVICE":"svc",
  "AUTH-FAILED":"det","NO-RESULT":"det",INCONCLUSIVE:"inc",SKIPPED:"skip","PREREQ-MISSING":"skip"};
 const HEX={got:"#ff5a5a",det:"#f5a33c",blk:"#3fd08a",svc:"#4c8dff",inc:"#a98bff",skip:"#5f7083"};
 const LABEL={got:"got through",det:"detected / review",blk:"held",svc:"no service",inc:"inconclusive",skip:"skipped"};

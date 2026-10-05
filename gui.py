@@ -48,7 +48,6 @@ MONO = ("TkFixedFont", 10)
 DETC = "#db6d28"               # orange — passed but detected (partial win)
 STATUS_COLORS = {
     "SUCCESS":        ERRC,    # attack passed undetected -> FINDING (red)
-    "PASSED":         ERRC,    # (dual-path) same
     "DETECTED":       DETC,    # passed the boundary but the SOC alerted (orange)
     "BLOCKED":        OKC,     # control stopped it (filtered/dropped) -> good (green)
     "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
@@ -486,7 +485,7 @@ class HarnessGUI:
 
         # legend (stacked so it never truncates) — colour semantics
         leg = ttk.Frame(left, style="Card.TFrame"); leg.pack(fill="x", padx=6, pady=(4, 4))
-        for dot, col, txt in ((("●"), ERRC, "PASSED — got through undetected (finding)"),
+        for dot, col, txt in ((("●"), ERRC, "SUCCESS — got through undetected (finding)"),
                               (("●"), DETC, "DETECTED — passed but SOC alerted"),
                               (("●"), OKC, "BLOCKED — filtered/dropped by control (good)"),
                               (("●"), BLUEC, "NO-SERVICE — port closed, not a block"),
@@ -997,7 +996,7 @@ class HarnessGUI:
         for line in str(m).split("\n"):
             low = line.lower()
             tag = ""
-            # attack PASSED / GAP = got through = finding (red)
+            # attack SUCCESS / GAP = got through = finding (red)
             if "success" in low or "-> gap" in low or "passed the appliance" in low:
                 tag = "finding"
             # NO-SERVICE = port closed / not a control block (blue) — check before "blocked"

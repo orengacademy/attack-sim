@@ -785,7 +785,7 @@ class Evidence:
             if e["suspect"]:
                 _suspect += 1
         self.meta["verdicts"] = _dist
-        self.meta["finding_count"] = _dist.get("SUCCESS", 0) + _dist.get("PASSED", 0)
+        self.meta["finding_count"] = _dist.get("SUCCESS", 0)
         self.meta["inconclusive_count"] = _dist.get("INCONCLUSIVE", 0)
         self.meta["suspect_count"] = _suspect
         _durs = [r.get("duration_s") for r in self.records if r.get("duration_s") is not None]
@@ -851,7 +851,7 @@ class Evidence:
             else:
                 v = r.get("appliance_result")
                 bucket = ("blocked" if v == "BLOCKED" else "detected" if v == "DETECTED"
-                          else "passed" if v == "PASSED" else "skipped" if v == "SKIPPED"
+                          else "passed" if v == "SUCCESS" else "skipped" if v == "SKIPPED"
                           else "other")
             s[bucket] += 1
 
@@ -889,7 +889,7 @@ class Evidence:
                       "  " + "!" * 60, ""]
 
         # ---- modern per-module results: verdict distribution + a grouped table ----
-        _VORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
+        _VORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE",
                    "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
         permod = {}
         for r in self.records:
@@ -912,7 +912,7 @@ class Evidence:
             if v in dist:
                 meter = "#" * (int(round(24 * dist[v] / mxd)) or 1)
                 lines.append(f"    {v:<16} {meter:<24} {dist[v]:>2}/{total}")
-        findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+        findings = dist.get("SUCCESS", 0)
         lines += ["    " + "-" * 44,
                   f"    => {findings} got through (finding) · {dist.get('DETECTED', 0)} detected "
                   f"· {dist.get('BLOCKED', 0)} blocked", "",
@@ -960,7 +960,7 @@ class Evidence:
         def _outcome(r):
             v = r.get("appliance_result") if r.get("appliance_ip") is not None \
                 else r.get("baseline_result")
-            return "PASSED" if v in ("SUCCESS", "PASSED") else \
+            return "SUCCESS" if v == "SUCCESS" else \
                    "DETECTED" if v == "DETECTED" else \
                    "BLOCKED" if v == "BLOCKED" else "OTHER"
 
@@ -972,7 +972,7 @@ class Evidence:
                 e = tech.setdefault(t, {"tactic": r.get("tactic", ""), "attacks": set(),
                                         "passed": 0, "detected": 0, "blocked": 0, "other": 0})
                 e["attacks"].add(r.get("attack", r.get("attack_id", "?")))
-                e["passed" if oc == "PASSED" else "detected" if oc == "DETECTED"
+                e["passed" if oc == "SUCCESS" else "detected" if oc == "DETECTED"
                   else "blocked" if oc == "BLOCKED" else "other"] += 1
             for c in (r.get("cwe") or []):
                 cwe.setdefault(c, set()).add(r.get("attack", "?"))
@@ -1089,9 +1089,9 @@ class Evidence:
         except Exception as e:
             self.log(f"[WARN] could not update INDEX.md: {e}")
 
-    _V_ORDER = ["SUCCESS", "PASSED", "DETECTED", "BLOCKED", "NO-SERVICE",
+    _V_ORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE",
                 "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
-    _V_COLOR = {"SUCCESS": "#e5484d", "PASSED": "#e5484d", "DETECTED": "#f5a524",
+    _V_COLOR = {"SUCCESS": "#e5484d", "DETECTED": "#f5a524",
                 "BLOCKED": "#30a46c", "NO-SERVICE": "#4493f8", "AUTH-FAILED": "#e2a336",
                 "NO-RESULT": "#e2a336", "INCONCLUSIVE": "#a371f7",
                 "SKIPPED": "#8b949e", "PREREQ-MISSING": "#8b949e"}
@@ -1099,7 +1099,7 @@ class Evidence:
     # cli.py's _VERDICT_GLOSS_SHORT so the HTML report and the terminal table
     # read the same way) — N copies of it (one per iteration) share one cell.
     _V_GLOSS_SHORT = {
-        "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
+        "SUCCESS": "finding", "DETECTED": "SOC alerted",
         "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
         "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
         "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
@@ -1182,7 +1182,7 @@ class Evidence:
                 f'<div class=bar><span class=lbl style="color:{color(v)}">{e(v)}</span>'
                 f'<span class=meter><span style="width:{pct:.0f}%;background:{color(v)}"></span></span>'
                 f'<span class=cnt>{dist[v]}/{n}</span></div>')
-        findings = dist.get("SUCCESS", 0) + dist.get("PASSED", 0)
+        findings = dist.get("SUCCESS", 0)
         # Contamination banner (SUSPECT / INCONCLUSIVE) — see report.txt rationale.
         susp_mods = sorted({r.get("attack", "?") for r in recs
                             if "SUSPECT" in (r.get("verdict") or "")})
@@ -1325,6 +1325,11 @@ def classify(meta, base_raw, app_raw):
     # A module that printed [SKIP] did nothing — never score that as BLOCKED
     # (a win for the control). Checked before app_blocked.
     app_skipped = not app_ok and _SKIP_MARKER.search(app_raw or "") is not None
+    # Parity with the single-target classifier: a module can self-declare a missing
+    # runtime prerequisite or an indeterminate result, and those must win over the
+    # blocked/no-service branches (never miscredited to the control).
+    app_prereq = not app_ok and _PREREQ_MARKER.search(app_raw or "") is not None
+    app_inconcl = not app_ok and _INCONCLUSIVE_MARKER.search(app_raw or "") is not None
     app_blocked = not app_skipped and (_match(app_raw, blk) or "[TIMEOUT]" in app_raw)
     # A RST / "connection refused" through the appliance = the service is ABSENT,
     # not the control dropping the attack — mirror single-target NO-SERVICE. Only
@@ -1334,12 +1339,18 @@ def classify(meta, base_raw, app_raw):
     app_refused = not app_ok and not app_blocked and _match(app_raw, REFUSED_REGEX)
 
     baseline_result = "OK" if base_ok else "AUTH-FAILED" if base_authfail else "FAIL (inconclusive)"
+    # "SUCCESS" is the unified "got through, undetected" label — the SAME word the
+    # single-target path uses (there is no separate "PASSED" verdict anymore).
     if app_ok:
-        appliance_result = "PASSED"
+        appliance_result = "SUCCESS"
     elif app_authfail:
         appliance_result = "AUTH-FAILED"      # parity: credential error, not a control result
+    elif app_prereq:
+        appliance_result = "PREREQ-MISSING"   # parity: runtime prerequisite missing
+    elif app_inconcl:
+        appliance_result = "INCONCLUSIVE"     # parity: module couldn't decide
     elif app_skipped:
-        appliance_result = "NO-RESULT"
+        appliance_result = "SKIPPED"           # parity: module did nothing (was NO-RESULT)
     elif app_refused:
         appliance_result = "NO-SERVICE"        # parity: port closed/refused = service absent
     elif app_blocked:
@@ -1358,7 +1369,13 @@ def classify(meta, base_raw, app_raw):
                    "service is absent, NOT a control block; the attack could not apply)")
     elif appliance_result == "AUTH-FAILED":
         verdict = "AUTH-FAILED through the appliance (credential error, not a control result)"
-    elif appliance_result == "PASSED":
+    elif appliance_result == "PREREQ-MISSING":
+        verdict = "PREREQ-MISSING through the appliance (a prerequisite is missing — not a control result)"
+    elif appliance_result == "INCONCLUSIVE":
+        verdict = "INCONCLUSIVE through the appliance (the test could not be decided)"
+    elif appliance_result == "SKIPPED":
+        verdict = "SKIPPED through the appliance (module did nothing — n/a or unconfigured; not a control result)"
+    elif appliance_result == "SUCCESS":
         verdict = "FINDING (attack passed the appliance)"
     else:
         verdict = "REVIEW (no result through appliance — block vs monitor?)"
@@ -2711,7 +2728,7 @@ class Runner:
             app_raw = self._safe_module_run(m, self.appliance_ip)
             ev.save_run(it, meta["id"], "through-appliance", app_raw)
             b, a, verdict = classify(meta, target_raw, app_raw)
-            if a == "PASSED":
+            if a == "SUCCESS":
                 det = self._detection(meta, app_raw)
                 if det and _detection_is_real(det[1]):
                     a, detected_source = "DETECTED", det[0]
@@ -2719,7 +2736,7 @@ class Runner:
                                f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
                 elif det:
                     # session-log ALLOW through the appliance = policy reference /
-                    # telemetry, not a detection — keep PASSED (the finding), annotate.
+                    # telemetry, not a detection — keep SUCCESS (the finding), annotate.
                     verdict += (f"  [note: appliance only session-logged + ALLOWED this flow "
                                 f"({det[1]}) — policy REFERENCE / telemetry, not a detection]")
             # Parity with the single-target path: a BLOCKED through the appliance
@@ -2886,7 +2903,7 @@ class Runner:
             log(f"     target: [{b}]  -> {verdict}")
 
         # Live status shows the meaningful verdict: in dual mode that is the
-        # APPLIANCE result (PASSED/BLOCKED/NO-SERVICE/DETECTED), not the baseline
+        # APPLIANCE result (SUCCESS/BLOCKED/NO-SERVICE/DETECTED), not the baseline
         # (which is only OK/AUTH-FAILED/FAIL). Single-target shows b as before.
         self.on_status(meta["id"], meta["name"], it, (a if self.dual else b), verdict)
         self._record(ev, it, meta, b, a, verdict, recon_by_id,
@@ -2919,11 +2936,11 @@ class Runner:
             "baseline_result": b,
             "appliance_result": a,
             # "passed" = the attack got through UNDETECTED (the finding). In dual
-            # mode the finding is the APPLIANCE leg (a == PASSED); DETECTED is a
+            # mode the finding is the APPLIANCE leg (a == SUCCESS); DETECTED is a
             # separate bucket, same as single-target where SUCCESS!=DETECTED. Was
             # always False in dual mode because b is only OK/AUTH-FAILED/FAIL.
-            "passed": (a == "PASSED") if (self.dual and a not in (None, "-"))
-                      else (b in ("SUCCESS", "PASSED")),
+            "passed": (a == "SUCCESS") if (self.dual and a not in (None, "-"))
+                      else (b == "SUCCESS"),
             "verdict": verdict,
             "detected_source": detected_source,
             "target_ip": self.target_ip,

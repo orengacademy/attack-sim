@@ -31,7 +31,7 @@ class TestClassify(unittest.TestCase):
 
     def test_success(self):
         b, a, v = core.classify(self.META, "WIN here", "WIN here")
-        self.assertEqual(a, "PASSED")
+        self.assertEqual(a, "SUCCESS")
         self.assertIn("FINDING", v)
 
     def test_blocked_through_appliance(self):
@@ -62,6 +62,26 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(a, "AUTH-FAILED")
         self.assertIn("AUTH-FAILED", v)
 
+    def test_appliance_leg_uses_SUCCESS_not_PASSED(self):
+        # the dual-path appliance leg must use the SAME "SUCCESS" label as the
+        # single-target path — there is no separate "PASSED" verdict anymore.
+        b, a, v = core.classify(self.META, "WIN here", "WIN here")
+        self.assertEqual(a, "SUCCESS")
+
+    def test_appliance_skip_is_SKIPPED_not_no_result(self):
+        # parity with single-target: a [SKIP] through the appliance is SKIPPED
+        # (module did nothing), not NO-RESULT.
+        b, a, v = core.classify(self.META, "WIN here", "[SKIP] not configured")
+        self.assertEqual(a, "SKIPPED")
+
+    def test_appliance_prereq_marker_is_prereq_missing(self):
+        b, a, v = core.classify(self.META, "WIN here", "[PREREQ-MISSING] faketime absent")
+        self.assertEqual(a, "PREREQ-MISSING")
+
+    def test_appliance_inconclusive_marker_is_inconclusive(self):
+        b, a, v = core.classify(self.META, "WIN here", "[INCONCLUSIVE] UDP no reply")
+        self.assertEqual(a, "INCONCLUSIVE")
+
 
 class TestDualPathParity(unittest.TestCase):
     """Dual-path (--appliance) mode: the appliance leg carries the full verdict
@@ -82,7 +102,7 @@ class TestDualPathParity(unittest.TestCase):
             [self._mod()], 1, ev, skip_unready=False, recon=False)
         r = ev.records[0]
         self.assertTrue(r["appliance_ip"])                 # dual mode engaged
-        self.assertEqual(r["appliance_result"], "PASSED")
+        self.assertEqual(r["appliance_result"], "SUCCESS")
         self.assertTrue(r["passed"])
 
 
@@ -338,7 +358,7 @@ class TestSkipNotScoredAsBlocked(unittest.TestCase):
     def test_classify_skip_is_not_blocked(self):
         meta = {"success_regex": r"WIN", "blocked_regex": r"not configured"}
         b, a, v = core.classify(meta, "WIN here", "[SKIP] not configured")
-        self.assertEqual(a, "NO-RESULT")   # a skip is NOT a block through the appliance
+        self.assertEqual(a, "SKIPPED")     # a skip is NOT a block through the appliance
 
     def test_skip_marker_matches_end_of_line(self):
         # ipv6_acl_parity puts the marker at the END of a line; the old ^-anchored
@@ -346,7 +366,7 @@ class TestSkipNotScoredAsBlocked(unittest.TestCase):
         self.assertIsNotNone(core._SKIP_MARKER.search("no IPv6 target. [SKIP]"))
         meta = {"success_regex": r"OK", "blocked_regex": r"no .* reachable"}
         _, a, _ = core.classify(meta, "OK", "no AAAA reachable [SKIP]")
-        self.assertEqual(a, "NO-RESULT")
+        self.assertEqual(a, "SKIPPED")     # [SKIP] wins over blocked_regex (not a false BLOCK)
 
 
 class TestConsistencyBuckets(unittest.TestCase):
