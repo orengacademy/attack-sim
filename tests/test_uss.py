@@ -81,8 +81,14 @@ class TestUtil(unittest.TestCase):
 
     def test_dns_query_unreachable_is_graceful(self):
         ok, detail = U.dns_query("example.com", "192.0.2.2", timeout=1)  # TEST-NET
+        self.assertIsInstance(detail, str)      # always returns gracefully, never raises
+        if ok:
+            # a resolver on this network answered the TEST-NET address (e.g. an
+            # inline SD-WAN / captive DNS intercepting UDP/53) — can't assert
+            # "unreachable" in that environment, but the graceful-return contract
+            # above still held, which is what this test guards.
+            self.skipTest("network has an intercepting resolver (answered TEST-NET)")
         self.assertFalse(ok)
-        self.assertIsInstance(detail, str)
 
     def test_run_transient_terminates_and_matches(self):
         out, matched = U.run_transient(
