@@ -1,0 +1,65 @@
+# Polisi Standard Security v1.3 Services - TCP rows only (this audit tests TCP)
+# expected: allow | deny | vulnerable (= must be blocked, flagged CRITICAL if open)
+port,expected,service
+default,deny,
+
+# Vulnerable Ports (TCP)
+445,vulnerable,SMB
+135,vulnerable,MS-RPC
+139,vulnerable,NetBIOS-SSN
+593,vulnerable,RPC-over-HTTP
+1025,vulnerable,MS-RPC
+5554,vulnerable,Sasser
+9995,vulnerable,
+9996,vulnerable,
+
+# Local additions - NOT in v1.3, added to flag these as CRITICAL if open
+23,vulnerable,Telnet
+137,vulnerable,NetBIOS-NS
+3389,vulnerable,RDP
+
+# Standard Services Ports (IPv4 & IPv6) - TCP
+# Review notes for policy owner:
+#   - v1.3 lists 81 and 993 twice (deduplicated here)
+#   - 123/NTP and 3478/STUN are normally UDP; TCP allow likely unnecessary
+#   - cleartext with TLS equivalent: 20/21 FTP (use SFTP/22), 2082 (2083), 2095 (2096), 389 (636)
+#   - 88/Kerberos and 389/LDAP normally internal-only, not outbound to internet
+#   - 22/SSH outbound is a tunnelling path; consider restricting destinations
+#   - no documented service: 2048, 2065, 7777, 7778, 8181, 8383
+20,allow,FTP-data
+21,allow,FTP
+22,allow,SSH
+53,allow,DNS
+80,allow,HTTP
+81,allow,HTTP-alt
+88,allow,Kerberos
+123,allow,NTP
+389,allow,LDAP
+443,allow,HTTPS
+465,allow,SMTPS
+587,allow,Submission
+993,allow,IMAPS
+1935,allow,RTMP
+2048,allow,
+2065,allow,
+2082,allow,cPanel
+2083,allow,cPanel-SSL
+2095,allow,Webmail
+2096,allow,Webmail-SSL
+3478,allow,STUN
+5222,allow,XMPP
+7777,allow,
+7778,allow,
+8080,allow,HTTP-proxy
+8081,allow,
+8082,allow,
+8181,allow,
+8383,allow,
+8443,allow,HTTPS-alt
+8888,allow,
+
+# Cloud VC - Zoom TCP
+8801-8802,allow,Zoom
+# Cloud VC - Cisco Webex TCP
+5004,allow,Webex
+# Microsoft Teams / Google Meet / Skype: no TCP ports listed
