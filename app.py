@@ -48,6 +48,20 @@ _VCOLOR = getattr(core.Evidence, "_V_COLOR", {})
 _VORDER = getattr(core.Evidence, "_V_ORDER",
                   ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE", "AUTH-FAILED",
                    "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"])
+# Plain-language meaning per verdict for the dashboard's verdict key (mirrors
+# cli.py's _VERDICT_GLOSS so terminal and web read the same).
+_VGLOSS = {
+    "SUCCESS": "got through, undetected — the finding",
+    "PASSED": "got through, undetected — the finding",
+    "DETECTED": "got through but a signature/SOC alert fired — detection worked, prevention did not",
+    "BLOCKED": "stopped in transit (dropped/filtered/rejected) — the control held",
+    "NO-SERVICE": "port closed/refused — service absent, NOT a control block",
+    "AUTH-FAILED": "credential error — fix creds, not a control result",
+    "NO-RESULT": "no clear signal — review the raw log",
+    "INCONCLUSIVE": "couldn't be decided (source quarantined, or an unobservable callback)",
+    "SKIPPED": "module did nothing — not applicable / not configured",
+    "PREREQ-MISSING": "skipped — missing tool / pylib / privilege / OS / runtime prereq",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +76,22 @@ def _ports_str(meta):
         else:
             out.append(str(s))
     return ", ".join(out)
+
+
+# Per-module raw output is kept in the run's state so a results row can be clicked
+# to view it, WITHOUT streaming megabytes over SSE (icmp_flood's flood dump alone
+# is ~3MB). Cap what we hold in RAM; the full, authoritative raw is in evidence.
+OUTPUT_CAP = 400_000
+
+
+def _stash_output(st, key, raw):
+    try:
+        s = raw if isinstance(raw, str) else str(raw)
+        if len(s) > OUTPUT_CAP:
+            s = s[:OUTPUT_CAP] + "\n\n…[truncated for the viewer — full raw output is in this run's evidence dir]"
+        st.setdefault("outputs", {})[key] = s
+    except Exception:
+        pass
 
 
 def _module_json(m):
@@ -141,6 +171,7 @@ def _bootstrap():
         "modules": mods, "presets": presets, "targets": targets,
         "verdict_order": _VORDER,
         "verdict_colors": {v: _VCOLOR.get(v, "#8b90a6") for v in _VORDER},
+        "verdict_gloss": {v: _VGLOSS.get(v, "") for v in _VORDER},
         "categories": sorted({m["category"] for m in mods}),
     }
 
@@ -184,7 +215,7 @@ def _start_run(params):
                 return None, "A run is already in progress — wait for it to finish or stop it."
         run_id = uuid.uuid4().hex[:12]
         st = {"q": queue.Queue(), "done": False, "runner": None,
-              "roots": [], "error": None, "started": time.time()}
+              "roots": [], "error": None, "started": time.time(), "outputs": {}}
         RUNS[run_id] = st
 
     t = threading.Thread(target=_run_worker, args=(run_id, params, targets, module_ids), daemon=True)
@@ -243,7 +274,9 @@ def _run_worker(run_id, params, targets, module_ids):
                 target, appliance,
                 on_log=lambda m: emit({"type": "log", "line": str(m)}),
                 on_progress=lambda c, t: emit({"type": "progress", "done": c, "total": t}),
-                on_output=lambda aid, name, it, raw: emit({"type": "output", "id": aid, "name": name, "it": it}),
+                on_output=lambda aid, name, it, raw, _t=target: (
+                    _stash_output(st, f"{_t}|{aid}|{it}", raw),
+                    emit({"type": "output", "id": aid, "name": name, "it": it, "target": _t}))[-1],
                 on_status=lambda aid, name, it, b, v, _t=target: emit(_status_event(aid, name, it, b, v, _t)))
             st["runner"] = runner
             runner.concurrency = workers
@@ -337,6 +370,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"runs": _list_runs()})
         if path.startswith("/api/run/") and path.endswith("/stream"):
             return self._sse(path.split("/")[3])
+        if path.startswith("/api/run/") and path.endswith("/output"):
+            return self._run_output(path.split("/")[3], q)
         if path.startswith("/evidence/"):
             return self._serve_evidence(path[len("/evidence/"):])
         return self._json({"error": "not found"}, 404)
@@ -362,6 +397,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             return self._json({"error": "no such run"}, 404)
         return self._json({"error": "not found"}, 404)
+
+    # --- per-module raw output (for the clickable results row) ----------
+    def _run_output(self, run_id, q):
+        st = RUNS.get(run_id)
+        if not st:
+            return self._json({"error": "no such run"}, 404)
+        key = "%s|%s|%s" % (q.get("target", [""])[0], q.get("id", [""])[0],
+                            q.get("it", ["1"])[0])
+        txt = (st.get("outputs") or {}).get(key)
+        if txt is None:
+            return self._json({"error": "no captured output for that row"}, 404)
+        return self._json({"output": txt})
 
     # --- SSE ------------------------------------------------------------
     def _sse(self, run_id):
@@ -546,6 +593,16 @@ details{margin-top:8px} details>summary{cursor:pointer;color:var(--muted);font-s
 .spectrum{height:34px;display:flex;border-radius:5px;overflow:hidden;background:var(--base);border:1px solid var(--line)}
 .spectrum i{display:block;height:100%;transition:width .35s ease}
 .spectrum .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:12px;font-family:var(--mono)}
+/* verdict key (glossary of every verdict label; chips also filter the table) */
+.vkeywrap{margin:2px 24px 0;font-size:12px}
+.vkeywrap summary{cursor:pointer;color:var(--muted);font-size:11.5px;padding:4px 0}
+.vkey{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0 2px}
+.vkey .vk{display:flex;align-items:center;gap:7px;padding:4px 9px;border:1px solid var(--line);
+ border-radius:6px;background:var(--base2);cursor:pointer;max-width:340px}
+.vkey .vk:hover{border-color:var(--edge)} .vkey .vk.on{border-color:var(--edge);background:var(--surf)}
+.vkey .vk .sw{width:9px;height:9px;border-radius:2px;flex:none}
+.vkey .vk b{color:var(--fg);font-family:var(--mono);font-weight:500;font-size:11px}
+.vkey .vk span{color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:11px;font-size:12px;color:var(--muted)}
 .legend .li{display:flex;align-items:center;gap:7px}
 .legend .sw{width:9px;height:9px;border-radius:2px;flex:none}
@@ -563,9 +620,28 @@ details{margin-top:8px} details>summary{cursor:pointer;color:var(--muted);font-s
 .wrap{max-height:48vh;overflow:auto;padding:0 12px}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 thead th{position:sticky;top:0;background:var(--base2);text-align:left;font-weight:500;color:var(--muted);
- font-size:11.5px;padding:7px 10px;border-bottom:1px solid var(--line);cursor:default}
+ font-size:11.5px;padding:7px 10px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
+thead th:hover{color:var(--text)} thead th .ar{opacity:.6;font-size:9px;margin-left:3px}
 tbody td{padding:7px 10px;border-bottom:1px solid var(--hair);vertical-align:top}
-tbody tr:hover{background:var(--surf)}
+tbody tr{cursor:pointer} tbody tr:hover{background:var(--surf)}
+/* results toolbar: filter + export */
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 24px}
+.toolbar input,.toolbar select{width:auto;min-width:120px;padding:5px 8px;font-size:12px}
+.toolbar input#fq{flex:1;min-width:180px}
+.toolbar .rowcount{color:var(--muted);font-size:11.5px;font-family:var(--mono)}
+.toolbar .exp{margin-left:auto;color:var(--muted);font-size:11.5px;display:flex;align-items:center;gap:4px}
+.toolbar .exp button{padding:4px 9px;font-size:11px;background:var(--base2);border:1px solid var(--line);
+ color:var(--text);border-radius:5px;cursor:pointer} .toolbar .exp button:hover{border-color:var(--edge)}
+/* raw-output drawer */
+.drawer{position:fixed;top:0;right:0;width:min(760px,94vw);height:100vh;background:var(--base);z-index:40;
+ border-left:1px solid var(--line2);box-shadow:-18px 0 50px rgba(0,0,0,.5);display:flex;flex-direction:column}
+.drawer[hidden]{display:none}   /* class rule above would otherwise beat [hidden]'s display:none */
+.drawer .dhead{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+.drawer .dhead span{font-weight:600} .drawer .dhead button{padding:5px 12px;background:var(--base2);
+ border:1px solid var(--line);color:var(--text);border-radius:5px;cursor:pointer}
+.drawer .dmeta{padding:8px 18px;color:var(--muted);font-size:12px;font-family:var(--mono);border-bottom:1px solid var(--hair)}
+.drawer .dbody{flex:1;overflow:auto;margin:0;padding:14px 18px;font-family:var(--mono);font-size:12px;
+ white-space:pre-wrap;line-height:1.5;color:var(--text)}
 .vcell{white-space:nowrap;font-weight:500} .vbar{width:3px;height:13px;border-radius:2px;display:inline-block;margin-right:8px;vertical-align:-2px}
 .mono{font-family:var(--mono);color:var(--muted)} .dim{color:var(--muted)}
 .detail{color:var(--muted);max-width:440px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
@@ -681,11 +757,35 @@ tbody tr:hover{background:var(--surf)}
     <span class=evidence id=evidence></span>
    </div>
    <div id=paneRes>
-    <div class=wrap><table>
-     <thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th><th>Target</th><th>Ports</th><th>ATT&amp;CK</th><th>CWE</th><th>It</th><th>Detail</th></tr></thead>
+    <details class=vkeywrap open><summary>Verdict key</summary><div class=vkey id=vkey></div></details>
+    <div class=toolbar>
+     <input id=fq type=text placeholder="filter… module / detail / ATT&amp;CK / CWE">
+     <select id=fverdict><option value="">all verdicts</option></select>
+     <select id=fcat><option value="">all categories</option></select>
+     <select id=ftarget><option value="">all targets</option></select>
+     <span class=rowcount id=rowcount></span>
+     <span class=exp>export
+      <button data-exp=csv>CSV</button>
+      <button data-exp=json>JSON</button>
+      <button data-exp=md>MD</button>
+     </span>
+    </div>
+    <div class=wrap><table id=restable>
+     <thead><tr>
+      <th data-col=n>#</th><th data-col=verdict>Verdict</th><th data-col=name>Module</th>
+      <th data-col=category>Category</th><th data-col=target>Target</th><th data-col=ports>Ports</th>
+      <th data-col=mitre>ATT&amp;CK</th><th data-col=cwe>CWE</th><th data-col=it>It</th>
+      <th data-col=detail>Detail</th></tr></thead>
      <tbody id=resbody></tbody></table></div>
    </div>
    <div id=paneLog class=hidden><div class=log id=log></div></div>
+  </div>
+
+  <!-- raw-output drawer (opens when a results row is clicked) -->
+  <div id=drawer class=drawer hidden>
+   <div class=dhead><span id=dtitle></span><button id=dclose>close</button></div>
+   <div id=dmeta class=dmeta></div>
+   <pre id=dbody class=dbody></pre>
   </div>
 
   <div class=runsbar>
@@ -699,6 +799,7 @@ tbody tr:hover{background:var(--surf)}
 <script>
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 let BOOT=null, MODE="blackbox", ES=null, COUNTS={}, RESN=0;
+let ROWS=[], RUNID=null, SORT={col:"n",dir:1};   // results data model (filter/sort/export/click)
 const KIND={SUCCESS:"got",PASSED:"got",DETECTED:"det",BLOCKED:"blk","NO-SERVICE":"svc",
  "AUTH-FAILED":"det","NO-RESULT":"det",INCONCLUSIVE:"inc",SKIPPED:"skip","PREREQ-MISSING":"skip"};
 const HEX={got:"#ff5a5a",det:"#f5a33c",blk:"#3fd08a",svc:"#4c8dff",inc:"#a98bff",skip:"#5f7083"};
@@ -729,7 +830,7 @@ async function boot(){
  $("#targets").addEventListener("input",()=>{
    const first=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean)[0];
    if(first) prefillTarget(first);});
- buildBattery(); applyPreset("original"); refresh(); loadRuns();
+ buildBattery(); buildVerdictKey(); applyPreset("original"); refresh(); loadRuns();
 }
 
 // Prefill the whole form for ONE target from its saved config (ports, cloud flag,
@@ -752,6 +853,24 @@ function prefillTarget(ip){
    $$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE)); }
 }
 
+// Verdict key: every verdict label with its color + plain-language meaning.
+// Each chip also acts as a verdict filter (click to toggle the table filter).
+function buildVerdictKey(){
+ const host=$("#vkey"); if(!host)return; host.innerHTML="";
+ (BOOT.verdict_order||[]).forEach(v=>{
+  const c=(BOOT.verdict_colors||{})[v]||"#8b90a6", g=(BOOT.verdict_gloss||{})[v]||"";
+  const el=document.createElement("div"); el.className="vk"; el.dataset.v=v; el.title=v+" — "+g;
+  el.innerHTML=`<i class=sw style="background:${c}"></i><b>${esc(v)}</b><span>${esc(g)}</span>`;
+  el.addEventListener("click",()=>{
+    const f=$("#fverdict");
+    if(f.value===v){f.value="";}
+    else{ if(![...f.options].some(o=>o.value===v)){const o=document.createElement("option");o.value=o.textContent=v;f.appendChild(o);} f.value=v; }
+    renderRows();});
+  host.appendChild(el);});
+}
+// reflect the active verdict filter on the key chips
+function markVerdictKey(){const cur=$("#fverdict").value;
+ $$("#vkey .vk").forEach(el=>el.classList.toggle("on",el.dataset.v===cur&&cur!==""));}
 function buildBattery(){
  const host=$("#battery"); host.innerHTML="";
  const byCat={}; BOOT.modules.forEach(m=>{(byCat[m.category]=byCat[m.category]||[]).push(m);});
@@ -795,16 +914,74 @@ function refresh(){
 }
 
 function addRow(e){
- const k=kindOf(e.verdict), c=HEX[k];
- const tr=document.createElement("tr");
- tr.innerHTML=`<td class=mono>${++RESN}</td>`
-  +`<td class=vcell style="color:${c}"><span class=vbar style="background:${c}"></span>${esc(e.verdict)}</td>`
-  +`<td>${esc(e.name)}</td><td class=dim>${esc(e.category)}</td>`
-  +`<td class=mono>${esc(e.target)}</td><td class=mono>${esc(e.ports)}</td>`
-  +`<td class=mono>${esc(e.mitre)}</td><td class=mono>${esc(e.cwe||'')}</td><td class=mono>${e.it}</td>`
-  +`<td class=detail title="${esc(e.detail)}">${esc(e.detail)}</td>`;
- $("#resbody").appendChild(tr);
- COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1; refresh();
+ const row={n:++RESN, verdict:e.verdict||"", id:e.id||"", name:e.name||"", category:e.category||"",
+  target:e.target||"", ports:e.ports||"", mitre:e.mitre||"", cwe:e.cwe||"", it:e.it||1, detail:e.detail||""};
+ ROWS.push(row);
+ COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1;
+ syncFilterOptions(); renderRows(); refresh();
+}
+// keep the verdict / category / target filter dropdowns populated from live rows
+function syncFilterOptions(){
+ const add=(sel,vals)=>{const cur=sel.value; const have=new Set([...sel.options].map(o=>o.value));
+  [...vals].sort().forEach(v=>{if(v&&!have.has(v)){const o=document.createElement("option");o.value=o.textContent=v;sel.appendChild(o);}});
+  sel.value=cur;};
+ add($("#fverdict"), new Set(ROWS.map(r=>r.verdict)));
+ add($("#fcat"),     new Set(ROWS.map(r=>r.category)));
+ add($("#ftarget"),  new Set(ROWS.map(r=>r.target)));
+}
+function filteredRows(){
+ const q=$("#fq").value.trim().toLowerCase(), fv=$("#fverdict").value, fc=$("#fcat").value, ft=$("#ftarget").value;
+ let rows=ROWS.filter(r=>(!fv||r.verdict===fv)&&(!fc||r.category===fc)&&(!ft||r.target===ft)
+   &&(!q||[r.name,r.detail,r.mitre,r.cwe,r.id,r.category].join(" ").toLowerCase().includes(q)));
+ const c=SORT.col, d=SORT.dir, num=(c==="n"||c==="it");
+ rows.sort((a,b)=>{let x=a[c],y=b[c]; if(num){x=+x;y=+y;} else {x=(""+x).toLowerCase();y=(""+y).toLowerCase();}
+   return x<y?-d:x>y?d:a.n-b.n;});
+ return rows;
+}
+function renderRows(){
+ const rows=filteredRows(), tb=$("#resbody"); tb.innerHTML="";
+ rows.forEach(r=>{const k=kindOf(r.verdict), c=HEX[k];
+  const tr=document.createElement("tr");
+  tr.dataset.id=r.id; tr.dataset.it=r.it; tr.dataset.target=r.target;
+  tr.innerHTML=`<td class=mono>${r.n}</td>`
+   +`<td class=vcell style="color:${c}"><span class=vbar style="background:${c}"></span>${esc(r.verdict)}</td>`
+   +`<td>${esc(r.name)}</td><td class=dim>${esc(r.category)}</td>`
+   +`<td class=mono>${esc(r.target)}</td><td class=mono>${esc(r.ports)}</td>`
+   +`<td class=mono>${esc(r.mitre)}</td><td class=mono>${esc(r.cwe)}</td><td class=mono>${r.it}</td>`
+   +`<td class=detail title="${esc(r.detail)}">${esc(r.detail)}</td>`;
+  tr.addEventListener("click",()=>openRow(r));
+  tb.appendChild(tr);});
+ markVerdictKey();
+ $("#rowcount").textContent=rows.length+(rows.length===ROWS.length?"":" / "+ROWS.length)+" rows";
+ $$("#restable thead th").forEach(th=>{const a=th.querySelector(".ar"); if(a)a.remove();
+  if(th.dataset.col===SORT.col){const s=document.createElement("span");s.className="ar";s.textContent=SORT.dir>0?"▲":"▼";th.appendChild(s);}});
+}
+// click a results row -> fetch that module's raw output and show it in the drawer
+async function openRow(r){
+ $("#dtitle").textContent=r.name+"  ["+r.verdict+"]";
+ $("#dmeta").textContent=[r.target,r.category,r.ports,r.mitre&&("ATT&CK "+r.mitre),r.cwe&&("CWE "+r.cwe),"iter "+r.it].filter(Boolean).join("  •  ");
+ $("#dbody").textContent="loading raw output…";
+ $("#drawer").hidden=false;
+ if(!RUNID){$("#dbody").textContent=r.detail||"(no run context)";return;}
+ try{
+  const u="api/run/"+RUNID+"/output?target="+encodeURIComponent(r.target)+"&id="+encodeURIComponent(r.id)+"&it="+encodeURIComponent(r.it);
+  const j=await (await fetch(u)).json();
+  $("#dbody").textContent=j.output!=null?j.output:("(no captured output — "+(j.error||"")+")\n\nverdict detail:\n"+r.detail);
+ }catch(err){$("#dbody").textContent="(could not load output: "+err+")\n\nverdict detail:\n"+r.detail;}
+}
+// export the CURRENTLY FILTERED rows
+function exportRows(fmt){
+ const rows=filteredRows(), cols=["n","verdict","name","id","category","target","ports","mitre","cwe","it","detail"];
+ let data,mime,ext;
+ if(fmt==="json"){data=JSON.stringify(rows,null,1);mime="application/json";ext="json";}
+ else if(fmt==="md"){data="| "+cols.join(" | ")+" |\n|"+cols.map(()=>"---").join("|")+"|\n"
+   +rows.map(r=>"| "+cols.map(c=>(""+r[c]).replace(/\|/g,"\\|").replace(/\n/g," ")).join(" | ")+" |").join("\n");mime="text/markdown";ext="md";}
+ else{const q=s=>'"'+(""+s).replace(/"/g,'""')+'"';
+   data=cols.join(",")+"\n"+rows.map(r=>cols.map(c=>q(r[c])).join(",")).join("\n");mime="text/csv";ext="csv";}
+ const a=document.createElement("a");
+ a.href=URL.createObjectURL(new Blob([data],{type:mime}));
+ a.download="results-"+(new Date().toISOString().slice(0,19).replace(/[:T]/g,"-"))+"."+ext;
+ a.click();URL.revokeObjectURL(a.href);
 }
 function logLine(t){
  const l=t.toLowerCase(); let c="";
@@ -830,7 +1007,7 @@ function startRun(){
   .then(r=>r.json()).then(j=>{
    if(j.error){$("#runmeta").textContent=j.error;$("#runmeta").style.color="var(--got)";return;}
    $("#runmeta").style.color="";
-   COUNTS={};RESN=0;$("#resbody").innerHTML="";$("#log").innerHTML="";$("#evidence").textContent="";$("#prog").style.width="0";refresh();
+   COUNTS={};RESN=0;ROWS=[];RUNID=j.run_id;$("#resbody").innerHTML="";$("#rowcount").textContent="";$("#log").innerHTML="";$("#evidence").textContent="";$("#prog").style.width="0";refresh();
    $("#runbtn").disabled=true;$("#stopbtn").disabled=false;$("#stopbtn").dataset.id=j.run_id;
    stream(j.run_id);
   });
@@ -878,6 +1055,14 @@ $("#runbtn").addEventListener("click",startRun);
 $("#stopbtn").addEventListener("click",()=>fetch("api/run/"+$("#stopbtn").dataset.id+"/stop",{method:"POST"}));
 $("#tabRes").addEventListener("click",()=>{$("#tabRes").classList.add("on");$("#tabLog").classList.remove("on");$("#paneRes").classList.remove("hidden");$("#paneLog").classList.add("hidden");});
 $("#tabLog").addEventListener("click",()=>{$("#tabLog").classList.add("on");$("#tabRes").classList.remove("on");$("#paneLog").classList.remove("hidden");$("#paneRes").classList.add("hidden");});
+// filter inputs re-render; header clicks sort (toggle direction on same column)
+["#fq","#fverdict","#fcat","#ftarget"].forEach(s=>$(s).addEventListener("input",renderRows));
+$$("#restable thead th").forEach(th=>th.addEventListener("click",()=>{
+ const c=th.dataset.col; if(!c)return;
+ SORT.dir=(SORT.col===c)?-SORT.dir:1; SORT.col=c; renderRows();}));
+$$(".exp button").forEach(b=>b.addEventListener("click",()=>exportRows(b.dataset.exp)));
+$("#dclose").addEventListener("click",()=>$("#drawer").hidden=true);
+document.addEventListener("keydown",e=>{if(e.key==="Escape")$("#drawer").hidden=true;});
 boot();
 </script>
 </body></html>"""
