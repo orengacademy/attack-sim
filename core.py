@@ -1308,14 +1308,31 @@ def classify(meta, base_raw, app_raw):
     base_ok = _match(base_raw, succ)
     base_authfail = _match(base_raw, AUTHFAIL_REGEX)
     app_ok = _match(app_raw, succ)
+    app_authfail = _match(app_raw, AUTHFAIL_REGEX)
     # A module that printed [SKIP] did nothing — never score that as BLOCKED
     # (a win for the control). Checked before app_blocked.
     app_skipped = not app_ok and _SKIP_MARKER.search(app_raw or "") is not None
     app_blocked = not app_skipped and (_match(app_raw, blk) or "[TIMEOUT]" in app_raw)
+    # A RST / "connection refused" through the appliance = the service is ABSENT,
+    # not the control dropping the attack — mirror single-target NO-SERVICE. Only
+    # when the module's own blocked_regex didn't already claim it (BLOCKED wins, so
+    # a module that treats refused AS a block — e.g. its blocked_regex lists
+    # "refused" — still scores BLOCKED).
+    app_refused = not app_ok and not app_blocked and _match(app_raw, REFUSED_REGEX)
 
     baseline_result = "OK" if base_ok else "AUTH-FAILED" if base_authfail else "FAIL (inconclusive)"
-    appliance_result = ("PASSED" if app_ok else "NO-RESULT" if app_skipped
-                        else "BLOCKED" if app_blocked else "NO-RESULT")
+    if app_ok:
+        appliance_result = "PASSED"
+    elif app_authfail:
+        appliance_result = "AUTH-FAILED"      # parity: credential error, not a control result
+    elif app_skipped:
+        appliance_result = "NO-RESULT"
+    elif app_refused:
+        appliance_result = "NO-SERVICE"        # parity: port closed/refused = service absent
+    elif app_blocked:
+        appliance_result = "BLOCKED"
+    else:
+        appliance_result = "NO-RESULT"
 
     if base_authfail and not base_ok:
         verdict = "CREDENTIAL ERROR — fix core.DEFAULT_CREDENTIALS, not a control result"
@@ -1323,6 +1340,11 @@ def classify(meta, base_raw, app_raw):
         verdict = "INCONCLUSIVE (baseline did not succeed — check target/service)"
     elif appliance_result == "BLOCKED":
         verdict = "CONTROL WORKING (blocked)"
+    elif appliance_result == "NO-SERVICE":
+        verdict = ("NO-SERVICE through the appliance (port closed / connection refused — the "
+                   "service is absent, NOT a control block; the attack could not apply)")
+    elif appliance_result == "AUTH-FAILED":
+        verdict = "AUTH-FAILED through the appliance (credential error, not a control result)"
     elif appliance_result == "PASSED":
         verdict = "FINDING (attack passed the appliance)"
     else:
@@ -2658,6 +2680,17 @@ class Runner:
                     a, detected_source = "DETECTED", det[0]
                     verdict = (f"attack passed the appliance but the appliance/SOC "
                                f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
+            # Parity with the single-target path: a BLOCKED through the appliance
+            # gets the contamination-guard SUSPECT check, and a BLOCKED/NO-SERVICE
+            # on a policy-DENIED port is attributed to SEGMENTATION, not the IPS/WAF.
+            if a == "BLOCKED":
+                verdict = self._flag_if_blacklisted(verdict, log)
+            pol = getattr(self, "_pol_by_id", {}).get(meta["id"])
+            if pol and pol["outcome"] == "blocked" and a in ("BLOCKED", "NO-SERVICE"):
+                denied = ", ".join(f"{p}/{pt}" for p, pt, st in pol["ports"] if st != "allowed")
+                pname = getattr(self, "_port_policy", {}).get("name", "port policy")
+                verdict += (f"  [policy: {denied} denied by {pname} — expected SEGMENTATION "
+                            "block, not an IPS/WAF result]")
             log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
             output_for_record = target_raw + "\n\n--- through appliance ---\n\n" + app_raw
         else:
@@ -2812,7 +2845,12 @@ class Runner:
             "duration_s": duration,
             "baseline_result": b,
             "appliance_result": a,
-            "passed": b in ("SUCCESS", "PASSED"),
+            # "passed" = the attack got through UNDETECTED (the finding). In dual
+            # mode the finding is the APPLIANCE leg (a == PASSED); DETECTED is a
+            # separate bucket, same as single-target where SUCCESS!=DETECTED. Was
+            # always False in dual mode because b is only OK/AUTH-FAILED/FAIL.
+            "passed": (a == "PASSED") if (self.dual and a not in (None, "-"))
+                      else (b in ("SUCCESS", "PASSED")),
             "verdict": verdict,
             "detected_source": detected_source,
             "target_ip": self.target_ip,
