@@ -69,6 +69,7 @@ def _module_json(m):
     return {
         "id": me["id"], "name": me["name"], "category": me.get("category", ""),
         "mitre": me.get("mitre", []), "cwe": me.get("cwe", []),
+        "cve": me.get("cve", ""),
         "tactic": me.get("tactic", ""), "family": me.get("family", ""),
         "direction": me.get("direction", "a2b"), "test_type": me.get("test_type", ""),
         "control": me.get("control", ""), "fix": me.get("fix", ""),
@@ -98,7 +99,28 @@ def _bootstrap():
                          key=lambda k: mem[k].get("last_used", "") if isinstance(mem[k], dict) else "",
                          reverse=True)
     except Exception:
-        targets = []
+        mem, targets = {}, []
+    # Per-target saved config, so the web form prefills EVERYTHING for a target the
+    # same way the GUI does: NAT ports, cloud flag, egress source, posture, site,
+    # and that target's own creds (a Linux host and a Windows DC carry different
+    # logins). This is the trusted-lab control panel (bound to a trusted segment /
+    # --token), identical exposure to the creds the form already POSTs on a run.
+    tcfg = {}
+    for ip, v in (mem.items() if isinstance(mem, dict) else []):
+        if not isinstance(v, dict):
+            continue
+        tcfg[ip] = {
+            "cloud": bool(v.get("cloud")),
+            "smb_port": v.get("smb_port") or 4445,
+            "rpc_port": v.get("rpc_port") or 1135,
+            "ssh_port": v.get("ssh_port") or 22,
+            "source": v.get("source") or "",
+            "site_id": v.get("site_id") or "",
+            "mode": v.get("mode") or "blackbox",
+            "domain": v.get("domain") or "", "dc_user": v.get("dc_user") or "",
+            "dc_pass": v.get("dc_pass") or "", "ssh_user": v.get("ssh_user") or "",
+            "ssh_pass": v.get("ssh_pass") or "",
+        }
     try:
         policy = core.load_port_policy().get("name", "")
     except Exception:
@@ -111,6 +133,11 @@ def _bootstrap():
         "policy": policy,
         "creds_loaded": {k: bool(creds.get(k)) for k in
                          ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")},
+        # actual global defaults (credentials.env / HARNESS_*) so the form prefills,
+        # plus each target's own saved config for per-target prefill on selection.
+        "creds": {k: creds.get(k, "") for k in
+                  ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")},
+        "target_config": tcfg,
         "modules": mods, "presets": presets, "targets": targets,
         "verdict_order": _VORDER,
         "verdict_colors": {v: _VCOLOR.get(v, "#8b90a6") for v in _VORDER},
@@ -501,7 +528,8 @@ details{margin-top:8px} details>summary{cursor:pointer;color:var(--muted);font-s
 .atk{display:flex;align-items:center;gap:9px;padding:5px 8px;border-radius:6px;cursor:pointer}
 .atk:hover{background:var(--surf)} .atk input{accent-color:var(--edge);flex:none}
 .atk .nm{flex:1;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.atk .mi{font-family:var(--mono);font-size:11px;color:var(--faint);flex:none}
+.atk .mi{font-family:var(--mono);font-size:11px;color:var(--faint);flex:none;text-align:right;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.atk .mi .cwe{font-style:normal;color:var(--edge);opacity:.8}
 .flag{font-family:var(--mono);font-size:9.5px;padding:0 4px;border:1px solid var(--line2);border-radius:3px;color:var(--muted);flex:none}
 .flag.new{color:var(--inc);border-color:#3a2f55} .flag.root{color:var(--det);border-color:#4a3a1e}
 
@@ -599,7 +627,7 @@ tbody tr:hover{background:var(--surf)}
    <div class=field><label>Appliance IP — dual-path (blank = single-target)</label><input id=appliance type=text placeholder="run baseline + through-appliance and compare"></div>
    <label class=chk style="margin-top:4px"><input type=checkbox id=active> Active establishment (build real tunnels / pivots / exfil)</label>
    <label class=chk style="margin-top:6px"><input type=checkbox id=debug> Debug (verbose tools + timing)</label>
-   <details>
+   <details id=credpanel>
     <summary>Credentials &amp; cloud NAT ports</summary>
     <label class=chk style="margin:8px 0"><input type=checkbox id=cloud> Cloud target (NAT'd SMB/RPC/SSH)</label>
     <div class=rowf>
@@ -654,7 +682,7 @@ tbody tr:hover{background:var(--surf)}
    </div>
    <div id=paneRes>
     <div class=wrap><table>
-     <thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th><th>Target</th><th>Ports</th><th>ATT&amp;CK</th><th>It</th><th>Detail</th></tr></thead>
+     <thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th><th>Target</th><th>Ports</th><th>ATT&amp;CK</th><th>CWE</th><th>It</th><th>Detail</th></tr></thead>
      <tbody id=resbody></tbody></table></div>
    </div>
    <div id=paneLog class=hidden><div class=log id=log></div></div>
@@ -688,8 +716,40 @@ async function boot(){
  const cl=BOOT.creds_loaded, L=$("#loaded"); L.innerHTML="";
  Object.entries(cl).forEach(([k,v])=>{const e=document.createElement("span");
   e.innerHTML=k.replace("_"," ")+" <b class="+(v?"ok":"no")+">"+(v?"set":"—")+"</b>";L.appendChild(e);});
- if(BOOT.targets&&BOOT.targets.length) $("#targets").value=BOOT.targets.join("\n");
+ // prefill the global credential defaults (credentials.env / HARNESS_*)
+ const C=BOOT.creds||{};
+ $("#domain").value=C.domain||""; $("#dcuser").value=C.dc_user||""; $("#dcpass").value=C.dc_pass||"";
+ $("#sshuser").value=C.ssh_user||""; $("#sshpass").value=C.ssh_pass||"";
+ // open the credentials/ports panel when anything is prefilled, so it's visible
+ if(Object.values(cl).some(Boolean) || Object.keys(BOOT.target_config||{}).length)
+   { const d=$("#credpanel"); if(d) d.open=true; }
+ if(BOOT.targets&&BOOT.targets.length){ $("#targets").value=BOOT.targets.join("\n");
+   prefillTarget(BOOT.targets[0]); }        // prefill from the most-recent target
+ // re-prefill whenever the first target line changes
+ $("#targets").addEventListener("input",()=>{
+   const first=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean)[0];
+   if(first) prefillTarget(first);});
  buildBattery(); applyPreset("original"); refresh(); loadRuns();
+}
+
+// Prefill the whole form for ONE target from its saved config (ports, cloud flag,
+// egress source, posture, site, and that target's own creds — overriding the
+// global defaults only where the target actually has a value).
+function prefillTarget(ip){
+ const tc=(BOOT.target_config||{})[ip]; if(!tc) return;
+ $("#cloud").checked=!!tc.cloud;
+ if(tc.smb_port) $("#smb").value=tc.smb_port;
+ if(tc.rpc_port) $("#rpc").value=tc.rpc_port;
+ if(tc.ssh_port) $("#sshp").value=tc.ssh_port;
+ if(tc.source) $("#source").value=tc.source;
+ if(tc.site_id) $("#site").value=tc.site_id;
+ if(tc.domain) $("#domain").value=tc.domain;
+ if(tc.dc_user) $("#dcuser").value=tc.dc_user;
+ if(tc.dc_pass) $("#dcpass").value=tc.dc_pass;
+ if(tc.ssh_user) $("#sshuser").value=tc.ssh_user;
+ if(tc.ssh_pass) $("#sshpass").value=tc.ssh_pass;
+ if(tc.mode){ MODE=(tc.mode==="whitebox")?"whitebox":"blackbox";
+   $$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE)); }
 }
 
 function buildBattery(){
@@ -699,9 +759,18 @@ function buildBattery(){
   host.insertAdjacentHTML("beforeend",`<div class=cat><span class=cn>${esc(cat)}</span><span class=cl></span></div>`);
   byCat[cat].forEach(m=>{
    const flags=(m.added?'<span class="flag new">new</span>':'')+(m.needs_root?'<span class="flag root">root</span>':'');
+   const mi=(m.mitre||[]).join(", "), cw=(m.cwe||[]).join(", ");
+   // full ATT&CK / CWE / scope mapping + remediation, shown on hover (title) so
+   // every attack carries its complete detail, not just a lone technique id.
+   const det=[m.category, m.tactic, (m.family?("family "+m.family):""), m.direction,
+     (mi?("ATT&CK "+mi):""), (cw?("CWE "+cw):""), (m.cve?("CVE "+m.cve):""),
+     (m.ports?("ports "+m.ports):""), (m.control?("control: "+m.control):""),
+     (m.fix?("owner: "+m.fix):""), (m.test_type?("["+m.test_type+"]"):"")
+     ].filter(Boolean).join("  •  ");
    host.insertAdjacentHTML("beforeend",
-    `<label class=atk title="${esc(m.control||'')}"><input type=checkbox data-id="${m.id}">`
-    +`<span class=nm>${esc(m.name)}</span>${flags}<span class=mi>${esc((m.mitre||[])[0]||'')}</span></label>`);
+    `<label class=atk title="${esc(det)}"><input type=checkbox data-id="${m.id}">`
+    +`<span class=nm>${esc(m.name)}</span>${flags}`
+    +`<span class=mi>${esc(mi||'—')}${cw?(' <i class=cwe>'+esc(cw)+'</i>'):''}</span></label>`);
   });
  });
  host.addEventListener("change",updSel);
@@ -732,7 +801,7 @@ function addRow(e){
   +`<td class=vcell style="color:${c}"><span class=vbar style="background:${c}"></span>${esc(e.verdict)}</td>`
   +`<td>${esc(e.name)}</td><td class=dim>${esc(e.category)}</td>`
   +`<td class=mono>${esc(e.target)}</td><td class=mono>${esc(e.ports)}</td>`
-  +`<td class=mono>${esc(e.mitre)}</td><td class=mono>${e.it}</td>`
+  +`<td class=mono>${esc(e.mitre)}</td><td class=mono>${esc(e.cwe||'')}</td><td class=mono>${e.it}</td>`
   +`<td class=detail title="${esc(e.detail)}">${esc(e.detail)}</td>`;
  $("#resbody").appendChild(tr);
  COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1; refresh();

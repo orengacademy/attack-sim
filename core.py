@@ -1101,7 +1101,7 @@ class Evidence:
     _V_GLOSS_SHORT = {
         "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
         "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
-        "NO-RESULT": "review log", "INCONCLUSIVE": "IPS quarantine",
+        "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
         "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
     }
 
@@ -1263,6 +1263,19 @@ _WARN_MARKER = re.compile(r"\[WARN\].*$", re.MULTILINE)
 # module with no infra configured, or --active not set) — surface WHY so the
 # NO-RESULT verdict isn't a mystery.
 _SKIP_MARKER = re.compile(r"\[SKIP\].*$", re.MULTILINE)
+# [PREREQ-MISSING] = a module discovered at RUNTIME that a LOCAL prerequisite is
+# missing (e.g. kerberoast needs `faketime` once the host clock is skewed past
+# Kerberos' 5-min window). Not a control result and not a tool crash — the test
+# simply could not run. Scored PREREQ-MISSING (same bucket as a preflight skip),
+# carrying the module's own reason. Checked before the blocked/no-service branches
+# so the missing prerequisite can't be miscredited to the control.
+_PREREQ_MARKER = re.compile(r"\[PREREQ-MISSING\].*$", re.MULTILINE)
+# [INCONCLUSIVE] = a module ran but legitimately CANNOT decide (a UDP probe with
+# no handshake; a coercion that fired but whose callback can't be observed from
+# this vantage point). Distinct from NO-RESULT (a tool fault with no signal): the
+# module is deliberately declaring the test indeterminate and telling the operator
+# what to verify, so the reason isn't lost behind a mute "review raw log".
+_INCONCLUSIVE_MARKER = re.compile(r"\[INCONCLUSIVE\].*$", re.MULTILINE)
 # Harness-INTERNAL failures: the module crashed (exception boundary), the
 # wall-clock watchdog abandoned a hang, it produced no output, or run_cmd could
 # not build/launch the command. These are TOOL faults, not the control blocking
@@ -1380,6 +1393,30 @@ def _detection_phrasing(note):
                 "it as a detection")
     return ("the appliance/SOC has a record of this attack (detection); prevention did "
             "not block it")
+
+
+def _detection_is_real(note):
+    """Decide whether a detection NOTE is a GENUINE security detection or merely
+    the appliance's own policy REFERENCE / telemetry.
+
+    A session-log line like "session-logged tcp/21: ALLOW (policy=Outbound_NPSA)"
+    is the appliance reporting that it SAW and PASSED the flow — visibility, not a
+    detection, and no prevention was ever attempted. Scoring that as DETECTED
+    (orange, "detection worked") HIDES a real finding: the attack passed
+    undetected. Per the operator's instruction (ORG2026-70) the policy reference is
+    "just a reference", not a test result — so only a fired IPS SIGNATURE, an
+    explicit prevention verdict, or an active DENY counts as a real detection; a
+    plain ALLOW / session-log / "seen" is telemetry, and the attack keeps the
+    verdict its OWN output earned (SUCCESS when it got through)."""
+    n = (note or "").lower()
+    if "signature" in n or "prevention=" in n:
+        return True
+    # a session-log DENY is the appliance actively blocking at policy level (an
+    # action), distinct from a passive ALLOW reference. "MIXED"/"ALLOW"/plain
+    # "session-logged" are telemetry only.
+    if "deny" in n and "allow" not in n:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------
@@ -2676,10 +2713,15 @@ class Runner:
             b, a, verdict = classify(meta, target_raw, app_raw)
             if a == "PASSED":
                 det = self._detection(meta, app_raw)
-                if det:
+                if det and _detection_is_real(det[1]):
                     a, detected_source = "DETECTED", det[0]
                     verdict = (f"attack passed the appliance but the appliance/SOC "
                                f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
+                elif det:
+                    # session-log ALLOW through the appliance = policy reference /
+                    # telemetry, not a detection — keep PASSED (the finding), annotate.
+                    verdict += (f"  [note: appliance only session-logged + ALLOWED this flow "
+                                f"({det[1]}) — policy REFERENCE / telemetry, not a detection]")
             # Parity with the single-target path: a BLOCKED through the appliance
             # gets the contamination-guard SUSPECT check, and a BLOCKED/NO-SERVICE
             # on a policy-DENIED port is attributed to SEGMENTATION, not the IPS/WAF.
@@ -2724,12 +2766,22 @@ class Runner:
             skipped = not ok and _SKIP_MARKER.search(target_raw) is not None
             if ok:
                 det = self._detection(meta, target_raw)
-                if det:
+                if det and _detection_is_real(det[1]):
                     b, detected_source = "DETECTED", det[0]
                     verdict = (f"attack passed the boundary but the appliance/SOC "
                                f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
                 else:
+                    # The attack GOT THROUGH. A session-log ALLOW is the appliance's
+                    # own policy REFERENCE (telemetry), NOT a detection — so this is
+                    # a SUCCESS (the finding), with the reference attached so the
+                    # operator still sees what the appliance logged without it being
+                    # miscredited as "detection worked".
                     b, verdict = "SUCCESS", "attack succeeded against target (passed-undetected)"
+                    if det:
+                        verdict += (f" — note: the appliance only session-logged + ALLOWED "
+                                    f"this flow ({det[1]}); that is a POLICY REFERENCE / "
+                                    f"telemetry, not a detection and not a block. The attack "
+                                    f"still got through — verify your SOC actually ALERTS on it.")
             elif authfail:
                 b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
             elif skipped:
@@ -2737,6 +2789,24 @@ class Runner:
                 b = "SKIPPED"
                 verdict = ("module did nothing (not applicable / not configured) — "
                            + (hint or "see raw log") + "; NOT a control result")
+            # A module self-declaring a missing LOCAL prerequisite at runtime (e.g.
+            # kerberoast with a skewed clock and no faketime). Not a control result;
+            # checked before the port/blocked branches so it can't be mis-scored as
+            # BLOCKED/NO-SERVICE (which would fabricate "the control worked").
+            elif _PREREQ_MARKER.search(target_raw):
+                m = _PREREQ_MARKER.search(target_raw)
+                reason = m.group(0).replace("[PREREQ-MISSING]", "").strip()
+                b = "PREREQ-MISSING"
+                verdict = ("skipped — " + (reason or "a runtime prerequisite is missing")
+                           + "; NOT a control result (fix the prerequisite and re-run)")
+            # A module that ran but legitimately CANNOT decide (declares its own
+            # reason). Surfaces the reason instead of a mute NO-RESULT; authoritative
+            # about its own run, like [SKIP], so it precedes the recon-inferred states.
+            elif _INCONCLUSIVE_MARKER.search(target_raw):
+                m = _INCONCLUSIVE_MARKER.search(target_raw)
+                reason = m.group(0).replace("[INCONCLUSIVE]", "").strip()
+                b = "INCONCLUSIVE"
+                verdict = "INCONCLUSIVE — " + (reason or "the test was indeterminate; review raw log")
             # CLOSED / refused -> the service isn't there; this is NOT a control win.
             # ...but only when the attack ports aren't actually OPEN. An exploit
             # whose ports are reachable can still print an incidental "Connection

@@ -154,7 +154,8 @@ def correction_prefix(target, kdc_port=88):
                 "faketime to match the DC (no root / no system-clock change), so the "
                 "pre-auth AS-REQ isn't rejected with KRB_AP_ERR_SKEW.")
     return ("",
-            f"[WARN] KDC clock skew {secs:+d}s exceeds Kerberos' 5-min window and "
-            "`faketime` is not installed — the pre-auth AS-REQ will fail with "
-            "KRB_AP_ERR_SKEW (not a control result). Fix: `apt install faketime` "
-            "(this module then auto-corrects), or sync this host's clock to the DC.")
+            f"[PREREQ-MISSING] KDC clock skew {secs:+d}s exceeds Kerberos' 5-min window "
+            "and `faketime` is not installed — the pre-auth AS-REQ/TGS-REQ will fail with "
+            "KRB_AP_ERR_SKEW (a local prerequisite, NOT a control result). Fix: "
+            "`apt install faketime` (this module then auto-corrects), or sync this host's "
+            "clock to the DC, then re-run.")

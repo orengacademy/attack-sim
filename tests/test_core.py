@@ -846,5 +846,101 @@ class TestPortPolicyMalformed(unittest.TestCase):
                 os.environ["HARNESS_PORT_POLICY"] = old
 
 
+class TestDetectionIsRealVsTelemetry(unittest.TestCase):
+    """A session-log ALLOW (policy=...) is the appliance's own REFERENCE that it
+    PASSED the flow — telemetry, NOT a detection and NOT a test result. Only a
+    fired signature / explicit prevention verdict / active DENY is a real
+    detection (operator instruction, ORG2026-70: 'policy=... is just a reference,
+    we need to test')."""
+
+    def test_allow_reference_is_not_a_real_detection(self):
+        self.assertFalse(core._detection_is_real(
+            "session-logged tcp/21: ALLOW (policy=Outbound_NPSA)"))
+
+    def test_mixed_policy_reference_is_not_a_real_detection(self):
+        self.assertFalse(core._detection_is_real(
+            "session-logged tcp/445,tcp/135: MIXED (policy=;default-policy)"))
+
+    def test_signature_prevention_is_a_real_detection(self):
+        self.assertTrue(core._detection_is_real(
+            "Sangfor IPS signature fired 'ICMP flooding attack' DENY x1 (prevention=yes)"))
+
+    def test_session_deny_is_a_real_detection(self):
+        self.assertTrue(core._detection_is_real(
+            "session-logged tcp/853: DENY (policy=default-policy)"))
+
+
+class TestAllowTelemetryScoresSuccessNotDetected(unittest.TestCase):
+    """End-to-end through the Runner: an attack that PASSED and has only a
+    session-log ALLOW reference must score SUCCESS (the finding) with the
+    reference attached — never DETECTED (which would hide the finding)."""
+
+    def _run_with_detection(self, note):
+        det = {"tele": {"note": note, "source": "Sangfor M4500-F-1"}}
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            import json
+            json.dump(det, f)
+        old = os.environ.get("HARNESS_DETECTIONS")
+        os.environ["HARNESS_DETECTIONS"] = path
+        self.addCleanup(lambda: os.environ.__setitem__("HARNESS_DETECTIONS", old)
+                        if old is not None else os.environ.pop("HARNESS_DETECTIONS", None))
+        self.addCleanup(lambda: os.remove(path))
+        m = fake_module("tele", ports=[], mitre=["T1046"], tactic="Discovery",
+                        success_regex=r"WIN", blocked_regex=r"nope")
+        m.run = lambda t, c: "WIN — got through"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=False)
+        return ev.records[0]
+
+    def test_allow_session_log_scores_success_with_reference(self):
+        r = self._run_with_detection("session-logged tcp/21: ALLOW (policy=Outbound_NPSA)")
+        self.assertEqual(r["baseline_result"], "SUCCESS")          # finding, not DETECTED
+        self.assertEqual(r["detected_source"], "")                 # not credited as a detection
+        self.assertIn("REFERENCE", r["verdict"])                   # reference is surfaced
+        self.assertIn("telemetry", r["verdict"].lower())
+
+    def test_real_signature_still_scores_detected(self):
+        r = self._run_with_detection(
+            "Sangfor IPS signature fired 'web Vulnerability' DENY x12 (prevention=yes)")
+        self.assertEqual(r["baseline_result"], "DETECTED")
+        self.assertEqual(r["detected_source"], "Sangfor M4500-F-1")
+
+
+class TestRuntimePrereqAndInconclusive(unittest.TestCase):
+    """A module can self-declare, at runtime, that it couldn't run (missing local
+    prerequisite -> PREREQ-MISSING) or couldn't decide (-> INCONCLUSIVE). Both are
+    scored BEFORE the recon-inferred port branches so a dropped/filtered probe
+    can't mis-score them as BLOCKED, and both carry the module's own reason."""
+
+    def _score(self, output):
+        m = fake_module("x", ports=[], mitre=["T1046"], tactic="Discovery",
+                        success_regex=r"WIN", blocked_regex=r"timed out|refused")
+        m.run = lambda t, c, o=output: o
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=False)
+        return ev.records[0]
+
+    def test_prereq_marker_scores_prereq_missing(self):
+        r = self._score("# kerberoast\n[PREREQ-MISSING] clock skew +600s, faketime missing")
+        self.assertEqual(r["baseline_result"], "PREREQ-MISSING")
+        self.assertIn("faketime", r["verdict"])
+
+    def test_inconclusive_marker_scores_inconclusive_with_reason(self):
+        r = self._score("# petitpotam\n[INCONCLUSIVE] coercion fired but no hash captured")
+        self.assertEqual(r["baseline_result"], "INCONCLUSIVE")
+        self.assertIn("coercion fired", r["verdict"])
+
+    def test_inconclusive_marker_wins_over_a_filtered_probe(self):
+        # even against a blackhole (recon would see the port filtered -> BLOCKED),
+        # the module's own INCONCLUSIVE declaration is authoritative about its run.
+        m = fake_module("y", ports=[("tcp", 9)], mitre=["T1046"], tactic="Discovery",
+                        success_regex=r"WIN", blocked_regex=r"timed out|refused")
+        m.run = lambda t, c: "[INCONCLUSIVE] UDP/443 sent but no reply"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=True)
+        self.assertEqual(ev.records[0]["baseline_result"], "INCONCLUSIVE")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

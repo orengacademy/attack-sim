@@ -80,7 +80,7 @@ tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 | `bootstrap.py` | One-shot apt installer for Kali/Debian. |
 | `modules/` | **One file per attack**, auto-discovered. See "Adding a module". |
 | `modules/_*.py` | Shared helpers (not modules): `_util.py`, `_portpatch.py` (NAT SMB/RPC port patching), `_dcompatch.py`, `_clockskew.py`, `_impacket.py` (resolve an impacket tool across flavours — `impacket-X`/`X.py`/the example script — so AD modules don't need the Kali CLI). `_vendor/` holds vendored PoCs (PetitPotam, noPac). |
-| `additional/` | `mygovnet_egress_probe.py` (standalone egress/segmentation probe, launched from GUI too), `reverse_runner.py` (drop-in B→A runner for a host you can't install on), `sangfor_ingest.py` (**vendor-agnostic** SD-WAN/firewall log correlator — pure stdlib, `.xlsx` or `.csv`, column names matched by synonym in `_CANON` so Sangfor / Forcepoint / others all parse). Takes a `--log` (session/traffic: per-port Allow/Deny) and/or `--ips` (threat log: maps the signature "Attack Type" → modules; takes precedence), `--target`, `--model "<appliance>"`; `--write` merges a `detections.json` so attacks the appliance SAW score DETECTED (seen-but-allowed) and signature hits carry a prevention=yes/no note. Engine itself is appliance-agnostic — testing *through* any SD-WAN (Sangfor/Forcepoint/…) needs no code change; only this correlator is format-specific.), the plan HTML. |
+| `additional/` | `mygovnet_egress_probe.py` (standalone egress/segmentation probe, launched from GUI too), `reverse_runner.py` (drop-in B→A runner for a host you can't install on), `sangfor_ingest.py` (**vendor-agnostic** SD-WAN/firewall log correlator — pure stdlib, `.xlsx` or `.csv`, column names matched by synonym in `_CANON` so Sangfor / Forcepoint / others all parse). Takes a `--log` (session/traffic: per-port Allow/Deny) and/or `--ips` (threat log: maps the signature "Attack Type" → modules; takes precedence), `--target`, `--model "<appliance>"`; `--write` merges a `detections.json`: signature/DENY/prevention hits score **DETECTED**, while a plain session-log ALLOW (seen-but-allowed) is recorded as a policy **reference** note on the SUCCESS verdict — NOT a detection (see `_detection_is_real()` in the verdict model). Engine itself is appliance-agnostic — testing *through* any SD-WAN (Sangfor/Forcepoint/…) needs no code change; only this correlator is format-specific.), the plan HTML. |
 | `deploy/` | Lab-target provisioning (⚠ lab only), **2-in-1**: `setup_all.sh`/`setup_target.sh` turn *any mainstream Linux* into the vuln target (distro-agnostic — detects apt/dnf/yum/pacman/zypper/apk + systemd/OpenRC) and `setup_target.sh` auto-writes a git-ignored `credentials.env` so `ssh_brute` works out of the box. Plus `docker-compose.yml` (Apache 41773 / Log4Shell / OpenLDAP). **Two targets:** the Linux host (Target #1, configured in place) and the Windows AD DC (Target #2, a VM) — `setup_all.sh --with-windows` boots the DC too (Vagrant+VirtualBox, needs HW virt). `windows/` = a single `vagrant up` that runs both provisioning passes (`provision.ps1` reads `USS_PROVISION_NO_REBOOT` so Vagrant drives the reboot; cloud self-reboots via a startup task). `windows/qemu/` = a QEMU/libvirt path (`create-dc.sh`) for KVM hosts; `cloud/` = Terraform AWS/Azure/GCP (ingress locked to `tester_cidrs`). `attacker_endpoint.py` is the **attacker-infra sink** (stdlib HTTP canary + TCP/UDP sinks) you point `config.json` (`canary_url`/`attacker_vps`/`published_app_url`) at so the egress/C2/exfil modules reach a real endpoint and score SUCCESS instead of SKIP. `windows/make-nopac-vulnerable.ps1` reverts an already-patched live DC so nopac/sama work (fresh builds are already unpatched). `refresh-lab.sh --install-cron` keeps the lab alive (restarts dead services/containers/VM every 5 min). ⚠ `nopac`/`samaccountname_spoof` need an **unpatched** DC; `wmiexec`/`nopac`/`dcsync` need the **`impacket` library**. |
 
 ## The module contract
@@ -144,9 +144,17 @@ Scored from the attacker side; **the raw `.log` files are authoritative** — ev
 classifier bug so far was caught by reading them, not by trusting the verdict.
 
 - **SUCCESS** — passed and not detected → the finding (red).
-- **DETECTED** — passed but the SOC alerted (orange). Populated from an
-  operator-supplied `detections.json` / `HARNESS_DETECTIONS` / a module's
-  `detected_regex`. Prevention failed, detection worked.
+- **DETECTED** — passed AND the SOC/appliance **genuinely detected** it (orange):
+  a fired IPS **signature**, an explicit **prevention** verdict, or an active
+  **DENY** in the appliance log. Populated from `detections.json` /
+  `HARNESS_DETECTIONS` / a module's `detected_regex`. Prevention failed, detection
+  worked. ⚠ A plain session-log **ALLOW** (e.g. `ALLOW (policy=Outbound_NPSA)`) is
+  **NOT** a detection — that is the appliance's own policy *reference* / telemetry
+  (it SAW and PASSED the flow). `_detection_is_real()` gates this: an ALLOW/MIXED
+  reference keeps the attack as **SUCCESS** (the finding) with the reference
+  attached as a note, so an "allowed-and-logged" flow can't masquerade as
+  "detection worked" and hide a real finding (operator instruction, ORG2026-70:
+  *the policy reference is just a reference — the verdict comes from the test*).
 - **BLOCKED** — filtered/dropped in transit (timeout / filtered port) → control
   likely worked (green).
 - **NO-SERVICE** — port closed/refused (RST): service absent, **not** a control
@@ -157,8 +165,17 @@ classifier bug so far was caught by reading them, not by trusting the verdict.
   BLOCKED verdict its own `blocked_regex` earned (this is why patched noPac now
   scores BLOCKED, not NO-SERVICE).
 - **AUTH-FAILED** — credential error (fix `HARNESS_DC_PASS`), not a control result.
+- **INCONCLUSIVE** — the test couldn't reach a verdict (purple). Either the source
+  was IPS-quarantined mid-run, OR a module **self-declared** `[INCONCLUSIVE]`
+  because it genuinely can't decide — a UDP probe with no handshake
+  (`udp443_quic`), or a coercion that fired but whose callback can't be observed
+  from here (`petitpotam` against a non-routable listener). Carries the module's
+  own reason instead of a mute NO-RESULT.
 - **NO-RESULT** — no clear marker; surfaces the `[ERROR]/[WARN]/[SKIP]` hint.
-- **PREREQ-MISSING** — skipped by preflight (missing tool/file/privilege/OS).
+- **PREREQ-MISSING** — skipped by preflight (missing tool/file/privilege/OS), OR a
+  module self-declared `[PREREQ-MISSING]` at **runtime** when a local prerequisite
+  is only discoverable then (e.g. `kerberoast` needs `faketime` once the host
+  clock is skewed past Kerberos' 5-min window). Not a control result.
 
 White-box vs black-box is a **posture recorded per result**, not different
 execution: run allow-all (white-box) to confirm an attack works, then black-box
@@ -230,8 +247,10 @@ per-module **TIME** column + `duration_s` in every `result.json`. **Site ID**
 - **Appliance-log correlation:** `additional/sangfor_ingest.py` (vendor-agnostic:
   Sangfor **and** Forcepoint, `.xlsx`/`.csv`, synonym column + action-value
   mapping) turns an appliance's per-port Allow/Deny (session log) and signature
-  hits (IPS log, `--ips`) into a `detections.json`, so attacks the appliance SAW
-  score **DETECTED**. GUI: "Appliance log…" button.
+  hits (IPS log, `--ips`) into a `detections.json`. A signature/DENY hit scores
+  the attack **DETECTED**; a plain session-log ALLOW is attached to the SUCCESS
+  verdict as a policy *reference* (telemetry), not a detection. GUI: "Appliance
+  log…" button.
 - **Zero-config IPS-signature modules** (no creds/infra, just `curl` + a web
   port — grade the appliance's IPS/WAF): `apache_41773`, `log4shell`,
   `web_ips_sigs` (SQLi/XSS/cmd-inj/webshell/Shellshock battery → NGWAF),
