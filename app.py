@@ -31,6 +31,7 @@ from urllib.parse import urlparse, parse_qs
 
 import core
 import loader
+import index   # SQLite cross-run index (derived from evidence/; rebuildable)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EVID = os.path.join(HERE, "evidence")
@@ -371,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._sse(path.split("/")[3])
         if path.startswith("/api/run/") and path.endswith("/output"):
             return self._run_output(path.split("/")[3], q)
+        if path == "/api/query":
+            return self._query(q)
         if path.startswith("/evidence/"):
             return self._serve_evidence(path[len("/evidence/"):])
         return self._json({"error": "not found"}, 404)
@@ -395,7 +398,31 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return self._json({"ok": True})
             return self._json({"error": "no such run"}, 404)
+        if path == "/api/reindex":
+            try:
+                nr, nres = index.rebuild()
+                return self._json({"ok": True, "runs": nr, "results": nres})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
         return self._json({"error": "not found"}, 404)
+
+    # --- cross-run history query (SQLite index over evidence/) ----------
+    def _query(self, q):
+        # build the index on first use if it's missing (derived + rebuildable).
+        if not os.path.exists(index.DB_DEFAULT):
+            try:
+                index.rebuild()
+            except Exception as e:
+                return self._json({"error": "index build failed: %s" % e}, 500)
+        one = lambda k: (q.get(k, [""])[0] or "").strip()
+        filters = {c: one(c) for c in ("verdict", "target_ip", "site_id", "category",
+                                       "attack_id", "test_type", "family", "mode")}
+        try:
+            rows = index.query(filters={k: v for k, v in filters.items() if v},
+                               q=one("q") or None, limit=int(one("limit") or 500))
+            return self._json({"rows": rows, "stats": index.stats()})
+        except Exception as e:
+            return self._json({"error": str(e)}, 500)
 
     # --- per-module raw output (for the clickable results row) ----------
     def _run_output(self, run_id, q):
@@ -631,6 +658,11 @@ tbody tr{cursor:pointer} tbody tr:hover{background:var(--surf)}
 .toolbar .exp{margin-left:auto;color:var(--muted);font-size:11.5px;display:flex;align-items:center;gap:4px}
 .toolbar .exp button{padding:4px 9px;font-size:11px;background:var(--base2);border:1px solid var(--line);
  color:var(--text);border-radius:5px;cursor:pointer} .toolbar .exp button:hover{border-color:var(--edge)}
+/* history rollup strip */
+.histroll{display:flex;flex-wrap:wrap;gap:6px;padding:4px 24px 8px;font-size:11.5px}
+.histroll .hr{display:flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--line);
+ border-radius:14px;background:var(--base2);color:var(--muted)}
+.histroll .hr i{width:8px;height:8px;border-radius:50%;flex:none} .histroll .hr b{color:var(--fg)}
 /* raw-output drawer */
 .drawer{position:fixed;top:0;right:0;width:min(760px,94vw);height:100vh;background:var(--base);z-index:40;
  border-left:1px solid var(--line2);box-shadow:-18px 0 50px rgba(0,0,0,.5);display:flex;flex-direction:column}
@@ -753,6 +785,7 @@ tbody tr{cursor:pointer} tbody tr:hover{background:var(--surf)}
    <div class=tabbar>
     <button class="tab on" id=tabRes>Results</button>
     <button class=tab id=tabLog>Live log</button>
+    <button class=tab id=tabHist>History</button>
     <span class=evidence id=evidence></span>
    </div>
    <div id=paneRes>
@@ -778,6 +811,25 @@ tbody tr{cursor:pointer} tbody tr:hover{background:var(--surf)}
      <tbody id=resbody></tbody></table></div>
    </div>
    <div id=paneLog class=hidden><div class=log id=log></div></div>
+   <div id=paneHist class=hidden>
+    <div class=toolbar>
+     <input id=hq type=text placeholder="search all runs… module / detail / ATT&amp;CK / CWE">
+     <select id=hverdict><option value="">all verdicts</option></select>
+     <select id=htarget><option value="">all targets</option></select>
+     <select id=hsite><option value="">all sites</option></select>
+     <span class=rowcount id=histcount></span>
+     <span class=exp><button id=reindex title="rebuild the index from evidence/">reindex</button>
+      <button data-hexp=csv>CSV</button><button data-hexp=json>JSON</button></span>
+    </div>
+    <div class=histroll id=histroll></div>
+    <div class=wrap><table id=histtable>
+     <thead><tr>
+      <th data-hcol=ts>When</th><th data-hcol=verdict>Verdict</th><th data-hcol=target_ip>Target</th>
+      <th data-hcol=attack>Module</th><th data-hcol=category>Category</th>
+      <th data-hcol=mitre>ATT&amp;CK</th><th data-hcol=cwe>CWE</th>
+      <th data-hcol=site_id>Site</th><th data-hcol=run_id>Run</th></tr></thead>
+     <tbody id=histbody></tbody></table></div>
+   </div>
   </div>
 
   <!-- raw-output drawer (opens when a results row is clicked) -->
@@ -1052,16 +1104,80 @@ $("#modeseg").addEventListener("click",e=>{if(!e.target.dataset.v)return;
 $$("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
 $("#runbtn").addEventListener("click",startRun);
 $("#stopbtn").addEventListener("click",()=>fetch("api/run/"+$("#stopbtn").dataset.id+"/stop",{method:"POST"}));
-$("#tabRes").addEventListener("click",()=>{$("#tabRes").classList.add("on");$("#tabLog").classList.remove("on");$("#paneRes").classList.remove("hidden");$("#paneLog").classList.add("hidden");});
-$("#tabLog").addEventListener("click",()=>{$("#tabLog").classList.add("on");$("#tabRes").classList.remove("on");$("#paneLog").classList.remove("hidden");$("#paneRes").classList.add("hidden");});
-// filter inputs re-render; header clicks sort (toggle direction on same column)
+// --- three-way tab switch (Results / Live log / History) ---
+const TABS=[["#tabRes","#paneRes"],["#tabLog","#paneLog"],["#tabHist","#paneHist"]];
+function showTab(tab){TABS.forEach(([t,p])=>{const on=(t===tab);
+  $(t).classList.toggle("on",on);$(p).classList.toggle("hidden",!on);});
+  if(tab==="#tabHist") loadHistory();}
+TABS.forEach(([t])=>$(t).addEventListener("click",()=>showTab(t)));
+// results: filter inputs re-render; header clicks sort; export scoped to this pane
 ["#fq","#fverdict","#fcat","#ftarget"].forEach(s=>$(s).addEventListener("input",renderRows));
 $$("#restable thead th").forEach(th=>th.addEventListener("click",()=>{
  const c=th.dataset.col; if(!c)return;
  SORT.dir=(SORT.col===c)?-SORT.dir:1; SORT.col=c; renderRows();}));
-$$(".exp button").forEach(b=>b.addEventListener("click",()=>exportRows(b.dataset.exp)));
+$$("#paneRes .exp button").forEach(b=>b.addEventListener("click",()=>exportRows(b.dataset.exp)));
 $("#dclose").addEventListener("click",()=>$("#drawer").hidden=true);
 document.addEventListener("keydown",e=>{if(e.key==="Escape")$("#drawer").hidden=true;});
+
+// --- History: cross-run query over the SQLite index (derived from evidence/) ---
+let HROWS=[], HSORT={col:"ts",dir:-1};
+async function loadHistory(){
+ const p=new URLSearchParams();
+ const q=$("#hq").value.trim(); if(q)p.set("q",q);
+ if($("#hverdict").value)p.set("verdict",$("#hverdict").value);
+ if($("#htarget").value)p.set("target_ip",$("#htarget").value);
+ if($("#hsite").value)p.set("site_id",$("#hsite").value);
+ p.set("limit","2000");
+ $("#histbody").innerHTML="<tr><td colspan=9 class=dim>loading…</td></tr>";
+ try{
+  const j=await (await fetch("api/query?"+p.toString())).json();
+  if(j.error){$("#histbody").innerHTML="<tr><td colspan=9 class=dim>"+esc(j.error)+"</td></tr>";return;}
+  HROWS=j.rows||[]; renderHistRoll(j.stats||{}); syncHistFilters(j.stats||{}); renderHist();
+ }catch(err){$("#histbody").innerHTML="<tr><td colspan=9 class=dim>error: "+esc(""+err)+"</td></tr>";}
+}
+function renderHistRoll(stats){
+ const o=stats.overall||{};
+ $("#histroll").innerHTML=(BOOT.verdict_order||[]).filter(v=>o[v]).map(v=>{
+  const c=(BOOT.verdict_colors||{})[v]||"#8b90a6";
+  return `<span class=hr><i style="background:${c}"></i>${esc(v)} <b>${o[v]}</b></span>`;}).join("")
+  +` <span class=hr>runs <b>${stats.runs||0}</b></span>`;
+}
+function syncHistFilters(stats){
+ const add=(sel,vals)=>{const cur=sel.value,have=new Set([...sel.options].map(o=>o.value));
+  [...vals].filter(Boolean).sort().forEach(v=>{if(!have.has(v)){const o=document.createElement("option");o.value=o.textContent=v;sel.appendChild(o);}});sel.value=cur;};
+ add($("#hverdict"), new Set(HROWS.map(r=>r.verdict)));
+ add($("#htarget"),  new Set(HROWS.map(r=>r.target_ip)));
+ add($("#hsite"),    new Set(HROWS.map(r=>r.site_id)));
+}
+function renderHist(){
+ const rows=HROWS.slice(), c=HSORT.col, d=HSORT.dir;
+ rows.sort((a,b)=>{let x=(""+(a[c]||"")).toLowerCase(),y=(""+(b[c]||"")).toLowerCase();return x<y?-d:x>y?d:0;});
+ const tb=$("#histbody"); tb.innerHTML="";
+ rows.forEach(r=>{const k=kindOf(r.verdict),col=HEX[k];
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td class=mono>${esc((r.ts||"").replace("T"," ").slice(5,19))}</td>`
+   +`<td class=vcell style="color:${col}"><span class=vbar style="background:${col}"></span>${esc(r.verdict)}</td>`
+   +`<td class=mono>${esc(r.target_ip)}</td><td>${esc(r.attack)}</td><td class=dim>${esc(r.category)}</td>`
+   +`<td class=mono>${esc(r.mitre)}</td><td class=mono>${esc(r.cwe)}</td>`
+   +`<td class=mono>${esc(r.site_id||"")}</td><td class=mono title="${esc(r.run_id)}">${esc((r.run_id||"").replace(/^run_/,""))}</td>`;
+  tb.appendChild(tr);});
+ $("#histcount").textContent=rows.length+" rows";
+}
+["#hq","#hverdict","#htarget","#hsite"].forEach(s=>$(s).addEventListener("input",loadHistory));
+$$("#histtable thead th").forEach(th=>th.addEventListener("click",()=>{
+ const c=th.dataset.hcol; if(!c)return; HSORT.dir=(HSORT.col===c)?-HSORT.dir:1; HSORT.col=c; renderHist();}));
+$("#reindex").addEventListener("click",async()=>{
+ $("#reindex").textContent="reindexing…";
+ try{await fetch("api/reindex",{method:"POST"});}catch(e){}
+ $("#reindex").textContent="reindex"; loadHistory();});
+$$("#paneHist [data-hexp]").forEach(b=>b.addEventListener("click",()=>{
+ const cols=["ts","verdict","target_ip","attack","category","mitre","cwe","site_id","run_id"];
+ let data,ext;
+ if(b.dataset.hexp==="json"){data=JSON.stringify(HROWS,null,1);ext="json";}
+ else{const qq=s=>'"'+(""+(s==null?"":s)).replace(/"/g,'""')+'"';
+   data=cols.join(",")+"\n"+HROWS.map(r=>cols.map(c=>qq(r[c])).join(",")).join("\n");ext="csv";}
+ const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([data],{type:"text/"+ext}));
+ a.download="history-"+Date.now()+"."+ext;a.click();URL.revokeObjectURL(a.href);});
 boot();
 </script>
 </body></html>"""

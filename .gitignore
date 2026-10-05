@@ -41,3 +41,6 @@ desktop.ini
 Thumbs.db
 .idea/
 .vscode/
+
+# derived SQLite cross-run index (rebuildable from evidence/)
+evidence_index.db
