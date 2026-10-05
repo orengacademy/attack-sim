@@ -1177,7 +1177,7 @@ $$("#paneHist [data-hexp]").forEach(b=>b.addEventListener("click",()=>{
  else{const qq=s=>'"'+(""+(s==null?"":s)).replace(/"/g,'""')+'"';
    data=cols.join(",")+"\n"+HROWS.map(r=>cols.map(c=>qq(r[c])).join(",")).join("\n");ext="csv";}
  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([data],{type:"text/"+ext}));
- a.download="history-"+Date.now()+"."+ext;a.click();URL.revokeObjectURL(a.href);});
+ a.download="history-"+Date.now()+"."+ext;a.click();URL.revokeObjectURL(a.href);}));
 boot();
 </script>
 </body></html>"""
