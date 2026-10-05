@@ -46,11 +46,15 @@ class ClockSkewPrefixTest(unittest.TestCase):
         prefix, _ = _clockskew.correction_prefix("10.0.0.1")
         self.assertEqual(prefix, "faketime -f -200s ")
 
-    def test_large_skew_without_faketime_warns_only(self):
+    def test_large_skew_without_faketime_is_prereq_missing(self):
+        # No faketime + a skew past Kerberos' window means the Kerberos attack
+        # can't run — a LOCAL prerequisite gap, not a control result. The note
+        # must carry the [PREREQ-MISSING] marker so the classifier scores it
+        # PREREQ-MISSING (not a mute NO-RESULT).
         self._stub(dt.timedelta(seconds=600), False)
         prefix, note = _clockskew.correction_prefix("10.0.0.1")
         self.assertEqual(prefix, "")
-        self.assertIn("[WARN]", note)
+        self.assertIn("[PREREQ-MISSING]", note)
         self.assertIn("faketime", note)
 
     def test_kdc_unreachable_is_silent(self):

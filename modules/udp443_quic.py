@@ -59,8 +59,8 @@ def run(target, ctx):
                    f"{', '.join(replied)}. A QUIC tunnel (cloudflared) can use this path "
                    "even if TCP/443 is controlled. [FINDING]")
     elif noreply:
-        out.append(f"UDP/443: datagram(s) sent to {', '.join(noreply)} but no reply — "
-                   "INCONCLUSIVE. UDP has no handshake, so a dropping firewall and a "
+        out.append(f"[INCONCLUSIVE] UDP/443 datagram(s) sent to {', '.join(noreply)} but no "
+                   "reply — UDP has no handshake, so a dropping firewall and a "
                    "permitted-but-unanswered path are indistinguishable here; not scored "
                    "as open. Confirm against firewall logs or a known-responsive endpoint.")
     else:

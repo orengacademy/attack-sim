@@ -228,4 +228,27 @@ def run(target, ctx):
         resp_out, _ = responder.communicate()
 
     out.append("## Responder\n" + (resp_out or "(no output)"))
-    return "\n".join(out)
+
+    # If the COERCION fired (RPC accepted) but Responder captured NO hash and the
+    # RPC path wasn't explicitly refused, the test is INDETERMINATE from here: the
+    # target->attacker callback was never observed. The usual cause is that the
+    # Responder listener IP isn't routable from the target (e.g. an RFC1918 listener
+    # against a cloud/public target) — that is NOT a clean control block and NOT a
+    # success. Declare it so the classifier scores INCONCLUSIVE with the reason
+    # instead of a mute NO-RESULT. (A captured hash -> success_regex -> SUCCESS; an
+    # explicit refusal -> blocked_regex -> BLOCKED; both take precedence over this.)
+    full = "\n".join(out)
+    coerced = any(s in full for s in ("Attack worked!", "ERROR_BAD_NETPATH", "Got expected"))
+    captured = ("NTLMv2-SSP Hash" in full) or ("Skipping previously captured hash" in full)
+    refused = any(s in full for s in ("could not connect", "timed out",
+                                      "Connection refused", "RPC_S_ACCESS_DENIED"))
+    if coerced and not captured and not refused:
+        out.append(
+            f"[INCONCLUSIVE] coercion fired (RPC accepted by {target}) but Responder "
+            f"captured no NTLM hash within {CAPTURE_WAIT}s — the target->attacker callback "
+            f"was not observed. Ensure the Responder listener IP ({listener_ip}) is routable "
+            "from the target (a public / in-path address, not RFC1918), then re-run; if it "
+            "already is, confirm via the SD-WAN/host logs whether the callback (SMB/HTTP from "
+            "the target) was dropped in transit.")
+        full = "\n".join(out)
+    return full

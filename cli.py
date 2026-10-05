@@ -130,7 +130,7 @@ _VERDICT_GLOSS = {
     "NO-SERVICE":     "port closed — service not present",
     "AUTH-FAILED":    "bad credentials — fix creds",
     "NO-RESULT":      "inconclusive — review raw log",
-    "INCONCLUSIVE":   "not tested — source in IPS quarantine (re-run whitelisted)",
+    "INCONCLUSIVE":   "indeterminate — can't decide (quarantine / unobservable callback)",
     "SKIPPED":        "did nothing — n/a or unconfigured",
     "PREREQ-MISSING": "prerequisite missing — not run",
 }
@@ -139,7 +139,7 @@ _VERDICT_GLOSS = {
 _VERDICT_GLOSS_SHORT = {
     "SUCCESS": "finding", "PASSED": "finding", "DETECTED": "SOC alerted",
     "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
-    "NO-RESULT": "review log", "INCONCLUSIVE": "IPS quarantine",
+    "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
     "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
 }
 

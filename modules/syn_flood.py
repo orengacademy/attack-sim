@@ -126,7 +126,7 @@ def run(target, ctx):
     # If nothing is listening at baseline, every sample would fail for a reason
     # unrelated to the flood -> require the port open first.
     if not _connect_ok(target, port):
-        out.append(f"INCONCLUSIVE: no service listening on {target}:{port} at baseline "
+        out.append(f"[INCONCLUSIVE] no service listening on {target}:{port} at baseline "
                    "— cannot measure SYN-flood impact. Pick an open service port "
                    "(HARNESS_PORT_SYN / GUI).")
         return "\n".join(out)
@@ -189,7 +189,7 @@ def run(target, ctx):
         return "\n".join(out)
 
     if flood_loss is None:
-        out.append("INCONCLUSIVE: could not parse the flood's SYN response ratio — review raw log.")
+        out.append("[INCONCLUSIVE] could not parse the flood's SYN response ratio — review raw log.")
         return "\n".join(out)
 
     base_ok = base_loss is not None and base_loss <= LOW_LOSS
@@ -218,12 +218,12 @@ def run(target, ctx):
             "rate-limit SYN flooding (finding: deploy SYN-flood protection on the SD-WAN).")
     elif not base_ok:
         out.append(
-            f"INCONCLUSIVE: even normal-rate SYNs lost {base_loss}% — the path/port is "
+            f"[INCONCLUSIVE] even normal-rate SYNs lost {base_loss}% — the path/port is "
             f"unreliable, so the high-rate {flood_loss:.1f}% loss isn't a clean rate-limit "
             "signal. Review raw log.")
     else:
         out.append(
-            f"INCONCLUSIVE: flood {flood_loss:.1f}% SYN-loss vs {base_loss}% baseline, "
+            f"[INCONCLUSIVE] flood {flood_loss:.1f}% SYN-loss vs {base_loss}% baseline, "
             f"connects {connect_fail:.0f}% — ambiguous (boundary rate-limiting OR "
             "insufficient single-host load). Review raw log.")
     return "\n".join(out)

@@ -255,7 +255,7 @@ def run(target, ctx):
 
     # ---- verdict: differential between normal-rate and high-rate ICMP ---------
     if flood_loss is None:
-        out.append("INCONCLUSIVE: could not parse the flood's delivery ratio — review raw log.")
+        out.append("[INCONCLUSIVE] could not parse the flood's delivery ratio — review raw log.")
         return "\n".join(out)
 
     base_ok = base_loss is not None and base_loss <= LOW_LOSS
@@ -284,12 +284,12 @@ def run(target, ctx):
             "rate-limiting / DoS protection on the SD-WAN).")
     elif not base_ok:
         out.append(
-            f"INCONCLUSIVE: even normal-rate ICMP lost {base_loss}% — the host/path is "
+            f"[INCONCLUSIVE] even normal-rate ICMP lost {base_loss}% — the host/path is "
             "unreliable (down, or ICMP filtered entirely), so the high-rate "
             f"{flood_loss:.1f}% loss isn't a clean rate-limit signal. Review raw log.")
     else:
         out.append(
-            f"INCONCLUSIVE: flood {flood_loss:.1f}% loss vs {base_loss}% baseline — "
+            f"[INCONCLUSIVE] flood {flood_loss:.1f}% loss vs {base_loss}% baseline — "
             "ambiguous (could be boundary rate-limiting OR insufficient single-host "
             "load to fill the pipe). Review raw log.")
     return "\n".join(out)
