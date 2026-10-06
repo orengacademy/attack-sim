@@ -229,5 +229,57 @@ class TestIcmpHostLivenessBlock(unittest.TestCase):
         self.assertFalse(up)
 
 
+class TestDohBypassHardened(unittest.TestCase):
+    """doh_bypass now resolves a POLICY-BLOCKED canary over DoH and classifies the
+    3-leg chain (direct baseline / DoH resolve / connect-by-IP). Pure helpers are
+    tested offline; the network legs run via curl in the field."""
+
+    def setUp(self):
+        self.doh = importlib.import_module("modules.doh_bypass")
+
+    def test_parse_doh_ips(self):
+        j = ('{"Status":0,"Answer":[{"name":"x","type":1,"TTL":29,"data":"172.66.0.144"},'
+             '{"type":1,"data":"162.159.140.146"}]}')
+        self.assertEqual(self.doh._parse_doh_ips(j), ["172.66.0.144", "162.159.140.146"])
+
+    def test_parse_doh_ips_none(self):
+        self.assertEqual(self.doh._parse_doh_ips('{"Status":3,"Answer":[]}'), [])
+
+    def test_parse_code(self):
+        self.assertEqual(self.doh._parse_code("ACCESS-HTTP:403", "ACCESS-HTTP"), "403")
+        self.assertEqual(self.doh._parse_code("DIRECT-HTTP:000", "DIRECT-HTTP"), "000")
+        self.assertEqual(self.doh._parse_code("", "DIRECT-HTTP"), "000")
+
+    def test_verdict_full_bypass(self):
+        # direct blocked (000) + DoH resolved + access reached -> full policy bypass
+        v, ok = self.doh._compose_verdict("onlyfans.com", ["172.66.0.144"], True, "000", "403")
+        self.assertTrue(ok)
+        self.assertIn("DOH-BYPASS", v)
+        self.assertIn("BYPASSED via DoH", v)
+        self.assertIn("FULL BYPASS", v)
+
+    def test_verdict_dns_only_bypass(self):
+        # direct blocked + DoH resolved but connect-by-IP blocked -> connection-layer holds
+        v, ok = self.doh._compose_verdict("x.example", ["1.2.3.4"], True, "000", "000")
+        self.assertTrue(ok)
+        self.assertIn("connection-layer", v)
+
+    def test_verdict_no_block_observed(self):
+        # direct ALSO reached -> no DNS block on this canary from here (e.g. run off-net)
+        v, ok = self.doh._compose_verdict("x.example", ["1.2.3.4"], True, "200", "200")
+        self.assertTrue(ok)
+        self.assertIn("no DNS block observed", v)
+
+    def test_verdict_doh_blocked(self):
+        v, ok = self.doh._compose_verdict("x.example", [], False, "000", "000")
+        self.assertFalse(ok)
+        self.assertIn("DOH-BLOCKED", v)
+
+    def test_success_and_blocked_regex(self):
+        self.assertTrue(re.search(self.doh.META["success_regex"], "DOH-BYPASS: resolved x -> 1.2.3.4"))
+        self.assertTrue(re.search(self.doh.META["success_regex"], '  "Answer":[{"data":"1.2.3.4"}]'))
+        self.assertTrue(re.search(self.doh.META["blocked_regex"], "DOH-BLOCKED: no DoH response"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
