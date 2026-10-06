@@ -55,13 +55,13 @@ def _int_env(name, default, lo=1):
 # High-rate flood params — ALL overridable so the operator / SD-WAN team can CRANK
 # the aggression until the anti-DoS either DROPS the flood (BLOCKED = it prevents at
 # that rate) or confirms it never drops (a finding: it only ALERTS). Defaults are
-# ~10k pps for 15s (2x the old 5k/12s). HARNESS_ICMP_SIZE adds payload for a
-# BANDWIDTH flood (e.g. 1400 -> ~112 Mbit/s at 10k pps) to trip a bps-based threshold
-# that a small-packet pps flood won't reach.
+# ~10k pps x 1400B for 15s (~114 Mbit/s) = a BANDWIDTH flood by default, because a
+# bits/sec-based anti-DoS (like this lab's SD-WAN) only ALERTS on a small-packet pps
+# flood but DROPS a fat-packet one. Set HARNESS_ICMP_SIZE=0 for a pure pps test.
 FLOOD_PPS = _int_env("HARNESS_ICMP_PPS", 10000)                        # target packets/sec
 FLOOD_SECONDS = _int_env("HARNESS_ICMP_SECONDS", 15)                   # wall-clock cap (s)
 FLOOD_COUNT = _int_env("HARNESS_ICMP_COUNT", FLOOD_PPS * FLOOD_SECONDS)  # total packets
-FLOOD_SIZE = _int_env("HARNESS_ICMP_SIZE", 0, lo=0)                    # ICMP payload bytes (0=header-only)
+FLOOD_SIZE = _int_env("HARNESS_ICMP_SIZE", 1400, lo=0)                 # ICMP payload bytes. Default 1400 (near-MTU) = a BANDWIDTH flood: this lab's SD-WAN (and many anti-DoS engines) threshold on BITS/sec, not pps, so a header-only flood only ALERTS while a fat-packet one gets DROPPED. Set 0 for a pure packet-rate test.
 FLOOD_INTERVAL_US = max(1, 1_000_000 // FLOOD_PPS)                     # hping3 -i uX derived from pps
 LOW_LOSS = 20              # <= this %: that rate is "getting through"
 RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
