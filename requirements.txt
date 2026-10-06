@@ -10,11 +10,17 @@
 # cryptography is listed explicitly because a stale/shadowed one breaks
 # dns.asyncquery -> cryptography.hazmat.asn1, which is what makes noPac /
 # sAMAccountName NO-RESULT. preflight imports that exact chain to catch it.
+#
+# pycryptodome provides Crypto.Hash.MD4 — ldap3's NTLM bind (used by noPac /
+# sAMAccountName via the vendored helper) needs MD4 for the NT hash, and MODERN
+# OpenSSL (3.x, e.g. current Kali/Debian) DISABLES md4 in hashlib, so without
+# pycryptodome the bind dies with "unsupported hash type MD4" -> NO-RESULT.
 
 impacket
 ldap3
 ldapdomaindump
 dnspython
 cryptography
+pycryptodome
 pyasn1
 six

@@ -28,6 +28,7 @@ import string
 import logging
 
 from modules import _portpatch
+from modules import _util
 
 META = {
     "id": "samaccountname_spoof",
@@ -78,6 +79,10 @@ def run(target, ctx):
         return (f"# sAMAccountName Spoofing vs {target}\n\n[SKIP] no domain password "
                 "configured (set HARNESS_DC_PASS / --dc-pass / credentials.env) — needs "
                 "valid domain creds; skipping to avoid an interactive password prompt.")
+    # ldap3's NTLM bind needs MD4; without pycryptodome (and with modern OpenSSL's
+    # md4 disabled) it crashes deep in ntowf_v2 -> report it cleanly up front.
+    if not _util.ntlm_md4_available():
+        return f"# sAMAccountName Spoofing vs {target}\n\n{_util.MD4_PREREQ_HINT}"
     is_custom = _portpatch.is_custom_port_target(target)
     header = f"# sAMAccountName Spoofing (in-process) vs {target}"
     header += " [custom-port patch active]\n\n" if is_custom else "\n\n"

@@ -181,3 +181,27 @@ def skip(reason):
     """Standard '[SKIP]' line — surfaced by the classifier as the NO-RESULT hint
     (used when an active module has no infra configured / --active is off)."""
     return f"[SKIP] {reason}"
+
+
+def ntlm_md4_available():
+    """True if MD4 (the NT-hash primitive ldap3's NTLM bind needs) can be computed.
+    pycryptodome provides it; modern OpenSSL (3.x — current Kali/Debian) DISABLES
+    md4 in hashlib, so without pycryptodome the bind dies with 'unsupported hash
+    type MD4'. Checked up front so noPac / sAMAccountName report a clear
+    PREREQ-MISSING instead of a cryptic NO-RESULT crash."""
+    try:
+        from Crypto.Hash import MD4  # noqa: F401  (pycryptodome)
+        return True
+    except Exception:
+        pass
+    try:
+        import hashlib
+        hashlib.new("md4")
+        return True
+    except Exception:
+        return False
+
+
+MD4_PREREQ_HINT = ("[PREREQ-MISSING] NTLM needs MD4, which isn't available here — "
+                   "install pycryptodome (`pip install pycryptodome`; modern OpenSSL "
+                   "disables md4 in hashlib). See requirements.txt.")
