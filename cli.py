@@ -118,7 +118,141 @@ def _c(s, color, no_color):
     return s if no_color or not sys.stdout.isatty() else f"{color}{s}{_RESET}"
 
 
-DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"
+DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"; AMBER = "\033[33m"
+
+
+def _fmt_recon(s):
+    """'None/icmp:up, 21/tcp:open, …' -> 'icmp · tcp 21 22 … · udp 161' (reachable only)."""
+    import re as _re
+    tcp, udp, icmp = [], [], False
+    for tok in s.split(","):
+        m = _re.match(r"\s*(\S+?)/(\w+):(\w+)", tok)
+        if not m:
+            continue
+        port, proto, state = m.groups()
+        if proto == "icmp" and state in ("up", "open"):
+            icmp = True
+        elif state == "open" and proto == "tcp":
+            tcp.append(port)
+        elif state == "open" and proto == "udp":
+            udp.append(port)
+    bits = []
+    if icmp:
+        bits.append("icmp")
+    if tcp:
+        bits.append("tcp " + " ".join(tcp))
+    if udp:
+        bits.append("udp " + " ".join(udp))
+    return " · ".join(bits) or s
+
+
+def _setup_panel(buf, args, run_info=None):
+    """Render the engine's setup log (platform / preflight / recon / policy) as a
+    tidy labelled 'command-center' panel instead of flat lines. Defensive: any
+    buffered line not recognised is printed dim afterwards, so nothing is lost."""
+    import re as _re
+    nc = args.no_color
+    W = 72
+    used = set()
+
+    def first(pat):
+        for i, l in enumerate(buf):
+            m = _re.search(pat, l)
+            if m:
+                used.add(i)
+                return m
+        return None
+
+    def sect(label):
+        lab = " " + label + " "
+        print("  " + _c("╶─" + lab, ACC, nc) + _c("─" * max(2, W - len(lab) - 3) + "╴", DIM, nc))
+
+    def kv(k, v, vcol=None):
+        if not v:
+            return
+        print("     " + _c(f"{k:<11}", DIM, nc) + " " + (_c(str(v), vcol, nc) if vcol else str(v)))
+
+    plat = first(r"^Platform:\s*(.+)")
+    pre = first(r"^Preflight:\s*(.+?)\.?$")
+    act = first(r"^ACTIVE-ESTABLISHMENT:\s*(\w+)")
+    det = first(r"^Blue-team detections loaded:\s*(\d+)")
+    ev = first(r"^Evidence dir:\s*(.+)")
+    src = first(r"^Source IP \(egress bind\):\s*(.+)")
+    first(r"^Path:\s")           # consume (low value)
+
+    if plat or pre or ev:
+        sect("ENVIRONMENT")
+        if plat:
+            parts = [p.strip() for p in plat.group(1).split("|")]
+            kv("platform", parts[0] if parts else "")
+            rt = []
+            for p in parts[1:]:
+                p = p.replace("privilege:", "").replace("pkg mgr:", "").replace("Python", "py").strip()
+                if p:
+                    rt.append(p)
+            if pre:
+                rt.append("preflight " + pre.group(1))
+            if rt:
+                kv("runtime", " · ".join(rt))
+        elif pre:
+            kv("preflight", pre.group(1))
+        tail = []
+        if ev:
+            tail.append(ev.group(1))
+        if act:
+            tail.append("active " + act.group(1))
+        if det:
+            tail.append(det.group(1) + " detections")
+        if tail:
+            kv("evidence", " · ".join(tail))
+        if src:
+            kv("source", src.group(1), ACC)
+
+    rec = first(r"^Recon \(reachability of ([^)]+)\):\s*(.+)")
+    warn = first(r"^\[WARN\] recon")
+    sug = first(r"^\s*suggested[^:]*:\s*(.+)")
+    can = first(r"^\s*canary[^:]*:\s*(.+)")
+    nre = first(r"^\s*not reachable[^:]*:\s*(.+)")
+    if rec or warn:
+        sect("RECON" + (f" · {rec.group(1)}" if rec else ""))
+        if rec:
+            kv("reachable", _fmt_recon(rec.group(2)), ACC)
+        if warn:
+            kv("recon", "DISABLED (--no-recon) — port state unverified", AMBER)
+        if sug:
+            items = [x.strip() for x in sug.group(1).split(",") if x.strip()]
+            kv("suggested", " · ".join(items[:6]) + (f"   (+{len(items) - 6} more)" if len(items) > 6 else ""))
+        if can:
+            kv("canary", can.group(1))
+        if nre:
+            n = len([x for x in nre.group(1).split(",") if x.strip()])
+            kv("filtered", f"{n} not reachable (run anyway — a filtered port may BE the control)")
+
+    pol = first(r"^Port policy \[([^\]]+)\][^:]*:\s*(.+)")
+    den = first(r"^\s*policy-denied[^:]*:\s*(.+)")
+    if pol:
+        body = pol.group(2)
+        a = _re.search(r"(\d+) on ALLOWED", body)
+        d = _re.search(r"(\d+) on DENIED", body)
+        e = _re.search(r"(\d+) egress", body)
+        sect("POLICY · " + pol.group(1))
+        cnt = [x for x in ((a.group(1) + " allowed" if a else ""),
+                           (d.group(1) + " denied" if d else ""),
+                           (e.group(1) + " n/a" if e else "")) if x]
+        kv("ports", " · ".join(cnt))
+        if den:
+            kv("expect-block", den.group(1), AMBER)
+
+    if run_info:
+        n_mods, iters, workers = run_info
+        sect("RUN")
+        kv("battery", f"{n_mods} module(s) × {iters} iter · {workers} workers")
+
+    # fallback — show any buffered line we didn't fold into a section (dim), so a
+    # wording change can't silently drop setup info.
+    for i, l in enumerate(buf):
+        if i not in used and l.strip() and not l.strip().startswith("Target:"):
+            print(_c("     " + l.strip(), DIM, nc))
 
 # one-line human gloss per verdict, for the table's DETAIL column
 _VERDICT_GLOSS = {
@@ -589,6 +723,7 @@ def main():
         run_set = mods if mods is not None else selected
         _total = len(run_set) * _iters
         _prog = {"n": 0}
+        _setup = {"buf": [], "done": False}   # collect the setup log -> one tidy panel
 
         def _on_log(m):
             s = str(m)
@@ -605,6 +740,17 @@ def main():
             for c in _cats:                 # "  [Category] Name" now-running line
                 if c and st.startswith(f"[{c}]"):
                     return
+            # Buffer the one-time setup block (platform/preflight/recon/policy) and
+            # render it as a single labelled 'command-center' panel at run start,
+            # instead of a wall of flat lines.
+            if not _setup["done"]:
+                if st.startswith("=== Iteration"):
+                    _setup["done"] = True
+                    _setup_panel(_setup["buf"], args, (len(run_set), _iters, args.workers))
+                    print()
+                    return   # the plain "=== Iteration: 1 ===" rule is folded into the panel
+                _setup["buf"].append(st)
+                return
             print(_colorize(s, args.no_color))
 
         def _on_output(aid, name, it, raw):
