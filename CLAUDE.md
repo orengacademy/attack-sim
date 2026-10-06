@@ -147,24 +147,23 @@ Scored from the attacker side; **the raw `.log` files are authoritative** — ev
 classifier bug so far was caught by reading them, not by trusting the verdict.
 
 - **SUCCESS** — passed and not detected → the finding (red).
-- **DETECTED** — passed AND the SOC/appliance **genuinely detected** it (orange):
-  a fired IPS **signature**, an explicit **prevention** verdict, or an active
-  **DENY** in the appliance log. Populated from `detections.json` /
-  `HARNESS_DETECTIONS` / a module's `detected_regex`. Prevention failed, detection
-  worked. ⚠ A plain session-log **ALLOW** (e.g. `ALLOW (policy=Outbound_NPSA)`) is
-  **NOT** a detection — that is the appliance's own policy *reference* / telemetry
-  (it SAW and PASSED the flow). `_detection_is_real()` gates this: an ALLOW/MIXED
-  reference keeps the attack as **SUCCESS** (the finding) with the reference
-  attached as a note, so an "allowed-and-logged" flow can't masquerade as
-  "detection worked" and hide a real finding (operator instruction, ORG2026-70:
-  *the policy reference is just a reference — the verdict comes from the test*).
-  ⚠ **File-sourced (appliance/SOC) detections apply only in BLACKBOX.** They
-  represent the SD-WAN boundary, which is NOT in path for a **whitebox** run (the
-  direct allow-all baseline) — so in whitebox a passed attack is a clean
-  **SUCCESS**, and only a module's OWN `detected_regex` (self-reported, e.g. the
-  target host logged/blocked it) can still score DETECTED. (Same principle as the
-  whitebox port-policy suppression: a whitebox result comes purely from the test,
-  with no boundary artifact — detection OR policy — layered on.)
+- **DETECTED** — passed AND a **LIVE, test-observed** blue-team signal fired
+  (orange). ⚠ **The verdict comes from the TEST, never from reference** (operator
+  instruction, ORG2026-70: *whitebox/blackbox, port policy, and the detections
+  file are all just reference — no attack verdict may rely on them*). So DETECTED
+  is scored **only** from a module's OWN `detected_regex` — something the attack
+  itself observed on the wire (e.g. the target returned a WAF/IPS block page). A
+  **file-sourced** detection (`detections.json` / `HARNESS_DETECTIONS`, imported
+  from an appliance/SOC log by `sangfor_ingest.py`) is an **imported correlation,
+  not this test** — signature, DENY, and ALLOW **alike** are attached as a
+  **REFERENCE note** on the **SUCCESS** verdict and **never flip it**, in any
+  posture. This is why the same target scores identically in whitebox and blackbox
+  (posture only decides whether the reference note is shown — no boundary in path
+  in whitebox, so it's nulled there; the clean baseline stays clean). `cli`, `app`
+  and `gui` share `core.Runner`, so for a given posture their verdicts are
+  identical. (`_detection_is_real()`/`_detection_phrasing()` still classify a note's
+  nature for the reference wording and for `sangfor_ingest.py`; they no longer gate
+  the verdict.)
 - **BLOCKED** — filtered/dropped in transit (timeout / filtered port) → control
   likely worked (green).
 - **NO-SERVICE** — port closed/refused (RST): service absent, **not** a control
@@ -231,7 +230,7 @@ Env vars override the files:
 | `credentials.env` | `HARNESS_DOMAIN`/`HARNESS_DC_USER`/`HARNESS_DC_PASS` | Lab AD creds. Password redacted (`***`) from all evidence. Never defaults to a real secret. |
 | `config.json` | `HARNESS_CFG_<KEY>` | Destinations the USS modules aim at (your VPS/domain/DoH/canary/pivot). Unset → the module `[SKIP]`s. **This is how "no live infra hardcoded" is enforced — keep it that way.** |
 | `allowlist.txt` | `HARNESS_ALLOWLIST` | Opt-in hard target allowlist. Unconfigured → any validated target allowed. |
-| `detections.json` | `HARNESS_DETECTIONS` | Blue-team confirmations that drive the DETECTED verdict. |
+| `detections.json` | `HARNESS_DETECTIONS` | Imported appliance/SOC log correlations. **Reference only** — attached as a note, they NEVER flip the verdict (DETECTED comes solely from a module's own `detected_regex`). |
 | `port_policy.json` | `HARNESS_PORT_POLICY` | Boundary allow-list (SD-WAN/firewall). Default built-in = **Polisi Standard Security v1.3**. **The policy is a REFERENCE only — it never pre-decides or skips a test; every attack is run and the verdict is the real test result.** In **blackbox** a BLOCKED/NO-SERVICE on a policy-**denied** port gets a *policy reference* note (a block here is consistent with segmentation vs IPS/WAF); in **whitebox** (allow-all baseline, no boundary in path) that note is **suppressed** — a block there is a real `[whitebox-anomaly]`, not "expected". `port_policy.json` is committed (the Polisi v1.3 default). |
 | `.target_memory.json` | (CLI flags / GUI fields) | **0600.** Per-target memory: `source`, `cloud`+`smb_port`/`rpc_port`/`ssh_port`, per-target creds `domain`/`dc_user`/`dc_pass`, **separate `ssh_user`/`ssh_pass`**, and `site_id`. Lets a Linux target and a Windows DC carry different logins; recalled when flags/fields are omitted (the GUI also resumes the last-used target + its saved values on launch). |
 | `fleet.json` | — | N-target fleet for `fleet.py` (`targets`/`sources`/`runs`). |

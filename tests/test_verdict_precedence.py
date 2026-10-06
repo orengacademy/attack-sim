@@ -128,23 +128,34 @@ class TestLadderPrecedence(unittest.TestCase):
 
 
 class TestDetectedSourcing(unittest.TestCase):
-    """DETECTED = the attack PASSED and a GENUINE detection exists (signature /
-    prevention / an active DENY). A plain session-log ALLOW is telemetry -> SUCCESS."""
+    """ORG2026-70: the VERDICT is the TEST result. A FILE-sourced detection
+    (detections.json / appliance log — signature, DENY or ALLOW alike) is
+    REFERENCE and NEVER flips the verdict: the attack that passed stays SUCCESS
+    with the correlation attached. Only a module's OWN live-observed signal
+    (META['detected_regex'], seen in its own output) can score DETECTED."""
 
-    def test_signature_is_detected(self):
+    def test_file_signature_is_reference_not_detected(self):
         dets = {"t": {"source": "Sangfor NGAF", "note": "IPS signature fired prevention=yes"}}
-        b, _ = _verdict("WIN", detections=dets)
-        self.assertEqual(b, "DETECTED")
+        b, v = _verdict("WIN", detections=dets)
+        self.assertEqual(b, "SUCCESS")            # file detection does NOT flip the verdict
+        self.assertIn("REFERENCE", v.upper())
 
-    def test_session_allow_stays_success(self):
+    def test_file_session_allow_is_reference(self):
         dets = {"t": {"source": "Sangfor", "note": "session-logged tcp/80: ALLOW (policy=Outbound_NPSA)"}}
         b, v = _verdict("WIN", detections=dets)
         self.assertEqual(b, "SUCCESS")
-        self.assertIn("REFERENCE", v.upper())     # telemetry note attached, not a detection
+        self.assertIn("REFERENCE", v.upper())
 
-    def test_session_deny_is_detected(self):
+    def test_file_session_deny_is_reference_not_detected(self):
         dets = {"t": {"source": "Sangfor", "note": "session-logged tcp/80: DENY (policy=X)"}}
         b, _ = _verdict("WIN", detections=dets)
+        self.assertEqual(b, "SUCCESS")            # even a DENY in the imported log is reference
+
+    def test_module_self_report_scores_detected(self):
+        # a module that self-observes a detection in its OWN output (a live test
+        # result, not an imported file) IS a detection -> DETECTED.
+        b, _ = _verdict("WIN\n[DETECTED] target returned a WAF block page",
+                        detected=r"\[DETECTED\]")
         self.assertEqual(b, "DETECTED")
 
     # DETECTED only applies to attacks that PASSED: a BLOCKED attack is just BLOCKED.
@@ -155,16 +166,15 @@ class TestDetectedSourcing(unittest.TestCase):
 
 
 class TestDetectedRegexLatentGap(unittest.TestCase):
-    @unittest.expectedFailure
-    def test_module_detected_regex_should_score_detected(self):
-        """LATENT GAP (documented, not yet fixed): a module self-reporting a blue-team
-        detection via META['detected_regex'] is NOT currently scored DETECTED, because
-        _detection_is_real() only accepts notes containing 'signature'/'prevention='/
-        'deny' and the self-report note is "module self-reported a detection signal".
-        No module uses detected_regex today, so this is dormant. This expectedFailure
-        pins the INTENDED behavior: if _detection_is_real is taught to accept the
-        module source, this test flips to an (unexpected) success and should be
-        promoted to a normal assertion."""
+    def test_module_detected_regex_scores_detected(self):
+        """A module self-reporting a blue-team detection via META['detected_regex']
+        (a LIVE observation in its own output — e.g. the target returned a block
+        page) IS a real test result and scores DETECTED. This is now the ONLY way to
+        score DETECTED: the verdict comes from the test, so a module's own signal
+        counts, while a pre-loaded appliance-log file (detections.json) is reference
+        and never flips the verdict (see TestDetectedSourcing). (Was a documented
+        latent gap — detections previously gated on note wording; now gated on the
+        source being the module, so this self-report is honoured.)"""
         b, _ = _verdict("WIN plus a BLOCKPAGE banner", detected=r"BLOCKPAGE")
         self.assertEqual(b, "DETECTED")
 

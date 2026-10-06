@@ -3031,15 +3031,16 @@ class Runner:
             b, a, verdict = classify(meta, target_raw, app_raw)
             if a == "SUCCESS":
                 det = self._detection(meta, app_raw)
-                if det and _detection_is_real(det[1]):
+                # ORG2026-70: verdict from the TEST. Only a module's OWN self-observed
+                # signal (det[0] == "module") scores DETECTED; a FILE-sourced detection
+                # (detections.json / appliance log) is REFERENCE and never flips it.
+                if det and det[0] == "module":
                     a, detected_source = "DETECTED", det[0]
-                    verdict = (f"attack passed the appliance but the appliance/SOC "
-                               f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
+                    verdict = (f"attack passed the appliance AND the module self-observed a "
+                               f"detection signal ({det[1]}) — detection works, prevention did not")
                 elif det:
-                    # session-log ALLOW through the appliance = policy reference /
-                    # telemetry, not a detection — keep SUCCESS (the finding), annotate.
-                    verdict += (f"  [note: appliance only session-logged + ALLOWED this flow "
-                                f"({det[1]}) — policy REFERENCE / telemetry, not a detection]")
+                    verdict += (f"  [appliance/SOC REFERENCE (imported log, NOT this test): {det[1]} "
+                                f"— reference / telemetry only, never a verdict; the attack got through]")
             # Parity with the single-target path: a BLOCKED through the appliance
             # gets the contamination-guard SUSPECT check, and a BLOCKED/NO-SERVICE
             # on a policy-DENIED port is attributed to SEGMENTATION, not the IPS/WAF.
@@ -3093,24 +3094,30 @@ class Runner:
                 # attack is a clean SUCCESS (that's the whole point of the baseline);
                 # only a module's OWN self-reported detection (detected_regex — e.g.
                 # the target host itself logged/blocked it) still counts in whitebox.
+                # ORG2026-70 PRINCIPLE: the VERDICT is the TEST result — never
+                # reference. Posture (whitebox/blackbox), port policy, AND a
+                # pre-loaded appliance-detections file (detections.json) are ALL
+                # reference: they annotate, they never flip the verdict. So only a
+                # module's OWN self-observed signal (det[0] == "module", seen in the
+                # live attack traffic — META['detected_regex']) counts as a detection
+                # and can score DETECTED; a FILE-sourced detection — signature, DENY
+                # or ALLOW alike — is an imported correlation, NOT this test, so it is
+                # attached as a REFERENCE note and the verdict stays SUCCESS (the
+                # finding). The whitebox null just keeps the baseline clean: no
+                # boundary is in path there, so there's no appliance log to correlate.
                 if det and det[0] != "module" and getattr(self, "_mode", "blackbox") == "whitebox":
                     det = None
-                if det and _detection_is_real(det[1]):
+                if det and det[0] == "module":
                     b, detected_source = "DETECTED", det[0]
-                    verdict = (f"attack passed the boundary but the appliance/SOC "
-                               f"flagged it ({det[1]}) — {_detection_phrasing(det[1])}")
+                    verdict = (f"attack passed AND the module self-observed a detection "
+                               f"signal ({det[1]}) — detection works, prevention did not")
                 else:
-                    # The attack GOT THROUGH. A session-log ALLOW is the appliance's
-                    # own policy REFERENCE (telemetry), NOT a detection — so this is
-                    # a SUCCESS (the finding), with the reference attached so the
-                    # operator still sees what the appliance logged without it being
-                    # miscredited as "detection worked".
                     b, verdict = "SUCCESS", "attack succeeded against target (passed-undetected)"
                     if det:
-                        verdict += (f" — note: the appliance only session-logged + ALLOWED "
-                                    f"this flow ({det[1]}); that is a POLICY REFERENCE / "
-                                    f"telemetry, not a detection and not a block. The attack "
-                                    f"still got through — verify your SOC actually ALERTS on it.")
+                        verdict += (f" — [appliance/SOC REFERENCE (imported log correlation, NOT "
+                                    f"this test): {det[1]} — reference / telemetry only, never a "
+                                    f"verdict. The attack GOT THROUGH; confirm your SOC actually "
+                                    f"ALERTS on it before counting it as a detection.]")
             elif authfail:
                 b, verdict = "AUTH-FAILED", "credential error — fix credentials (HARNESS_DC_PASS), not a control result"
             elif skipped:
