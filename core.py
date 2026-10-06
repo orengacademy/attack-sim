@@ -47,7 +47,7 @@ def _read_version_file():
         return None
 
 
-VERSION = _read_version_file() or "1.9.0"
+VERSION = _read_version_file() or "1.9.1"
 
 # ---------------------------------------------------------------------
 # Version gate — refuse to run an OUTDATED copy so every operator on the
@@ -2125,6 +2125,44 @@ def _cloud_port_map(target):
         return {}
 
 
+def is_cloud_target(target):
+    """True iff this target is a CANONICAL cloud DC (always NAT'd SMB 445->4445 /
+    RPC 135->1135). Cloud-vs-on-prem is a property of the TARGET, not a toggle:
+    only these IPs use the alternate ports — every other target uses the real
+    445/135. The CLI/GUI/web use this to FORCE the correct transport per target so
+    the AD modules (dcsync/psexec/wmiexec) can't be pointed at the dead raw ports
+    and wrongly score BLOCKED. Source of truth: modules/_portpatch.CLOUD_TARGETS."""
+    try:
+        from modules import _portpatch
+        return _portpatch.is_cloud_target(target)
+    except Exception:
+        return False
+
+
+def apply_transport(target, cloud, ssh_port=None):
+    """Register (or clear) a target's NAT port map for a run, TARGET-authoritatively.
+    A canonical cloud target is ALWAYS NAT'd (its mapping is never cleared, even if
+    `cloud` is False); a non-cloud target is NAT'd only when `cloud` is explicitly
+    True. Returns the effective (cloud_bool, port_map_or_None). Shared by every
+    front-end so the CLI, GUI and web agree on which ports a target really uses."""
+    try:
+        from modules import _portpatch
+    except Exception:
+        return bool(cloud), None
+    if _portpatch.is_cloud_target(target):
+        m = _portpatch.canonical_cloud_map(target, ssh_port)
+        _portpatch.CUSTOM_PORT_TARGETS[target] = m
+        return True, m
+    if cloud:
+        smb = 4445
+        rpc = 1135
+        m = {445: smb, 135: rpc, 22: int(ssh_port or 22)}
+        _portpatch.CUSTOM_PORT_TARGETS[target] = m
+        return True, m
+    _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
+    return False, None
+
+
 def display_ports(meta, target=None):
     """Canonical human-readable ports a module hits, used by the CLI, GUI, web app
     AND evidence so all four agree (format + the cloud NAT mapping). Shows
@@ -2995,12 +3033,15 @@ class Runner:
             # on a policy-DENIED port is attributed to SEGMENTATION, not the IPS/WAF.
             if a in ("BLOCKED", "NO-SERVICE", "NO-RESULT"):
                 verdict = self._flag_if_blacklisted(verdict, log)
+            # Reference only — the appliance verdict (a) is the real test result; the
+            # policy note just disambiguates a through-boundary block as segmentation.
             pol = getattr(self, "_pol_by_id", {}).get(meta["id"])
             if pol and pol["outcome"] == "blocked" and a in ("BLOCKED", "NO-SERVICE"):
                 denied = ", ".join(f"{p}/{pt}" for p, pt, st in pol["ports"] if st != "allowed")
                 pname = getattr(self, "_port_policy", {}).get("name", "port policy")
-                verdict += (f"  [policy: {denied} denied by {pname} — expected SEGMENTATION "
-                            "block, not an IPS/WAF result]")
+                verdict += (f"  [policy reference: {denied} are DENIED by {pname} — a block here "
+                            "is consistent with segmentation rather than IPS/WAF (reference only; "
+                            "the verdict is from the test)]")
             log(f"     baseline: [{b}]  appliance: [{a}]  -> {verdict}")
             output_for_record = target_raw + "\n\n--- through appliance ---\n\n" + app_raw
         else:
@@ -3135,20 +3176,25 @@ class Runner:
             # now unreachable, flag the verdict as suspect (don't report a false win).
             if b in ("BLOCKED", "NO-SERVICE", "NO-RESULT"):
                 verdict = self._flag_if_blacklisted(verdict, log)
-            # Port-policy attribution: a BLOCKED/NO-SERVICE on a port the boundary
-            # policy DENIES is EXPECTED segmentation, not an IPS/WAF result — label
-            # it so the two aren't conflated (this is the control working by design).
+            # Port-policy attribution is a REFERENCE only — the verdict above comes
+            # from the actual test (what the probe/attack did on the wire), never
+            # from the policy. The note just disambiguates a BLACKBOX block as
+            # segmentation vs IPS/WAF; it is NOT attached in whitebox, where there is
+            # no boundary in path to attribute to (the allow-all baseline is tested
+            # directly, so a block there is a real anomaly — see below).
+            _wb = getattr(self, "_mode", "blackbox") == "whitebox"
             pol = getattr(self, "_pol_by_id", {}).get(meta["id"])
-            if pol and pol["outcome"] == "blocked" and b in ("BLOCKED", "NO-SERVICE"):
+            if (not _wb) and pol and pol["outcome"] == "blocked" and b in ("BLOCKED", "NO-SERVICE"):
                 denied = ", ".join(f"{p}/{pt}" for p, pt, st in pol["ports"] if st != "allowed")
                 pname = getattr(self, "_port_policy", {}).get("name", "port policy")
-                verdict += (f"  [policy: {denied} denied by {pname} — expected SEGMENTATION "
-                            "block, not an IPS/WAF result]")
+                verdict += (f"  [policy reference: {denied} are DENIED by {pname} — a block here "
+                            "is consistent with segmentation rather than IPS/WAF (reference only; "
+                            "the verdict is from the test)]")
             # Whitebox posture = allow-all baseline: it SHOULD pass. A BLOCKED/
             # NO-SERVICE here is anomalous and usually means the service is down or
             # an upstream (edge/host) filter dropped it — NOT the SD-WAN control
             # (there's nothing between source and target to credit in white-box).
-            if getattr(self, "_mode", "blackbox") == "whitebox" and b in ("BLOCKED", "NO-SERVICE"):
+            if _wb and b in ("BLOCKED", "NO-SERVICE"):
                 verdict += ("  [whitebox-anomaly: the allow-all baseline should PASS — likely "
                             "service-down / upstream-edge / host filter, not a control result]")
             log(f"     target: [{b}]  -> {verdict}")

@@ -636,8 +636,9 @@ class TestEvidenceMetaAndIndex(unittest.TestCase):
 
 class TestPortPolicy(unittest.TestCase):
     """The boundary port policy (Polisi v1.3 default) must classify service ports
-    and module outcomes correctly, and a BLOCKED on a policy-DENIED port must be
-    labelled as expected segmentation, not an IPS result."""
+    and module outcomes correctly. In BLACKBOX a BLOCKED on a policy-DENIED port
+    gets a segmentation REFERENCE note (verdict still from the test); in WHITEBOX
+    that note is suppressed (no boundary in path)."""
     def setUp(self):
         self.pol = core.load_port_policy()
 
@@ -686,9 +687,85 @@ class TestPortPolicy(unittest.TestCase):
         core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=False)
         r = ev.records[0]
         self.assertEqual(r["baseline_result"], "BLOCKED")
-        self.assertIn("denied by", r["verdict"])
-        self.assertIn("SEGMENTATION", r["verdict"])
+        # blackbox: the policy note is attached as a REFERENCE (the verdict itself
+        # comes from the test, not the policy).
+        self.assertIn("policy reference", r["verdict"])
+        self.assertIn("DENIED by", r["verdict"])
+        self.assertIn("segmentation", r["verdict"].lower())
+        self.assertIn("reference only", r["verdict"])
         self.assertEqual(ev.meta["port_policy"]["blocked_by_policy"], 1)
+
+    def test_whitebox_blocked_has_no_policy_reference(self):
+        """Whitebox = allow-all baseline (no boundary in path), so a BLOCKED there
+        is a real anomaly — the segmentation/policy reference must NOT be attached
+        (it would wrongly imply the block was expected). The verdict comes from the
+        test; only the whitebox-anomaly note is added."""
+        m = types.SimpleNamespace()
+        m.META = {"id": "smb", "name": "smb", "category": "Net", "requires": [],
+                  "ports": [("tcp", 445)], "mitre": ["T1021"], "tactic": "LM",
+                  "success_regex": r"WIN", "blocked_regex": r"timed out|No route"}
+        m.run = lambda t, c: "[TIMEOUT] no response"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=False,
+                                        mode="whitebox")
+        r = ev.records[0]
+        self.assertEqual(r["baseline_result"], "BLOCKED")
+        self.assertNotIn("policy reference", r["verdict"])
+        self.assertNotIn("DENIED by", r["verdict"])
+        self.assertIn("whitebox-anomaly", r["verdict"])
+
+
+class TestCloudTransport(unittest.TestCase):
+    """Transport (cloud NAT 4445/1135 vs on-prem direct 445/135) is a property of
+    the TARGET, not a toggle: the canonical cloud DCs are ALWAYS NAT'd and their
+    mapping is never cleared; every other target is direct unless explicitly forced.
+    This is what stops dcsync/psexec/wmiexec being pointed at the dead raw 445/135
+    (and wrongly scoring BLOCKED) when the cloud flag/memory wasn't set."""
+
+    def setUp(self):
+        from modules import _portpatch
+        self._pp = _portpatch
+        self._saved = dict(_portpatch.CUSTOM_PORT_TARGETS)
+
+    def tearDown(self):
+        self._pp.CUSTOM_PORT_TARGETS.clear()
+        self._pp.CUSTOM_PORT_TARGETS.update(self._saved)
+
+    def _eff(self, t):
+        return (self._pp._rewrite(t, (t, 445))[1], self._pp._rewrite(t, (t, 135))[1])
+
+    def test_is_cloud_target(self):
+        self.assertTrue(core.is_cloud_target("159.223.35.108"))
+        self.assertTrue(core.is_cloud_target("167.71.222.169"))
+        self.assertFalse(core.is_cloud_target("10.38.98.12"))
+        self.assertFalse(core.is_cloud_target("127.0.0.1"))
+
+    def test_canonical_cloud_always_natd_even_when_cloud_false(self):
+        # the bug: a cloud DC run WITHOUT the cloud flag must NOT drop to 445/135
+        cloud, m = core.apply_transport("159.223.35.108", False, 22)
+        self.assertTrue(cloud)
+        self.assertEqual(m.get(445), 4445)
+        self.assertEqual(m.get(135), 1135)
+        self.assertEqual(self._eff("159.223.35.108"), (4445, 1135))
+
+    def test_onprem_is_direct(self):
+        cloud, m = core.apply_transport("10.38.98.12", False, 22)
+        self.assertFalse(cloud)
+        self.assertIsNone(m)
+        self.assertEqual(self._eff("10.38.98.12"), (445, 135))
+
+    def test_onprem_never_touched_by_a_stale_clear_of_cloud(self):
+        # registering an on-prem target must not clear a canonical cloud target
+        core.apply_transport("159.223.35.108", False)
+        core.apply_transport("10.38.98.12", False)
+        self.assertEqual(self._eff("159.223.35.108"), (4445, 1135))
+        self.assertEqual(self._eff("10.38.98.12"), (445, 135))
+
+    def test_noncanonical_can_be_forced_cloud(self):
+        # extensibility: a brand-new NAT'd target can still be forced cloud
+        cloud, m = core.apply_transport("203.0.113.9", True, 2222)
+        self.assertTrue(cloud)
+        self.assertEqual(self._eff("203.0.113.9"), (4445, 1135))
 
 
 class TestWaitUnblockFlag(unittest.TestCase):
