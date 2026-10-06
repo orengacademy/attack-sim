@@ -91,7 +91,7 @@ class TestDetectBanAndRecover(unittest.TestCase):
 
     def test_await_window_sized_to_outlast_ban_expiry(self):
         # with ban_expiry=300 and no explicit wait-unblock, the wait window must be
-        # >= 330s (ban_expiry + 30) so a 5-min auto-expiring ban is actually waited out.
+        # >= ban_expiry (sized to outlast it: max(90, cooldown, ban_expiry+60)) so a 5-min auto-expiring ban is waited out.
         r = _mk_runner()
         r._blacklisted = True
         r.ban_expiry = 300.0
@@ -109,9 +109,29 @@ class TestDetectBanAndRecover(unittest.TestCase):
             self.assertFalse(r._await_unblacklist(lambda m: None, "x"))
         finally:
             core.time.sleep = orig_sleep
-        # it should have slept ~ the whole 330s window (in 5s steps), proving the
-        # window outlasts a 300s ban rather than the old 30s.
-        self.assertGreaterEqual(slept["total"], 300.0)
+        # it should have slept ~ the whole window (ban_expiry+60 = 360s, in 5s steps),
+        # proving the smart halt outlasts a 300s ban rather than the old 30s.
+        self.assertGreaterEqual(slept["total"], 330.0)
+
+    def test_detected_ban_floor_is_not_the_old_30s(self):
+        # Even with ban_expiry=0 (and no explicit wait), a DETECTED ban must get a
+        # real pause (>= 90s floor), never the near-useless 30s that let a lockout
+        # outlast the halt and dump the trailing modules as INCONCLUSIVE.
+        r = _mk_runner()
+        r._blacklisted = True
+        r.ban_expiry = 0.0
+        r.wait_unblock = 0.0
+        r.cooldown = 0.0
+        r._canary_reachable = lambda: False            # never recovers -> full window
+        slept = {"total": 0.0}
+        orig_sleep = core.time.sleep
+        core.time.sleep = lambda s: slept.__setitem__("total", slept["total"] + s)
+        try:
+            self.assertFalse(r._await_unblacklist(lambda m: None, "x"))
+        finally:
+            core.time.sleep = orig_sleep
+        self.assertGreaterEqual(slept["total"], 90.0)
+        self.assertGreater(slept["total"], 30.0)
 
 
 class TestFlagGeneralizedToNoService(unittest.TestCase):

@@ -47,7 +47,7 @@ def _read_version_file():
         return None
 
 
-VERSION = _read_version_file() or "1.9.1"
+VERSION = _read_version_file() or "1.9.2"
 
 # ---------------------------------------------------------------------
 # Version gate — refuse to run an OUTDATED copy so every operator on the
@@ -2853,24 +2853,36 @@ class Runner:
             pass
 
     def _await_unblacklist(self, log, where):
-        """Wait for a blacklisted source to be let back in, re-probing the canary.
-        On recovery clear the latch and return True; otherwise return False.
-        Shared by the between-iterations guard and the mid-run (per-module)
-        quarantine recovery. The wait window is --wait-unblock/HARNESS_WAIT_UNBLOCK
-        when set, else max(30s, cooldown)."""
+        """SMART HALT: when an attack trips the appliance and the tester source is
+        blacklisted/quarantined (canary down), PAUSE the run — sending no attack
+        traffic (only benign canary probes, so the lockout timer counts down instead
+        of being reset) — and poll until the source is let back in, then resume. This
+        is what lets a full blackbox/whitebox battery ride out a mid-run ban and still
+        land REAL verdicts on the trailing modules (icmp_flood, etc.) instead of
+        INCONCLUSIVE, without isolating modules or whitelisting.
+
+        It returns the INSTANT the canary recovers (so a 300s auto-expiring ban is
+        waited out in ~300s, not a fixed block); the window is only the CAP. The cap
+        is --wait-unblock/HARNESS_WAIT_UNBLOCK when set, else sized to OUTLAST the
+        appliance lockout with margin: max(90s, cooldown, ban_expiry + 60s) — e.g.
+        the Sangfor 300s "Lockout Duration" default -> a 360s cap. A detected ban
+        never gets the near-useless 30s of old. If the cap is reached still banned,
+        return False (the caller marks the rest INCONCLUSIVE, then auto-retry gives
+        them another full-window shot once the ban finally clears)."""
         if not (self._blacklisted and self._canary):
             return True
         wait = self.wait_unblock if (getattr(self, "wait_unblock", 0) or 0) > 0 \
-            else max(30.0, self.cooldown or 0.0, (getattr(self, "ban_expiry", 0) or 0) + 30.0)
-        log(f"  [blacklist] source appears quarantined — waiting up to {wait:.0f}s for the "
-            f"canary {self._canary[1] or 'icmp'}/{self._canary[0]} to recover before {where} "
-            "(whitelist the tester source on the appliance to avoid this).")
+            else max(90.0, self.cooldown or 0.0, (getattr(self, "ban_expiry", 0) or 0) + 60.0)
+        log(f"  [blacklist] source appears quarantined — SMART HALT: pausing up to {wait:.0f}s "
+            f"(no attack traffic) for the canary {self._canary[1] or 'icmp'}/{self._canary[0]} "
+            "to recover, then resuming (whitelist the tester source to avoid this).")
         waited = 0.0
         while waited < wait and not self._stop:
             if self._canary_reachable():
                 with self._bl_lock:
                     self._blacklisted = False
-                log("  [blacklist] canary recovered — latch cleared, continuing clean.")
+                log(f"  [blacklist] canary recovered after {waited:.0f}s — ban lifted, "
+                    "resuming the battery clean.")
                 return True
             time.sleep(min(5.0, wait - waited))
             waited += 5.0
