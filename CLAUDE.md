@@ -233,9 +233,15 @@ Env vars override the files:
 Also: `HARNESS_PORT_<ID>` (custom port), `HARNESS_SOURCE_IP` (egress bind),
 `HARNESS_SITE_ID` (engagement/site tag), `HARNESS_DEBUG` (verbose tool trace),
 `HARNESS_COOLDOWN` (pause before each brute/DoS module), `HARNESS_WAIT_UNBLOCK`
-(`--wait-unblock`: how long to wait for an IPS quarantine/source-blacklist to
-clear before marking the rest INCONCLUSIVE; default `max(30s, cooldown,
-ban_expiry+30)`), `HARNESS_BAN_EXPIRY` (`--ban-expiry`: the appliance's known
+(`--wait-unblock`: the **smart-halt** cap — when an attack trips the appliance and
+the tester source is quarantined (canary down), the engine PAUSES the run (no
+attack traffic, only benign canary polls so the lockout timer counts down) and
+resumes the INSTANT the ban lifts, so a full blackbox/whitebox battery rides out a
+mid-run ban and the trailing modules (icmp_flood, …) still earn REAL verdicts
+instead of INCONCLUSIVE. The cap only bounds the wait; default
+`max(90s, cooldown, ban_expiry+60)` — sized to OUTLAST the lockout with margin; a
+detected ban never gets the old near-useless 30s), `HARNESS_BAN_EXPIRY`
+(`--ban-expiry`: the appliance's known
 source-blacklist auto-expiry — Sangfor "Lockout Duration", default 300s — which
 sizes the wait window so a banned source is waited out, not dead-ended; 0 = old
 30s window), `HARNESS_AUTO_RETRY` (`--auto-retry N`: after an iteration, re-run
