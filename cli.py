@@ -472,6 +472,10 @@ def main():
                          "(it is always written to the evidence dir regardless)")
     args = ap.parse_args()
 
+    # Refuse to run an OUTDATED copy (confirmed outdated -> hard stop; offline ->
+    # warn+run unless HARNESS_REQUIRE_LATEST; HARNESS_SKIP_VERSION_CHECK=1 bypasses).
+    core.enforce_latest_version()
+
     if args.accept_roe:
         p = core.accept_roe()
         print(f"[roe] durable rules-of-engagement opt-in recorded ({p}). Runs no longer need "

@@ -35,9 +35,99 @@ from datetime import datetime
 # Harness release version — bump on meaningful changes. Surfaced in the CLI
 # (`--version` + run header), the GUI title, every report, and each run's
 # summary.json meta, so any evidence folder is traceable to the build that made
-# it (alongside the git short-SHA in `engine_version`). Single source of truth —
-# cli.py / gui.py import this.
-VERSION = "1.8.0"
+# it (alongside the git short-SHA in `engine_version`). Single source of truth:
+# the committed `VERSION` file next to this module (the version gate below fetches
+# that same file from `main` to decide whether a copy is outdated). The literal is
+# only a fallback if the file is somehow missing.
+def _read_version_file():
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")) as f:
+            return (f.read().strip() or None)
+    except Exception:
+        return None
+
+
+VERSION = _read_version_file() or "1.9.0"
+
+# ---------------------------------------------------------------------
+# Version gate — refuse to run an OUTDATED copy so every operator on the
+# engagement produces results from the SAME build. The canonical "latest" is the
+# VERSION file on `main` (public repo → fetched anonymously over stdlib urllib).
+# Policy:
+#   • local < latest (confirmed outdated)  -> HARD STOP (sys.exit(3) + how to update)
+#   • can't reach the check (offline/error) -> WARN and continue, so air-gapped
+#     labs still run — UNLESS HARNESS_REQUIRE_LATEST is set (then it also stops).
+#   • HARNESS_SKIP_VERSION_CHECK=1          -> skip entirely (deliberate override).
+# NOTE: a client-side gate stops the honest/casual case; it cannot stop someone
+# who edits their own copy. For hard assurance, gate a server-side dependency too.
+# This runs ONLY from each front-end's main() (never at import), so the offline
+# test suite is unaffected.
+# ---------------------------------------------------------------------
+VERSION_CHECK_URL = ("https://raw.githubusercontent.com/"
+                     "orengacademy/attack-sim/main/VERSION")
+
+
+def _parse_semver(s):
+    m = re.match(r"\s*v?(\d+)\.(\d+)\.(\d+)", str(s or ""))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def fetch_latest_version(timeout=3.0, url=None):
+    """The canonical latest version string from `main`, or None if it can't be
+    determined (offline / error / unparseable). Never raises."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url or VERSION_CHECK_URL,
+                                     headers={"User-Agent": "cvh-version-check"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return (r.read(64).decode("utf-8", "replace").strip() or None)
+    except Exception:
+        return None
+
+
+def version_is_outdated(local=None, latest=None):
+    """True ONLY when both versions parse and local < latest. Anything unknown
+    (unparseable / missing) is treated as 'not outdated' so the caller fail-opens."""
+    lv, rv = _parse_semver(local if local is not None else VERSION), _parse_semver(latest)
+    return bool(lv and rv and lv < rv)
+
+
+def _truthy_env(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on", "strict")
+
+
+def enforce_latest_version(exit_on_outdated=True, log=None):
+    """Gate the run on being the latest version. Returns True when OK to run,
+    False when outdated (and exit_on_outdated is False), or None when the check
+    couldn't run (and we fail-open). With exit_on_outdated=True (the default for
+    the CLI/web/fleet) an outdated copy calls sys.exit(3) instead of returning."""
+    import sys
+    emit = log or (lambda m: sys.stderr.write(m + "\n"))
+    if _truthy_env("HARNESS_SKIP_VERSION_CHECK"):
+        return True
+    strict = _truthy_env("HARNESS_REQUIRE_LATEST")
+    latest = fetch_latest_version()
+    if latest is None:
+        if strict:
+            emit(f"[version] cannot verify the latest version and HARNESS_REQUIRE_LATEST "
+                 f"is set — refusing to run v{VERSION}.")
+            if exit_on_outdated:
+                sys.exit(3)
+            return False
+        emit(f"[version] could not verify the latest version — running v{VERSION}. "
+             f"(set HARNESS_REQUIRE_LATEST=1 to require verification)")
+        return None
+    if version_is_outdated(VERSION, latest):
+        emit("")
+        emit(f"[version] BLOCKED — this copy is v{VERSION}; the required latest is v{latest}.")
+        emit( "          Update before running:")
+        emit( "              git pull --ff-only          # if you cloned the repo")
+        emit( "              # otherwise re-download: https://github.com/orengacademy/attack-sim")
+        emit( "          (last-resort override, not recommended: HARNESS_SKIP_VERSION_CHECK=1)")
+        if exit_on_outdated:
+            sys.exit(3)
+        return False
+    return True
 
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is

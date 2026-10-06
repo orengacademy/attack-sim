@@ -1421,6 +1421,27 @@ def main():
             "    python3 cli.py --target 127.0.0.1 --mode whitebox --confirm-roe\n"
             "Or forward X over SSH:  ssh -X user@host   then  python3 gui.py\n")
         sys.exit(1)
+    # Version gate (a GUI user won't see a stderr message, so surface it as a
+    # dialog). Blocks only on a CONFIRMED-outdated copy; stays lenient when the
+    # latest can't be verified (offline) unless HARNESS_REQUIRE_LATEST is set —
+    # the CLI/web enforce the strict path. HARNESS_SKIP_VERSION_CHECK=1 bypasses.
+    import os as _os, sys as _sys
+    if _os.environ.get("HARNESS_SKIP_VERSION_CHECK", "").strip().lower() not in ("1", "true", "yes", "on"):
+        latest = core.fetch_latest_version()
+        strict = _os.environ.get("HARNESS_REQUIRE_LATEST", "").strip().lower() in ("1", "true", "yes", "on", "strict")
+        blocked = core.version_is_outdated(core.VERSION, latest) or (latest is None and strict)
+        if blocked:
+            from tkinter import messagebox
+            if latest:
+                messagebox.showerror("Update required",
+                    f"This copy is v{core.VERSION}; the required latest version is v{latest}.\n\n"
+                    "Update before running:\n    git pull --ff-only\n\n"
+                    "https://github.com/orengacademy/attack-sim")
+            else:
+                messagebox.showerror("Update required",
+                    f"Could not verify the latest version and strict mode is on — "
+                    f"refusing to run v{core.VERSION}.")
+            root.destroy(); _sys.exit(3)
     HarnessGUI(root)
     root.mainloop()
 
