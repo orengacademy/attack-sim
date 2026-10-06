@@ -28,11 +28,14 @@
     "cloud": true,
     "smb_port": 4445,
     "rpc_port": 1135,
-    "last_used": "2026-10-06T13:13:51.212664",
+    "last_used": "2026-10-06T14:18:07.501604",
     "ssh_port": 22,
     "mode": "blackbox",
     "domain": "lab.local",
     "dc_user": "Administrator",
-    "dc_pass": "NewPass123!"
+    "dc_pass": "NewPass123!",
+    "ssh_user": "administrator",
+    "ssh_pass": "NewPass123!",
+    "site_id": "551667"
   }
 }
