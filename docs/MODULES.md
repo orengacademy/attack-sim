@@ -297,7 +297,7 @@
 ### SSH Brute Force  `ssh_brute`  _[original]_
 
 - **Scope:** va · direction a2b · ports 22/tcp · MITRE T1110.001 · CWE-307
-- **What it tests / why:** SSH brute-force via hydra — tests the boundary's brute-force protection by actually generating a burst of rapid failed logins (not a single check).
+- **What it tests / why:** SSH brute-force — tests the boundary's brute-force protection by generating a rapid burst of SSH **connection attempts** (not a single check), then verifying whether a valid credential still gets through.
 - **Control it validates (how to PREVENT / BLOCK):** Brute-force protection / rate-limit (SSH)
 - **Fix (owner / remediation):** SD-WAN
 - **Needs to run:** tools: hydra; SSH creds
