@@ -751,7 +751,16 @@ class Evidence:
         # keep the record in memory regardless (finalize needs it); persisting
         # the per-attack result.json is best-effort.
         with self._lock:
-            self.records.append(result)
+            # One record per (iteration, attack_id). On a RE-RUN (auto-retry after a
+            # source-blacklist clears) REPLACE the old contaminated record in place
+            # instead of appending a duplicate, so finalize()/CSV show one clean row.
+            _key = (result.get("iteration"), result.get("attack_id"))
+            for _i, _r in enumerate(self.records):
+                if (_r.get("iteration"), _r.get("attack_id")) == _key:
+                    self.records[_i] = result
+                    break
+            else:
+                self.records.append(result)
         try:
             path = os.path.join(self._dir(iteration, attack_id), "result.json")
             _atomic_write(path, lambda f: json.dump(result, f, indent=2, default=str))
@@ -2145,6 +2154,26 @@ class Runner:
             self.wait_unblock = float(os.environ.get("HARNESS_WAIT_UNBLOCK", "0") or 0)
         except ValueError:
             self.wait_unblock = 0.0
+        # Known AUTO-EXPIRY of the appliance's source-blacklist/quarantine (Sangfor
+        # anti-DoS/brute "Lockout Duration" is 300s on the lab). The wait-for-unblock
+        # window is sized to OUTLAST this so a banned source is given time to be let
+        # back in, instead of dead-ending the rest of the run as INCONCLUSIVE. Set 0
+        # to keep the old 30s window (e.g. a permanent ban you'll clear by hand).
+        # Env HARNESS_BAN_EXPIRY / CLI --ban-expiry.
+        try:
+            self.ban_expiry = float(os.environ.get("HARNESS_BAN_EXPIRY", "300") or 0)
+        except ValueError:
+            self.ban_expiry = 300.0
+        # AUTO-RETRY contaminated results: after an iteration, re-run the attacks
+        # whose verdict was poisoned by a source-blacklist (SUSPECT, INCONCLUSIVE-
+        # quarantine, or a NO-SERVICE/NO-RESULT while the source was banned) once the
+        # ban clears, so they earn a REAL per-attack verdict instead of ban fallout.
+        # N rounds; 0 = off. Only ever activates when a canary-detected ban exists, so
+        # a clean run is unaffected. Env HARNESS_AUTO_RETRY / CLI --auto-retry.
+        try:
+            self.auto_retry = max(0, int(os.environ.get("HARNESS_AUTO_RETRY", "1") or 0))
+        except ValueError:
+            self.auto_retry = 1
 
     def stop(self):
         self._stop = True
@@ -2512,6 +2541,10 @@ class Runner:
                         mm, it, skip_unready, ready_ids, pf_by_id, recon_by_id,
                         ev, log, bump), parallel))
                 self._restore_process_globals(real_stdout)
+                # A ban tripped DURING the parallel batch latches now, so the serial
+                # batch's pre-checks wait; parallel modules that ran while banned are
+                # flagged contaminated and re-tested by the auto-retry pass.
+                self._detect_ban(log)
             for i, m in enumerate(serial):
                 if self._stop:
                     break
@@ -2552,6 +2585,63 @@ class Runner:
                 # finally can't leave socket.connect patched / stdout redirected
                 # and corrupt every later module.
                 self._restore_process_globals(real_stdout)
+                # Update the ban latch after each module — a tripper that SUCCEEDS
+                # (got through) but still banned the source is otherwise invisible to
+                # the latch, and the NEXT module's pre-check would run contaminated.
+                self._detect_ban(log)
+
+            # Auto-retry: re-run the attacks whose verdict was poisoned by a
+            # source-blacklist, once the ban clears, so they earn a REAL verdict
+            # instead of ban fallout. No-op when nothing is contaminated.
+            if self.auto_retry and self._canary and not self._stop:
+                self._retry_contaminated(it, ev, log, real_stdout, recon_by_id,
+                                         modules, skip_unready, ready_ids, pf_by_id)
+
+    def _retry_contaminated(self, it, ev, log, real_stdout, recon_by_id,
+                            modules, skip_unready, ready_ids, pf_by_id):
+        """Re-run the modules whose result for THIS iteration is contaminated
+        (flagged by a source-blacklist) once the ban clears, replacing each
+        contaminated record with the clean re-test. Up to self.auto_retry rounds; a
+        re-run that re-trips the ban just waits again before the next module. A no-op
+        progress callback keeps re-tests from pushing the progress bar past 100%."""
+        by_id = {m.META["id"]: m for m in modules}
+        noop = lambda: None
+        for rnd in range(1, int(self.auto_retry) + 1):
+            if self._stop:
+                return
+            contam_ids = [r.get("attack_id") for r in list(ev.records)
+                          if r.get("iteration") == it and r.get("contaminated")]
+            # de-dup, keep order, run QUIET modules before the trippers so a re-trip
+            # lands last (gives the quiet ones a clean window first).
+            contam = [by_id[i] for i in dict.fromkeys(contam_ids) if i in by_id]
+            contam.sort(key=lambda m: bool(m.META.get("run_last") or m.META.get("trips_ips")))
+            if not contam:
+                return
+            log(f"\n[auto-retry {rnd}/{int(self.auto_retry)}] {len(contam)} contaminated "
+                "result(s) to re-test once the source-blacklist clears: "
+                + ", ".join(m.META["name"] for m in contam))
+            if not self._await_unblacklist(log, f"auto-retry round {rnd}"):
+                log("  [auto-retry] source still banned after the wait — leaving the "
+                    "remaining contaminated result(s) as INCONCLUSIVE/SUSPECT (re-run later, "
+                    "or whitelist the tester source on the appliance).")
+                return
+            for m in contam:
+                if self._stop:
+                    return
+                # a previous re-run may have re-tripped the ban — wait it out first.
+                if self._blacklisted and not self._await_unblacklist(log, m.META["name"]):
+                    break
+                log(f"  [auto-retry {rnd}] re-testing {m.META['name']}")
+                self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
+                                     recon_by_id, ev, log, noop)
+                self._restore_process_globals(real_stdout)
+                self._detect_ban(log)
+        still = sorted({r.get("attack_id") for r in list(ev.records)
+                        if r.get("iteration") == it and r.get("contaminated")})
+        if still:
+            log(f"  [auto-retry] {len(still)} result(s) still contaminated after "
+                f"{int(self.auto_retry)} round(s): {', '.join(still)}. Whitelist the source "
+                "or re-run these from a clean source.")
 
     def _restore_process_globals(self, real_stdout):
         """Undo any leftover _portpatch socket.connect monkeypatch and stdout
@@ -2579,7 +2669,7 @@ class Runner:
         if not (self._blacklisted and self._canary):
             return True
         wait = self.wait_unblock if (getattr(self, "wait_unblock", 0) or 0) > 0 \
-            else max(30.0, self.cooldown or 0.0)
+            else max(30.0, self.cooldown or 0.0, (getattr(self, "ban_expiry", 0) or 0) + 30.0)
         log(f"  [blacklist] source appears quarantined — waiting up to {wait:.0f}s for the "
             f"canary {self._canary[1] or 'icmp'}/{self._canary[0]} to recover before {where} "
             "(whitelist the tester source on the appliance to avoid this).")
@@ -2607,7 +2697,7 @@ class Runner:
         log(f"  [{meta['category']}] {meta['name']}")
         log(f"     target: [{b}]  -> {verdict}")
         self.on_status(meta["id"], meta["name"], it, b, verdict)
-        self._record(ev, it, meta, b, "-", verdict, recon_by_id or {})
+        self._record(ev, it, meta, b, "-", verdict, recon_by_id or {}, contaminated=True)
         bump()
 
     def _canary_reachable(self):
@@ -2624,36 +2714,43 @@ class Runner:
             return None
         return None
 
+    def _detect_ban(self, log):
+        """Probe the canary once (unless already latched); on the FIRST drop, latch
+        self._blacklisted and warn. Returns True if the source is (now) considered
+        blacklisted/quarantined. Cheap after the first ban (no further probing while
+        latched). Used both by the per-verdict SUSPECT tag and proactively after each
+        module, so a tripper that SUCCEEDS but still bans the source is caught too."""
+        if not self._canary:
+            return False
+        # Fast path: already latched → no probe. Checked under the lock.
+        with self._bl_lock:
+            if self._blacklisted:
+                return True
+        # Probe OUTSIDE the lock — a ~2s TCP connect (or ~7s ping); holding the lock
+        # across it would serialize every parallel worker behind this one probe.
+        if self._canary_reachable() is False:
+            with self._bl_lock:
+                first = not self._blacklisted
+                self._blacklisted = True
+            if first:
+                log("[WARN] SOURCE APPEARS BLACKLISTED by the boundary — the canary "
+                    f"{self._canary[1] or 'icmp'}/{self._canary[0]} (reachable at start) "
+                    "is now unreachable. BLOCKED/NO-SERVICE/NO-RESULT verdicts from here are "
+                    "SUSPECT (the ban, not per-attack controls). The run will wait for the ban "
+                    "to clear and (with --auto-retry) re-test the contaminated attacks. Standard "
+                    "fix: whitelist/exempt the tester source IP from IPS blacklisting.")
+            return True
+        return False
+
     def _flag_if_blacklisted(self, verdict, log):
-        """Called on a BLOCKED verdict: confirm the source can still reach the
-        canary. If not, the boundary has BLACKLISTED/quarantined the source, so
-        this BLOCKED (and later ones) may be fallout, not a per-attack control.
-        Latches once and annotates the verdict so the operator isn't misled."""
+        """Called on a non-SUCCESS verdict (BLOCKED / NO-SERVICE / NO-RESULT): if the
+        canary says the source is blacklisted, this verdict may be ban fallout, not a
+        per-attack control — annotate it SUSPECT so the operator isn't misled (and so
+        the auto-retry pass can find it)."""
         if not self._canary:
             return verdict
-        # Fast path: already latched → just tag (no probe). Checked under the lock.
-        with self._bl_lock:
-            latched = self._blacklisted
-        if not latched:
-            # Probe the canary OUTSIDE the lock — it's a ~2s TCP connect (or ~7s
-            # ping). Holding the lock across it would serialize every parallel
-            # worker's BLOCKED behind this probe (N BLOCKEDs -> N x up to 7s).
-            unreachable = self._canary_reachable() is False
-            if unreachable:
-                with self._bl_lock:
-                    first = not self._blacklisted
-                    self._blacklisted = True
-                if first:
-                    log("[WARN] SOURCE APPEARS BLACKLISTED by the boundary — the canary "
-                        f"{self._canary[1] or 'icmp'}/{self._canary[0]} (reachable at start) "
-                        "is now unreachable. BLOCKED/filtered verdicts from here are SUSPECT "
-                        "(the ban, not per-attack controls). Standard fix: whitelist/exempt "
-                        "the tester source IP from IPS blacklisting for the test window, then "
-                        "re-run; or wait for the quarantine to expire.")
-        with self._bl_lock:
-            latched = self._blacklisted
-        if latched:
-            return verdict + "  [SUSPECT: source appears blacklisted — this BLOCKED " \
+        if self._detect_ban(log):
+            return verdict + "  [SUSPECT: source appears blacklisted — this verdict " \
                              "may be the ban, not this attack's own control]"
         return verdict
 
@@ -2742,7 +2839,7 @@ class Runner:
             # Parity with the single-target path: a BLOCKED through the appliance
             # gets the contamination-guard SUSPECT check, and a BLOCKED/NO-SERVICE
             # on a policy-DENIED port is attributed to SEGMENTATION, not the IPS/WAF.
-            if a == "BLOCKED":
+            if a in ("BLOCKED", "NO-SERVICE", "NO-RESULT"):
                 verdict = self._flag_if_blacklisted(verdict, log)
             pol = getattr(self, "_pol_by_id", {}).get(meta["id"])
             if pol and pol["outcome"] == "blocked" and a in ("BLOCKED", "NO-SERVICE"):
@@ -2882,7 +2979,7 @@ class Runner:
             # contamination guard: a BLOCKED could be THIS attack's control OR the
             # source having been blacklisted by an earlier attack. If the canary is
             # now unreachable, flag the verdict as suspect (don't report a false win).
-            if b == "BLOCKED":
+            if b in ("BLOCKED", "NO-SERVICE", "NO-RESULT"):
                 verdict = self._flag_if_blacklisted(verdict, log)
             # Port-policy attribution: a BLOCKED/NO-SERVICE on a port the boundary
             # policy DENIES is EXPECTED segmentation, not an IPS/WAF result — label
@@ -2908,10 +3005,10 @@ class Runner:
         self.on_status(meta["id"], meta["name"], it, (a if self.dual else b), verdict)
         self._record(ev, it, meta, b, a, verdict, recon_by_id,
                      detected_source=detected_source, output=output_for_record,
-                     duration=duration)
+                     duration=duration, contaminated=("[SUSPECT:" in verdict))
         bump()
 
-    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source="", output="", duration=0.0):
+    def _record(self, ev, it, meta, b, a, verdict, recon_by_id, detected_source="", output="", duration=0.0, contaminated=False):
         ev.save_result(it, meta["id"], {
             "iteration": it,
             "mode": getattr(self, "_mode", "blackbox"),
@@ -2943,6 +3040,9 @@ class Runner:
                       else (b == "SUCCESS"),
             "verdict": verdict,
             "detected_source": detected_source,
+            # True when this verdict was poisoned by a source-blacklist (SUSPECT /
+            # quarantine) — the auto-retry pass re-tests these once the ban clears.
+            "contaminated": bool(contaminated),
             "target_ip": self.target_ip,
             "appliance_ip": self.appliance_ip if self.dual else None,
             # egress source bind (whitelisted-source tracking) + per-port recon

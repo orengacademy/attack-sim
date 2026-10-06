@@ -381,6 +381,16 @@ def main():
                     help="how long to wait for an IPS quarantine / source blacklist to "
                          "clear before marking the rest INCONCLUSIVE (re-probes the canary "
                          "every 5s). Default max(30s, cooldown); also HARNESS_WAIT_UNBLOCK")
+    ap.add_argument("--ban-expiry", type=float, default=None, metavar="SECONDS",
+                    help="known auto-expiry of the appliance's source-blacklist/quarantine "
+                         "(the Sangfor 'Lockout Duration' — 300s on the lab). The wait-unblock "
+                         "window is sized to outlast this. 0 = keep the old 30s window; also "
+                         "HARNESS_BAN_EXPIRY")
+    ap.add_argument("--auto-retry", type=int, default=None, metavar="N",
+                    help="after an iteration, re-run attacks whose verdict was poisoned by a "
+                         "source-blacklist (SUSPECT/INCONCLUSIVE/NO-SERVICE while banned), once "
+                         "the ban clears, so they earn a real verdict. N rounds; 0 = off; "
+                         "default 1. Also HARNESS_AUTO_RETRY")
     ap.add_argument("--force", action="store_true",
                     help="run modules even if prerequisites are missing (default: skip)")
     ap.add_argument("--port", help='per-attack port overrides, e.g. "log4shell=8983,ssh_brute=2222"')
@@ -550,6 +560,10 @@ def main():
             runner.cooldown = max(0.0, args.cooldown)
         if args.wait_unblock is not None:
             runner.wait_unblock = max(0.0, args.wait_unblock)
+        if args.ban_expiry is not None:
+            runner.ban_expiry = max(0.0, args.ban_expiry)
+        if args.auto_retry is not None:
+            runner.auto_retry = max(0, args.auto_retry)
         runner.ctx.debug = bool(args.debug)
         overrides = _parse_ports(args.port)
         if overrides:

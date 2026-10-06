@@ -218,7 +218,13 @@ Also: `HARNESS_PORT_<ID>` (custom port), `HARNESS_SOURCE_IP` (egress bind),
 `HARNESS_SITE_ID` (engagement/site tag), `HARNESS_DEBUG` (verbose tool trace),
 `HARNESS_COOLDOWN` (pause before each brute/DoS module), `HARNESS_WAIT_UNBLOCK`
 (`--wait-unblock`: how long to wait for an IPS quarantine/source-blacklist to
-clear before marking the rest INCONCLUSIVE; default `max(30s, cooldown)`).
+clear before marking the rest INCONCLUSIVE; default `max(30s, cooldown,
+ban_expiry+30)`), `HARNESS_BAN_EXPIRY` (`--ban-expiry`: the appliance's known
+source-blacklist auto-expiry — Sangfor "Lockout Duration", default 300s — which
+sizes the wait window so a banned source is waited out, not dead-ended; 0 = old
+30s window), `HARNESS_AUTO_RETRY` (`--auto-retry N`: after an iteration, re-run
+attacks whose verdict was poisoned by a source-blacklist once the ban clears, so
+they earn a real per-attack verdict; N rounds, default 1, 0 = off).
 
 **`--debug` / Debug checkbox** (`ctx.debug`): injects a verbose flag into an
 allowlisted set of tools (curl `-v`, ldapsearch `-v`, hydra `-d`, impacket
@@ -243,7 +249,13 @@ per-module **TIME** column + `duration_s` in every `result.json`. **Site ID**
   `cli.py --suspect <evidence_dir>` lists them + the re-run command. Standard fix:
   whitelist the tester source on the appliance. `run_last` (ssh_brute/icmp_flood/
   syn_flood) + `--cooldown`/`HARNESS_COOLDOWN` keep the blacklisters from
-  contaminating the rest.
+  contaminating the rest. When a ban IS tripped, the engine detects it on ANY
+  non-SUCCESS verdict (BLOCKED/NO-SERVICE/NO-RESULT, not just BLOCKED), waits out
+  the ban (window sized by `--ban-expiry`, default 300s), and `--auto-retry`
+  (default 1 round) re-tests the contaminated attacks once the source is let back
+  in — so a mid-run ban yields real per-attack verdicts instead of a tail of false
+  BLOCKED/INCONCLUSIVE/NO-SERVICE. Each contaminated row carries `contaminated:true`
+  in evidence until a clean re-test replaces it.
 - **Appliance-log correlation:** `additional/sangfor_ingest.py` (vendor-agnostic:
   Sangfor **and** Forcepoint, `.xlsx`/`.csv`, synonym column + action-value
   mapping) turns an appliance's per-port Allow/Deny (session log) and signature
