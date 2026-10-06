@@ -37,7 +37,7 @@ from datetime import datetime
 # summary.json meta, so any evidence folder is traceable to the build that made
 # it (alongside the git short-SHA in `engine_version`). Single source of truth —
 # cli.py / gui.py import this.
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
