@@ -423,10 +423,10 @@
 ### Log4Shell (CVE-2021-44228)  `log4shell`  _[original]_
 
 - **Scope:** pentest · direction a2b · ports 8080/tcp · MITRE T1190 · CWE-917 · CVE-2021-44228
-- **What it tests / why:** CVE-2021-44228 — Log4Shell. Sends a BENIGN JNDI marker string in the User-Agent and a header so the SD-WAN IPS's JNDI signature is actually exercised (not just a reachability ping), against /solr/ — Apache Solr's real admin/API surface, not '/' (which just redirects there unconditionally on this target and proves nothing about the payload itself).
-- **Control it validates (how to PREVENT / BLOCK):** IPS signature (JNDI pattern)
+- **What it tests / why:** CVE-2021-44228 — Log4Shell.
+- **Control it validates (how to PREVENT / BLOCK):** IPS signature (JNDI pattern) + log4j patch / formatMsgNoLookups
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: curl
+- **Needs to run:** tools: curl; **--active** (live establishment); config.json: attacker_vps
 
 ### Struts2 OGNL Injection (CVE-2017-5638)  `struts2_ognl`  _[added]_
 
