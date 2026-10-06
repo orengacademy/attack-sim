@@ -234,25 +234,54 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         print(f"  {_c(icon, col, no_color)} {_c(v, col, no_color):<22} {meter} "
               f"{dist[v]}/{n}")
 
-    # ---- the table -----------------------------------------------------
+    # ---- the table ----------------------------------------------------
+    # Columns AUTO-SIZE to their longest value (header or any cell), so module
+    # names are never truncated/wrapped and the CATEGORY is shown on EVERY row;
+    # a per-column cap keeps one long value from blowing the table out (only then
+    # does a cell get an …). With >1 iteration, ITERATIONS replaces DETAIL.
     debug = getattr(args, "debug", False)
-    # With >1 iteration, ITERATIONS replaces DETAIL outright (same single
-    # table, same column count) and carries each iteration's own verdict +
-    # gloss — the aggregate VERDICT column only ever shows the single
-    # most-significant iteration (_VERDICT_ORDER), which otherwise hid a
-    # later iteration landing in a different bucket entirely (e.g.
-    # icmp_flood's loss-delta falling in the ambiguous band on one run and
-    # not another).
     show_iters = args.iterations > 1
-    NUM, VER, MOD, CAT, PORTS, MITRE, CWE, DET = 3, 13, 26, 13, 11, 13, 11, 22
-    ITERS_W = 22 * min(args.iterations, 4)   # grows with iteration count, caps at 4x
-    cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT),
-            ("PORTS", PORTS), ("MITRE", MITRE), ("CWE", CWE),
-            (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET)),
-            ("TIME", 19)]              # per-module completion timestamp (YYYY-MM-DD HH:MM:SS)
+    headers = ["#", "VERDICT", "MODULE", "CATEGORY", "PORTS", "MITRE", "CWE",
+               ("ITERATIONS" if show_iters else "DETAIL"), "TIME"]
     if debug:
-        cols.append(("DUR", 7))   # per-module wall-clock duration (debug only)
-    inner = [w for _, w in cols]
+        headers.append("DUR")
+
+    rows = sorted(by_mod.values(),
+                  key=lambda x: (x["cat"],
+                                 _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
+                                 x["name"]))
+    body = []   # [(cells, colors)]
+    i = 0
+    for d in rows:
+        i += 1
+        col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
+        detail = _VERDICT_GLOSS.get(d["v"], "")
+        # sharpen the BLOCKED detail so it says WHERE/WHY the block came from.
+        if d["v"] == "BLOCKED":
+            vtext = d["verdicts"].get("BLOCKED", "") or ""
+            otext = d["outputs"].get("BLOCKED", "") or ""
+            if "REJECTION RESPONSE" in vtext:
+                detail = "rejection block (in-path IPS/WAF or host)"
+            elif "BLOCKED-RATELIMIT" in otext:
+                detail = "rate-limited/shaped (boundary policed the flood)"
+        if show_iters:
+            iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
+                                   key=lambda it: it[0])
+            detail = " | ".join(f"{n}:{v} ({_VERDICT_GLOSS_SHORT.get(v, '?')})"
+                                for n, v in iters_sorted)
+        cells = [str(i), f"{icon} {d['v']}", d["name"], d["cat"], d.get("ports", ""),
+                 d.get("mitre", ""), d.get("cwe", ""), detail, _clock(d.get("ts"))]
+        colors = [DIM, col, None, ACC, DIM, DIM, DIM, DIM, DIM]
+        if debug:
+            cells.append(f"{d.get('dur', 0.0):.1f}s")
+            colors.append(DIM)
+        body.append((cells, colors))
+
+    # width per column = max(header, longest cell), capped at MAXW (generous, so
+    # full module names / categories fit; only a pathological value truncates).
+    MAXW = 54
+    inner = [min(MAXW, max([len(h)] + [len(c[ci]) for c, _ in body]))
+             for ci, h in enumerate(headers)]
 
     def rule(left, mid, right):
         return _c(left + mid.join("─" * (w + 2) for w in inner) + right, DIM, no_color)
@@ -265,45 +294,9 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
 
     print()
     print(rule("┌", "┬", "┐"))
-    print(row([h for h, _ in cols], [BOLD] * len(cols)))
+    print(row(headers, [BOLD] * len(headers)))
     print(rule("├", "┼", "┤"))
-
-    rows = sorted(by_mod.values(),
-                  key=lambda x: (x["cat"],
-                                 _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
-                                 x["name"]))
-    prev_cat = None
-    i = 0
-    for d in rows:
-        i += 1
-        col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
-        cat = d["cat"] if d["cat"] != prev_cat else ""
-        prev_cat = d["cat"]
-        detail = _VERDICT_GLOSS.get(d["v"], "")
-        # sharpen the BLOCKED detail so it says WHERE/WHY the block came from.
-        if d["v"] == "BLOCKED":
-            vtext = d["verdicts"].get("BLOCKED", "") or ""
-            otext = d["outputs"].get("BLOCKED", "") or ""
-            if "REJECTION RESPONSE" in vtext:
-                detail = "rejection block (in-path IPS/WAF or host)"
-            elif "BLOCKED-RATELIMIT" in otext:
-                detail = "rate-limited/shaped (boundary policed the flood)"
-        cells = [str(i), f"{icon} {d['v']}", d["name"], cat, d.get("ports", ""),
-                 d.get("mitre", ""), d.get("cwe", "")]
-        colors = [DIM, col, None, ACC, DIM, DIM, DIM]
-        if show_iters:
-            iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
-                                   key=lambda it: it[0])
-            cells.append(" | ".join(
-                f"{n}:{v} ({_VERDICT_GLOSS_SHORT.get(v, '?')})" for n, v in iters_sorted))
-        else:
-            cells.append(detail)
-        colors.append(DIM)
-        cells.append(_clock(d.get("ts")))       # TIME — human-readable HH:MM:SS
-        colors.append(DIM)
-        if debug:
-            cells.append(f"{d.get('dur', 0.0):.1f}s")
-            colors.append(DIM)
+    for cells, colors in body:
         print(row(cells, colors))
     print(rule("└", "┴", "┘"))
 
@@ -739,8 +732,8 @@ def main():
         _net = "cloud" if cloud else "on-prem"
         _dest = f"{source} → {target}" if source else str(target)
         _wb = str(mode).lower().startswith("w")
-        _modeline = ("WHITEBOX · allow-all baseline — attacks SHOULD pass"
-                     if _wb else "BLACKBOX · through the SD-WAN — what the boundary stops")
+        _modeline = ("● WHITEBOX — allow-all baseline (attacks SHOULD pass)"
+                     if _wb else "● BLACKBOX — through the SD-WAN (what the boundary stops)")
         _BW = 72
 
         def _bl(txt, color):
@@ -749,12 +742,17 @@ def main():
                 body = body[:_BW - 1] + "…"
             print(_c("│", ACC, args.no_color) + _c(f"{body:<{_BW}}", color, args.no_color)
                   + _c("│", ACC, args.no_color))
+
+        def _brule(left, right):
+            print(_c(left + "─" * _BW + right, ACC, args.no_color))
         print()
-        print(_c("╭" + "─" * _BW + "╮", ACC, args.no_color))
-        _bl(f"▌ CONTROL VALIDATION HARNESS   ·   BAS   ·   v{core.VERSION}", BOLD)
+        _brule("╭", "╮")
+        _bl(">_  CONTROL VALIDATION HARNESS", BOLD)
+        _bl(f"Breach & Attack Simulation   ·   MyGovNet   ·   v{core.VERSION}", DIM)
+        _brule("├", "┤")
         _bl(_modeline, ACC)
         _bl(f"{_dest}   ·   {_net}" + (f"   ·   site {site_id}" if site_id else ""), DIM)
-        print(_c("╰" + "─" * _BW + "╯", ACC, args.no_color))
+        _brule("╰", "╯")
 
         t0 = time.time()
         try:
