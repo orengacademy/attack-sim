@@ -310,6 +310,28 @@ class TestIcmpRateReport(unittest.TestCase):
         self.assertIn("configured target", rate)
         self.assertFalse(limited)
 
+    def test_list_env(self):
+        import os as _os
+        self.assertEqual(self.icmp._list_env("HARNESS_NOPE_RAMP", [1, 2, 3]), [1, 2, 3])
+        _os.environ["HARNESS_TEST_RAMP"] = "200, 1000 ,5000"
+        try:
+            self.assertEqual(self.icmp._list_env("HARNESS_TEST_RAMP", [1]), [200, 1000, 5000])
+        finally:
+            _os.environ.pop("HARNESS_TEST_RAMP", None)
+
+    def test_is_knee_loss_jump(self):
+        self.assertTrue(self.icmp._is_knee(45.0, 10.0, 2.0, 9.0))    # +43 pts loss -> policed
+        self.assertFalse(self.icmp._is_knee(6.0, 10.0, 2.0, 9.0))    # +4 pts -> delivered
+
+    def test_is_knee_rtt_inflation(self):
+        self.assertTrue(self.icmp._is_knee(1.0, 900.0, 1.0, 10.0))   # 90x and >=150ms -> shaped
+        self.assertFalse(self.icmp._is_knee(1.0, 40.0, 1.0, 10.0))   # 4x, under the 6x/150ms floor
+
+    def test_fmt(self):
+        self.assertEqual(self.icmp._fmt(None), "?")
+        self.assertEqual(self.icmp._fmt(3199.4), "3,199")
+        self.assertEqual(self.icmp._fmt(12.0, 1), "12.0")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
