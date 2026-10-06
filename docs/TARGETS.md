@@ -46,6 +46,20 @@ python3 cli.py --target 10.38.98.14 --mode blackbox --no-cloud --all \
     --dc-user Administrator --dc-pass 'NewPass123!' --domain lab.local --confirm-roe
 ```
 
+### KVDC — verification (2026-10-06, from central host `10.41.241.18` via gateway)
+
+| Target | Posture | Module | Result | Note |
+|---|---|---|---|---|
+| `10.38.98.12` | whitebox | `ldap_null_bind` | **SUCCESS** | 445/135/389/88 open; LDAP/Kerberos/SMB reachable + creds OK |
+| `10.38.98.12` | whitebox | `dcsync` | **BLOCKED** | SMB(445)+EPM(135) connect, but the DRSUAPI **dynamic high RPC port** is refused from this segment |
+| `10.38.98.14` | blackbox | `dcsync` | **NO-SERVICE** | SMB(445) closed (service down / SD-WAN segmentation) |
+
+**Run RPC/SMB-exec modules (`dcsync`/`psexec`/`wmiexec`) from the on-segment KVDC
+attacker box** — whitebox `10.38.98.13`, blackbox `10.38.98.15`. From the central host
+only 445/135/389/88 are forwarded, not the ephemeral RPC range DRSUAPI/DCE-RPC need, so
+those modules can't complete here (BLOCKED on the dynamic port). Non-RPC modules
+(LDAP/Kerberos/web/DoS) verify fine from anywhere that can reach the DC.
+
 ## IPDC  (on-prem, default 445/135)
 
 | Posture | Role | IP | Login |
