@@ -44,3 +44,6 @@ Thumbs.db
 
 # derived SQLite cross-run index (rebuildable from evidence/)
 evidence_index.db
+
+# Windows "mark-of-the-web" ADS junk from files downloaded via WSL (not real content)
+*:Zone.Identifier
