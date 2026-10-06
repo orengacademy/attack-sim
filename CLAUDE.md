@@ -15,7 +15,7 @@ segmentation boundary and records, per attack, whether the control **blocked**,
 **detected**, or **let it through**. A Tkinter GUI (`gui.py`) and a headless CLI
 (`cli.py`) drive the **same engine** (`core.py`). Each attack is one
 auto-discovered file in `modules/`. Every run writes full raw evidence +
-JSON/CSV/TXT summaries + a MITRE ATT&CK Navigator layer to `evidence/run_<ts>/`.
+JSON/CSV/**XLSX** (colour-filled) /TXT summaries + a MITRE ATT&CK Navigator layer to `evidence/run_<ts>/`.
 
 **Scope framing (USS):** the engagement's Attack-Simulation scope is *boundary
 egress / segmentation control validation* across 7 ATT&CK families **A–G** (see

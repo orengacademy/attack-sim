@@ -35,6 +35,8 @@ import index   # SQLite cross-run index (derived from evidence/; rebuildable)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EVID = os.path.join(HERE, "evidence")
+mimetypes.add_type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx")
+mimetypes.add_type("text/csv", ".csv")
 
 MODULES = loader.discover()
 MOD_BY_ID = {m.META["id"]: m for m in MODULES}
@@ -513,7 +515,8 @@ def _list_runs(limit=40):
     for name in dirs[:limit]:
         p = os.path.join(EVID, name)
         has = {f: os.path.isfile(os.path.join(p, f))
-               for f in ("report.html", "report.txt", "summary.json", "summary.csv")}
+               for f in ("report.html", "summary.json", "summary.csv", "summary.xlsx",
+                         "report.txt", "attack_navigator_layer.json")}
         out.append({"name": name, "mtime": os.path.getmtime(p), "files": has})
     return out
 
@@ -600,6 +603,8 @@ input:focus,textarea:focus,select:focus{border-color:var(--edge2);background:var
  box-shadow:0 0 0 3px rgba(124,230,235,.1);outline:none}
 textarea{font-family:var(--mono);font-size:12.5px;resize:vertical;min-height:54px}
 .rowf{display:flex;gap:8px} .rowf>*{flex:1;min-width:0}
+.subgroup{margin:4px 0 2px;padding:10px 12px;border:1px solid var(--hair);border-radius:var(--r-sm);background:rgba(13,19,26,.45)}
+.subhead{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:0 0 7px}
 .chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg);cursor:pointer}
 .chk input{accent-color:var(--edge)}
 .mini{font-size:11.5px;color:var(--faint);margin-top:7px;line-height:1.5}
@@ -759,9 +764,14 @@ tbody tr{cursor:pointer;transition:background .1s} tbody tr:hover{background:var
    <div class=rowf>
     <div class=field><label>Iterations</label><input id=iters type=number min=1 max=20 value=1></div>
     <div class=field><label>Workers</label><input id=workers type=number min=1 max=16 value=4></div>
-    <div class=field><label>Wait-unblock s</label><input id=wait type=number min=0 value=0></div>
-    <div class=field><label>Ban-expiry s</label><input id=banexp type=number min=0 value=300></div>
-    <div class=field><label>Auto-retry</label><input id=autoretry type=number min=0 value=1></div>
+   </div>
+   <div class=subgroup>
+    <div class=subhead>Source-blacklist recovery</div>
+    <div class=rowf>
+     <div class=field><label>Wait s</label><input id=wait type=number min=0 value=0></div>
+     <div class=field><label>Ban s</label><input id=banexp type=number min=0 value=300></div>
+     <div class=field><label>Retry</label><input id=autoretry type=number min=0 value=1></div>
+    </div>
    </div>
    <div class=rowf>
     <div class=field><label>Site</label><input id=site type=text placeholder="ORG2026-70"></div>
@@ -1119,6 +1129,8 @@ function showEvidence(root){
  $("#evidence").innerHTML="evidence: "
   +`<a target=_blank href="${b}report.html">report</a> `
   +`<a target=_blank href="${b}summary.json">json</a> `
+  +`<a href="${b}summary.csv">csv</a> `
+  +`<a href="${b}summary.xlsx">xlsx</a> `
   +`<a target=_blank href="${b}report.txt">txt</a>`;
 }
 function finish(){
@@ -1129,9 +1141,10 @@ function finish(){
 }
 async function loadRuns(){
  const j=await (await fetch("api/runs")).json();
- $("#runs").innerHTML=(j.runs||[]).slice(0,12).map(r=>{
+ const FMT=[["report.html","report"],["summary.json","json"],["summary.csv","csv"],["summary.xlsx","xlsx"],["report.txt","txt"],["attack_navigator_layer.json","att&ck"]];
+ $("#runs").innerHTML=(j.runs||[]).slice(0,40).map(r=>{
   const b="evidence/"+r.name+"/";
-  const links=["report.html","summary.json"].filter(f=>r.files[f]).map(f=>`<a target=_blank href="${b}${f}">${f.split(".")[1]||f}</a>`).join(" ");
+  const links=FMT.filter(([f])=>r.files[f]).map(([f,l])=>`<a ${f.endsWith(".csv")||f.endsWith(".xlsx")?"":"target=_blank "}href="${b}${f}">${l}</a>`).join(" ");
   return `<div class=runrow><b>${r.name}</b> ${links||'<span class=dim>no summary</span>'}</div>`;
  }).join("")||"—";
 }

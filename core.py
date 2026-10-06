@@ -37,7 +37,7 @@ from datetime import datetime
 # summary.json meta, so any evidence folder is traceable to the build that made
 # it (alongside the git short-SHA in `engine_version`). Single source of truth —
 # cli.py / gui.py import this.
-VERSION = "1.3.6"
+VERSION = "1.4.0"
 
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
@@ -694,7 +694,7 @@ class Evidence:
 
     def __init__(self, base="evidence", label=None):
         import threading
-        self.ts = datetime.now().strftime("%d-%m-%H-%M")   # day-month-hour-minute
+        self.ts = datetime.now().strftime("%Y%m%d-%H%M%S")   # YYYYMMDD-HHMMSS (unique, sortable)
         # In a multi-target scan each target gets its own Evidence; a bare
         # run_<ts> would make them run_<ts> / run_<ts>-2 — collision-safe but you
         # can't tell WHICH target is which. A label (the target) names the dir
@@ -841,6 +841,14 @@ class Evidence:
                                      f"{r.get('attack_id')}/target.log]")
                 w.writerow(row)
         _safe_write("summary.csv", _write_csv)
+
+        # colored .xlsx summary (pure-stdlib helper; each row's Verdict cell is
+        # filled with its verdict colour). Best-effort — never fails finalize().
+        try:
+            import evidence_xlsx
+            evidence_xlsx.write_xlsx(os.path.join(self.root, "summary.xlsx"), self.records)
+        except Exception as e:
+            self.log(f"[WARN] could not write summary.xlsx: {e}")
 
         agg = {}
         for r in self.records:
