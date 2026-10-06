@@ -362,10 +362,15 @@ def main():
                          "(each uses its own remembered cloud/creds). Default: 127.0.0.1")
     ap.add_argument("-i", "--iterations", type=int, default=1)
     ap.add_argument("-w", "--workers", type=int, default=core.RECOMMENDED_WORKERS)
-    ap.add_argument("--mode", choices=["blackbox", "whitebox"], default=None,
+    ap.add_argument("--mode", choices=["blackbox", "whitebox", "auto"], default=None,
                     help="assessment posture for the target(s): blackbox (through the SD-WAN "
                          "as-is — the default) or whitebox (allow-all baseline confirming the "
-                         "attacks/services work). Remembered PER TARGET (recalled when omitted)")
+                         "attacks/services work), or 'auto' = use each target's DESIGNATED "
+                         "posture from memory. Remembered PER TARGET (recalled when omitted)")
+    ap.add_argument("--set-posture", choices=["blackbox", "whitebox"], default=None,
+                    help="DESIGNATE the posture for --target (comma list) and exit WITHOUT "
+                         "running — e.g. `--target 159.223.35.108 --set-posture whitebox`. "
+                         "Every front-end then tests that IP in that posture by default.")
     ap.add_argument("-s", "--site-id", "--site", dest="site_id", default=None,
                     help="engagement/site tag recorded in the evidence + headers "
                          "(remembered per target; or set HARNESS_SITE_ID)")
@@ -492,6 +497,24 @@ def main():
               "otherwise they run as non-destructive indicators.")
         return 0
 
+    # Designate-only: pin each target's posture to memory and exit — no attacks,
+    # so no ROE gate. Every front-end (CLI auto-recall, web "Auto", fleet auto)
+    # then tests that IP in the designated posture by default.
+    if args.set_posture:
+        tgts = [t.strip() for t in (args.target or "").split(",") if t.strip()]
+        if not tgts:
+            print("[!] --set-posture needs --target <ip[,ip...]>", file=sys.stderr)
+            return 2
+        for t in tgts:
+            ok, why = core.validate_target(t)
+            if not ok:
+                print(f"[!] {t}: {why}", file=sys.stderr)
+                return 2
+        for t in tgts:
+            core.remember_target(t, mode=args.set_posture)
+            print(f"[posture] {t} -> {args.set_posture} (designated; no attack run)")
+        return 0
+
     target_defaulted = not any(
         a in ("-t", "--target") or a.startswith(("--target=", "-t"))
         for a in sys.argv)
@@ -575,11 +598,11 @@ def main():
         mem = core.recall_target(target)
         source = args.source if args.source is not None else mem.get("source")
         cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
-        # posture (whitebox/blackbox) is per-target: CLI flag wins, else the
-        # target's remembered value, else blackbox.
-        mode = args.mode or mem.get("mode") or "blackbox"
-        if args.mode is None and mem.get("mode"):
-            print(f"[recall] posture {mode} (remembered for {target})")
+        # posture (whitebox/blackbox) is per-target: an explicit flag wins, else
+        # ('auto'/omitted) the target's DESIGNATED posture from memory, else blackbox.
+        mode = core.resolve_posture(target, args.mode)
+        if (args.mode in (None, "auto")) and mem.get("mode"):
+            print(f"[recall] posture {mode} (designated for {target})")
         smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
         rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
         ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 22
@@ -649,7 +672,7 @@ def main():
         if args.ssh_user is not None: cred_fields["ssh_user"] = args.ssh_user
         if args.ssh_pass is not None: cred_fields["ssh_pass"] = args.ssh_pass
         if args.site_id is not None: cred_fields["site_id"] = args.site_id
-        if args.mode is not None: cred_fields["mode"] = args.mode
+        if args.mode in ("blackbox", "whitebox"): cred_fields["mode"] = args.mode
         core.remember_target(target, source=source or None, cloud=bool(cloud),
                              smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
                              ssh_port=(ssh_p_port if (cloud or args.ssh_port) else None),

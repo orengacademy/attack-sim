@@ -37,7 +37,7 @@ from datetime import datetime
 # summary.json meta, so any evidence folder is traceable to the build that made
 # it (alongside the git short-SHA in `engine_version`). Single source of truth —
 # cli.py / gui.py import this.
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
@@ -391,6 +391,24 @@ def remember_target(target, **fields):
                 pass
         except Exception:
             pass
+
+
+def resolve_posture(target, requested=None):
+    """Effective white/black-box posture for ONE target.
+
+    Posture is a PER-TARGET attribute (recorded per result, not a different
+    execution): an explicit 'whitebox'/'blackbox' wins for this run; 'auto'
+    (or None/blank) uses the target's DESIGNATED posture from target memory,
+    falling back to 'blackbox'. This is the single resolver shared by the CLI,
+    the web dashboard and fleet so a given IP tests the same way everywhere
+    (e.g. 159.223.35.108 = whitebox, 167.71.222.169 = blackbox)."""
+    r = str(requested or "auto").strip().lower()
+    if r.startswith("w"):
+        return "whitebox"
+    if r.startswith("b"):
+        return "blackbox"
+    m = str((recall_target(target) or {}).get("mode") or "blackbox").lower()
+    return "whitebox" if m.startswith("w") else "blackbox"
 
 
 # ---------------------------------------------------------------------

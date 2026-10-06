@@ -962,5 +962,36 @@ class TestRuntimePrereqAndInconclusive(unittest.TestCase):
         self.assertEqual(ev.records[0]["baseline_result"], "INCONCLUSIVE")
 
 
+class TestResolvePosture(unittest.TestCase):
+    """Per-target posture resolution shared by CLI / web / fleet."""
+
+    def setUp(self):
+        self._orig = core.recall_target
+        self._mem = {}
+        core.recall_target = lambda t: self._mem.get(t, {})
+
+    def tearDown(self):
+        core.recall_target = self._orig
+
+    def test_explicit_wins_over_memory(self):
+        self._mem["1.2.3.4"] = {"mode": "whitebox"}
+        self.assertEqual(core.resolve_posture("1.2.3.4", "blackbox"), "blackbox")
+        self.assertEqual(core.resolve_posture("1.2.3.4", "whitebox"), "whitebox")
+
+    def test_auto_uses_designated_posture(self):
+        self._mem["5.6.7.8"] = {"mode": "whitebox"}
+        self.assertEqual(core.resolve_posture("5.6.7.8", "auto"), "whitebox")
+        self.assertEqual(core.resolve_posture("5.6.7.8", None), "whitebox")
+
+    def test_auto_unknown_target_defaults_blackbox(self):
+        self.assertEqual(core.resolve_posture("9.9.9.9", "auto"), "blackbox")
+        self.assertEqual(core.resolve_posture("9.9.9.9", None), "blackbox")
+
+    def test_blank_and_garbage_requested_fall_back_to_auto(self):
+        self._mem["5.6.7.8"] = {"mode": "whitebox"}
+        self.assertEqual(core.resolve_posture("5.6.7.8", ""), "whitebox")
+        self.assertEqual(core.resolve_posture("9.9.9.9", "nonsense"), "blackbox")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

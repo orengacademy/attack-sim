@@ -75,7 +75,7 @@ tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 | `loader.py` | Auto-discovers `modules/*.py` that expose `META` + `run(target, ctx)`. Files starting with `_` (helpers, `_vendor/`) are skipped. No registration anywhere. |
 | `app.py` | **Web front-end** (the 3rd way to drive the engine, next to `gui.py` and `cli.py`). Pure-stdlib `ThreadingHTTPServer` on `0.0.0.0:8080` (`--host`/`--port`/`--token`); serves a modern dark **bento** dashboard that runs `core.Runner` in a background thread and streams live log/status/progress to the browser over **SSE**, with verdict meters, a module grid, a live results table, and links to each run's `evidence/` (report.html/summary.json). Keeps the ROE gate (a run is refused unless ROE is confirmed). ⚠ binding 0.0.0.0 exposes a control panel that launches real attacks — trusted lab segment / `--host 127.0.0.1` / `--token` only. |
 | `gui.py` | Tkinter dark-theme front-end. Worker thread + queue so the UI never freezes. Live log + live raw-output panel (click a status row to jump), Preflight+recon button, Egress-probe button, per-row custom port, mode/workers selectors, per-target Domain/User/Pass **and separate SSH user/pass** fields (the SSH pair feeds `ssh_brute`, falling back to the DC pair when blank). |
-| `cli.py` | Headless equivalent; every GUI option as a flag (`--original` (DEFAULT) / `--all` / `--added` / `--attack-sim` / `--family` / `--cloud` / `--source` / `--domain` / `--dc-user` / `--dc-pass` / `--ssh-user` / `--ssh-pass` / `--appliance` / `--full-report` / …). `--appliance <IP>` turns on **dual-path mode**: each attack runs against `--target` (the direct allow-all baseline that proves it works) AND through `--appliance` (the controlled path), and `classify()` compares them — baseline OK + appliance BLOCKED/NO-SERVICE = control works, baseline OK + appliance SUCCESS/DETECTED = finding. Defaults: `--target 127.0.0.1`, original 11-module set. Suppresses the engine's interleaved per-module log on the console and re-renders clean numbered live lines + a modern end-of-run **table** (verdict strip + verdict/module/category/detail columns). `report.txt` goes to evidence always; `--full-report` echoes it too. |
+| `cli.py` | Headless equivalent; every GUI option as a flag (`--original` (DEFAULT) / `--all` / `--added` / `--attack-sim` / `--family` / `--cloud` / `--source` / `--domain` / `--dc-user` / `--dc-pass` / `--ssh-user` / `--ssh-pass` / `--appliance` / `--full-report` / …). `--mode` takes `blackbox`/`whitebox`/`auto` (per-target posture); `--set-posture blackbox|whitebox` DESIGNATES `--target`'s posture to memory and exits (no run, no ROE). `--appliance <IP>` turns on **dual-path mode**: each attack runs against `--target` (the direct allow-all baseline that proves it works) AND through `--appliance` (the controlled path), and `classify()` compares them — baseline OK + appliance BLOCKED/NO-SERVICE = control works, baseline OK + appliance SUCCESS/DETECTED = finding. Defaults: `--target 127.0.0.1`, original 11-module set. Suppresses the engine's interleaved per-module log on the console and re-renders clean numbered live lines + a modern end-of-run **table** (verdict strip + verdict/module/category/detail columns). `report.txt` goes to evidence always; `--full-report` echoes it too. |
 | `fleet.py` | **N-target front end.** Runs the same engine over a fleet of vuln servers defined in `fleet.json` (git-ignored; `fleet.json.example` committed) — a zone-to-zone matrix (`targets`×`sources`×`runs`), both directions, per-target `cloud_ports`, per-source egress binding. Reuses `cli._select` + `core.Runner` per job; evidence under `evidence/fleet_<ts>/<source>__<target>/`, plus `fleet_summary.json`. |
 | `preflight.py` | Standalone cross-platform tool/privilege/recon checker; CI gate (exit 0 only if all discovered modules are ready). |
 | `bootstrap.py` | One-shot apt installer for Kali/Debian. |
@@ -181,6 +181,19 @@ classifier bug so far was caught by reading them, not by trusting the verdict.
 White-box vs black-box is a **posture recorded per result**, not different
 execution: run allow-all (white-box) to confirm an attack works, then black-box
 to see what the boundary stops. SUCCESS white-box + BLOCKED black-box = control works.
+
+**Posture is a PER-TARGET attribute.** Each IP carries its designated posture in
+`.target_memory.json` (`mode`), and `core.resolve_posture(target, requested)` is
+the single resolver all front-ends share: an explicit `whitebox`/`blackbox` wins,
+`auto` (or omitted) uses the target's designated posture (else `blackbox`). So a
+mixed batch tests each IP the right way from one list — e.g. 159.223.35.108 =
+whitebox, 167.71.222.169 = blackbox. Designate without running via
+`cli.py --target <ip[,ip...]> --set-posture whitebox|blackbox`; the web dashboard
+defaults to **Auto · per-target** (and shows each target's posture + transport),
+`fleet.py` defaults to `--mode auto`, and the GUI's per-row white-box tick already
+does this. In `auto`, a run never overwrites a target's designated profile.
+Transport is per-target too: `cloud` + NAT ports (4445/1135/…) vs on-prem direct
+(445/135/22) follow the IP the same way.
 
 ## Operator files — COMMITTED directly (controlled dummy lab)
 

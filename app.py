@@ -245,34 +245,61 @@ def _run_worker(run_id, params, targets, module_ids):
         auto_retry = max(0, int(params.get("auto_retry", 1) or 0))
     except (TypeError, ValueError):
         auto_retry = 1
-    mode = "whitebox" if params.get("mode") == "whitebox" else "blackbox"
+    # Posture is a per-run REQUEST: explicit blackbox/whitebox forces one config
+    # on every target; 'auto' (the default) runs each target by its OWN designated
+    # profile from target memory — posture AND transport (cloud/NAT ports) AND
+    # creds AND egress source — so a mixed batch (159.* whitebox+cloud, 10.38.98.14
+    # blackbox+on-prem) just works from one IP list. The form fields are the
+    # fallback for unknown targets and the explicit-override path.
+    req_mode = str(params.get("mode") or "auto").strip().lower()
+    auto = req_mode not in ("blackbox", "whitebox")
     site_id = (params.get("site_id") or "").strip() or None
     active = bool(params.get("active"))
     debug = bool(params.get("debug"))
-    creds = {k: v for k, v in (params.get("creds") or {}).items() if v}
-    source = (params.get("source") or "").strip() or None
+    form_creds = {k: v for k, v in (params.get("creds") or {}).items() if v}
+    form_source = (params.get("source") or "").strip() or None
     appliance = (params.get("appliance") or "").strip() or None   # dual-path 2nd leg
-    cloud = bool(params.get("cloud"))
+    form_cloud = bool(params.get("cloud"))
+
+    def _int(v, default):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+    form_smb = _int(params.get("smb_port"), 4445)
+    form_rpc = _int(params.get("rpc_port"), 1135)
+    form_ssh = _int(params.get("ssh_port"), 22)
+    _CRED_KEYS = ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")
     try:
         from modules import _portpatch
     except Exception:
         _portpatch = None
 
     emit({"type": "started", "run_id": run_id, "targets": targets,
-          "mode": mode, "iterations": iters, "workers": workers,
+          "mode": req_mode, "iterations": iters, "workers": workers,
           "count": len(mods), "site_id": site_id or "", "active": active})
     try:
         for ti, target in enumerate(targets, 1):
-            emit({"type": "target", "index": ti, "total": len(targets), "target": target})
+            # Resolve this target's FULL profile. In auto, pull each dimension from
+            # the target's memory (fall back to the form for anything unset); in
+            # explicit, the form applies to all targets.
+            prof = core.recall_target(target) if auto else {}
+            posture = core.resolve_posture(target, req_mode)
+            if auto:
+                t_cloud = bool(prof.get("cloud"))
+                t_smb = _int(prof.get("smb_port"), 4445)
+                t_rpc = _int(prof.get("rpc_port"), 1135)
+                t_ssh = _int(prof.get("ssh_port"), 22)
+                t_source = prof.get("source") or form_source
+                t_creds = {k: prof.get(k) for k in _CRED_KEYS if prof.get(k)} or form_creds
+            else:
+                t_cloud, t_smb, t_rpc, t_ssh = form_cloud, form_smb, form_rpc, form_ssh
+                t_source, t_creds = form_source, form_creds
+            emit({"type": "target", "index": ti, "total": len(targets), "target": target,
+                  "posture": posture, "cloud": bool(t_cloud)})
             if _portpatch is not None:
-                if cloud:
-                    try:
-                        _portpatch.CUSTOM_PORT_TARGETS[target] = {
-                            445: int(params.get("smb_port") or 4445),
-                            135: int(params.get("rpc_port") or 1135),
-                            22: int(params.get("ssh_port") or 22)}
-                    except (TypeError, ValueError):
-                        _portpatch.CUSTOM_PORT_TARGETS[target] = {445: 4445, 135: 1135, 22: 22}
+                if t_cloud:
+                    _portpatch.CUSTOM_PORT_TARGETS[target] = {445: t_smb, 135: t_rpc, 22: t_ssh}
                 else:
                     _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
             runner = core.Runner(
@@ -291,23 +318,29 @@ def _run_worker(run_id, params, targets, module_ids):
             runner.auto_retry = auto_retry
             runner.ctx.allow_active = active
             runner.ctx.debug = debug
-            for k, v in creds.items():
+            for k, v in t_creds.items():
                 runner.ctx.creds[k] = v
-            if source:
-                runner.ctx.source_ip = source
+            if t_source:
+                runner.ctx.source_ip = t_source
             try:
-                core.remember_target(target, source=source, cloud=cloud,
-                                     mode=mode, site_id=site_id, **creds)
+                if auto:
+                    core.remember_target(target)   # touch last_used; don't clobber the profile
+                else:
+                    core.remember_target(target, source=t_source, cloud=t_cloud,
+                                         smb_port=(t_smb if t_cloud else None),
+                                         rpc_port=(t_rpc if t_cloud else None),
+                                         ssh_port=(t_ssh if t_cloud else None),
+                                         mode=posture, site_id=site_id, **t_creds)
             except Exception:
                 pass
             ev = core.Evidence(label=(target if len(targets) > 1 else None))
-            root = runner.run(mods, iters, ev, mode=mode, site_id=site_id)
+            root = runner.run(mods, iters, ev, mode=posture, site_id=site_id)
             rel = os.path.relpath(root, HERE)
             st["roots"].append({"target": target, "root": rel})
             emit({"type": "target_done", "target": target, "root": rel})
             if getattr(runner, "_stop", False):
                 break
-            if _portpatch is not None and cloud:
+            if _portpatch is not None and t_cloud:
                 _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
         emit({"type": "done", "roots": st["roots"]})
     except Exception as e:
@@ -665,6 +698,16 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 .seg button:hover{color:var(--fg2)}
 .seg button.on{background:linear-gradient(180deg,var(--raise2),var(--raise));color:var(--fg);
  box-shadow:inset 0 0 0 1px rgba(95,227,232,.28),var(--sh1)}
+/* per-target posture/transport readout (Auto mode) */
+.posturemap{margin-top:var(--s2);display:flex;flex-direction:column;gap:3px;font-family:var(--mono);font-size:10.5px}
+.posturemap:empty{display:none}
+.posturemap .pm{display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg3)}
+.posturemap .pm .ip{color:var(--fg2)}
+.posturemap .pm .pp{font-weight:600}
+.posturemap .pm .pp.w{color:var(--acc)}
+.posturemap .pm .pp.b{color:var(--fg2)}
+.posturemap .pm .xp{color:var(--faint)}
+.posturemap .hint{color:var(--faint);font-style:normal}
 
 /* loaded-creds readout */
 .loaded{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s4);font-family:var(--mono);font-size:11px;color:var(--fg3);margin-top:var(--s3)}
@@ -922,9 +965,11 @@ td.dim{color:var(--fg3)}
    <div class=field>
     <label>Posture</label>
     <div class=seg id=modeseg>
-     <button data-v=blackbox class=on>Black-box</button>
-     <button data-v=whitebox>White-box (allow-all)</button>
+     <button data-v=auto class=on title="each target runs in its own designated posture">Auto · per-target</button>
+     <button data-v=blackbox title="through the SD-WAN as-is">Black-box</button>
+     <button data-v=whitebox title="allow-all baseline">White-box</button>
     </div>
+    <div class=posturemap id=postureMap></div>
    </div>
    <div class=rowf>
     <div class=field><label for=iters>Iterations</label><input id=iters type=number min=1 max=20 value=1></div>
@@ -1067,7 +1112,7 @@ td.dim{color:var(--fg3)}
 
 <script>
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let BOOT=null, MODE="blackbox", ES=null, COUNTS={}, RESN=0;
+let BOOT=null, MODE="auto", ES=null, COUNTS={}, RESN=0;
 let ROWS=[], RUNID=null, SORT={col:"n",dir:1}, RUNNING=false;
 // 6-bucket visual grouping (spectrum / legend / row colors)
 const KIND={SUCCESS:"got",DETECTED:"det",BLOCKED:"blk","NO-SERVICE":"svc",
@@ -1101,8 +1146,8 @@ async function boot(){
    prefillTarget(BOOT.targets[0]); }
  $("#targets").addEventListener("input",()=>{
    const first=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean)[0];
-   if(first) prefillTarget(first);});
- buildBattery(); buildVerdictKey(); applyPreset("original"); refresh(); renderRows(); loadRuns();
+   if(first) prefillTarget(first); renderPostureMap();});
+ buildBattery(); buildVerdictKey(); applyPreset("original"); refresh(); renderRows(); renderPostureMap(); loadRuns();
 }
 
 // Prefill the whole form for ONE target from its saved config.
@@ -1119,8 +1164,28 @@ function prefillTarget(ip){
  if(tc.dc_pass) $("#dcpass").value=tc.dc_pass;
  if(tc.ssh_user) $("#sshuser").value=tc.ssh_user;
  if(tc.ssh_pass) $("#sshpass").value=tc.ssh_pass;
- if(tc.mode){ MODE=(tc.mode==="whitebox")?"whitebox":"blackbox";
-   $$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE)); }
+ // posture is NOT forced onto the global toggle any more — 'Auto · per-target'
+ // resolves each target's designated posture at run time (see renderPostureMap).
+}
+// Show each entered target's resolved posture + transport. In Auto, read it from
+// that target's saved profile; in explicit, the chosen posture applies to all.
+function renderPostureMap(){
+ const host=$("#postureMap"); if(!host) return;
+ const ips=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+ const tc=BOOT&&BOOT.target_config||{};
+ if(!ips.length){ host.innerHTML=""; return; }
+ if(MODE!=="auto"){
+  host.innerHTML=`<span class=pm><span class=hint>explicit <b>${esc(MODE)}</b> applied to all ${ips.length} target(s) — form config used</span></span>`;
+  return;
+ }
+ host.innerHTML=ips.slice(0,8).map(ip=>{
+  const p=tc[ip]||{}; const post=(String(p.mode||"").toLowerCase().startsWith("w"))?"whitebox":"blackbox";
+  const cls=post==="whitebox"?"w":"b";
+  const known=!!tc[ip];
+  const xport=p.cloud?("cloud "+(p.smb_port||4445)+"/"+(p.rpc_port||1135)):"on-prem direct";
+  const tail=known?`<span class=xp>· ${esc(xport)}</span>`:`<span class=xp>· not designated → blackbox · on-prem</span>`;
+  return `<span class=pm><span class=ip>${esc(ip)}</span> <span class="pp ${cls}">${post}</span> ${tail}</span>`;
+ }).join("")+(ips.length>8?`<span class=pm><span class=hint>+${ips.length-8} more…</span></span>`:"");
 }
 function syncRoe(){ $("#roeswitch").classList.toggle("armed",$("#roe").checked); }
 
@@ -1311,8 +1376,9 @@ function stream(id){
   if(e.type==="log")logLine(e.line);
   else if(e.type==="status")addRow(e);
   else if(e.type==="progress")$("#prog").style.width=(e.total?100*e.done/e.total:0)+"%";
-  else if(e.type==="started")setStatus(`running ${e.count} modules · ${e.mode} · ${e.iterations} iteration(s) · ${e.workers} workers`+(e.site_id?` · site ${e.site_id}`:"")+(e.active?" · active":""),"run");
-  else if(e.type==="target")logLine(`\n==== target ${e.index}/${e.total}: ${e.target} ====`);
+  else if(e.type==="started"){const pm=(e.mode==="auto")?"auto · per-target":e.mode;
+    setStatus(`running ${e.count} modules · ${pm} · ${e.iterations} iteration(s) · ${e.workers} workers`+(e.site_id?` · site ${e.site_id}`:"")+(e.active?" · active":""),"run");}
+  else if(e.type==="target")logLine(`\n==== target ${e.index}/${e.total}: ${e.target}`+(e.posture?` · ${e.posture}`:"")+(e.cloud?" · cloud":"")+` ====`);
   else if(e.type==="target_done")showEvidence(e.root);
   else if(e.type==="done")finish();
   else if(e.type==="error"){logLine("[error] "+e.error);finish(e.error);}
@@ -1353,7 +1419,7 @@ async function loadRuns(){
 
 $("#roe").addEventListener("change",syncRoe);
 $("#modeseg").addEventListener("click",e=>{if(!e.target.dataset.v)return;
- MODE=e.target.dataset.v;$$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE));});
+ MODE=e.target.dataset.v;$$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE));renderPostureMap();});
 $$("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
 $("#runbtn").addEventListener("click",startRun);
 $("#stopbtn").addEventListener("click",()=>fetch("api/run/"+$("#stopbtn").dataset.id+"/stop",{method:"POST"}));

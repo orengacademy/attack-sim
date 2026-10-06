@@ -102,7 +102,9 @@ def main():
     ap.add_argument("--fleet", default="fleet.json", help="fleet definition (default: fleet.json)")
     ap.add_argument("-i", "--iterations", type=int, default=1)
     ap.add_argument("-w", "--workers", type=int, default=core.RECOMMENDED_WORKERS)
-    ap.add_argument("--mode", choices=["blackbox", "whitebox"], default="blackbox")
+    ap.add_argument("--mode", choices=["blackbox", "whitebox", "auto"], default="auto",
+                    help="posture for every job (default 'auto' = each target's DESIGNATED "
+                         "posture from memory; blackbox/whitebox forces one for the whole fleet)")
     ap.add_argument("--no-recon", action="store_true")
     ap.add_argument("--force", action="store_true", help="run modules even if prereqs missing")
     # module selection (same semantics as cli.py)
@@ -178,10 +180,13 @@ def main():
 
     for n, j in enumerate(jobs, 1):
         s, t = j["source"], j["target"]
+        # posture is PER TARGET: fleet.json 'mode' on the target wins, else the
+        # fleet-wide --mode (default 'auto' = each target's designated posture).
+        job_mode = core.resolve_posture(t["ip"], t.get("mode") or args.mode)
         selected = _select(modules, _sel_args(args, j["direction"]))
         hdr = (f"\n[{n}/{len(jobs)}] {s.get('id','local')} ({s.get('ip') or 'default'}) "
                f"-> {t['id']} {t['ip']} zone={t.get('zone','')} dir={j['direction'] or 'all'} "
-               f"({len(selected)} modules)")
+               f"posture={job_mode} ({len(selected)} modules)")
         print(_colorize(hdr, args.no_color))
         if not selected:
             print("  (no modules selected for this job — skipped)")
@@ -215,7 +220,7 @@ def main():
             ev = core.Evidence(base=os.path.join(base, f"{s.get('id','local')}__{t['id']}"))
             root = runner.run(selected, max(1, args.iterations), ev,
                               skip_unready=not args.force, recon=not args.no_recon,
-                              mode=args.mode, site_id=appliance or None)
+                              mode=job_mode, site_id=appliance or None)
             counts = _verdict_counts(ev.records)
         except ValueError as e:                 # invalid target / allowlist refusal
             print(f"  [!] {t['id']} skipped: {e}")
