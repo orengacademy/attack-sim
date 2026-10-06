@@ -768,6 +768,41 @@ class TestCloudTransport(unittest.TestCase):
         self.assertEqual(self._eff("203.0.113.9"), (4445, 1135))
 
 
+class TestWhiteboxDetectionSuppression(unittest.TestCase):
+    """Appliance/SOC detections (from the detections file) represent the SD-WAN
+    boundary. In WHITEBOX (the direct allow-all baseline, no appliance in path) a
+    passed attack is a clean SUCCESS — the file-sourced detection must NOT apply.
+    In BLACKBOX (through the boundary) it DOES apply (DETECTED)."""
+
+    def _run(self, mode):
+        m = types.SimpleNamespace()
+        m.META = {"id": "smb", "name": "smb", "category": "Net", "requires": [],
+                  "ports": [("tcp", 389)], "mitre": ["T1021"], "tactic": "LM",
+                  "success_regex": r"PWNED", "blocked_regex": r"never-matches"}
+        m.run = lambda t, c: "PWNED got in"
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        orig = core.load_detections
+        # a GENUINE appliance detection (fired signature + prevention) keyed by id
+        core.load_detections = lambda: {
+            "smb": {"source": "Sangfor IPS",
+                    "note": "signature fired 'SMB exploit' DENY (prevention=yes)"}}
+        try:
+            core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False,
+                                            recon=False, mode=mode)
+        finally:
+            core.load_detections = orig
+        return ev.records[0]
+
+    def test_whitebox_passes_as_success_not_detected(self):
+        r = self._run("whitebox")
+        self.assertEqual(r["baseline_result"], "SUCCESS")   # appliance detection suppressed
+        self.assertNotEqual(r["baseline_result"], "DETECTED")
+
+    def test_blackbox_still_scores_detected(self):
+        r = self._run("blackbox")
+        self.assertEqual(r["baseline_result"], "DETECTED")  # boundary detection applies
+
+
 class TestWaitUnblockFlag(unittest.TestCase):
     """--wait-unblock / HARNESS_WAIT_UNBLOCK sets how long the engine sleeps for an
     IPS quarantine to clear, independent of --cooldown. Default off (0) -> the

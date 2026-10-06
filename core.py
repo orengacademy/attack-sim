@@ -47,7 +47,7 @@ def _read_version_file():
         return None
 
 
-VERSION = _read_version_file() or "1.9.2"
+VERSION = _read_version_file() or "1.9.3"
 
 # ---------------------------------------------------------------------
 # Version gate — refuse to run an OUTDATED copy so every operator on the
@@ -3087,6 +3087,14 @@ class Runner:
             skipped = not ok and _SKIP_MARKER.search(target_raw) is not None
             if ok:
                 det = self._detection(meta, target_raw)
+                # Appliance/SOC detections (from the detections file) represent the
+                # SD-WAN boundary — they do NOT apply to a WHITEBOX run, which is the
+                # direct allow-all baseline with NO appliance in path. There a passed
+                # attack is a clean SUCCESS (that's the whole point of the baseline);
+                # only a module's OWN self-reported detection (detected_regex — e.g.
+                # the target host itself logged/blocked it) still counts in whitebox.
+                if det and det[0] != "module" and getattr(self, "_mode", "blackbox") == "whitebox":
+                    det = None
                 if det and _detection_is_real(det[1]):
                     b, detected_source = "DETECTED", det[0]
                     verdict = (f"attack passed the boundary but the appliance/SOC "

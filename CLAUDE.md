@@ -158,6 +158,13 @@ classifier bug so far was caught by reading them, not by trusting the verdict.
   attached as a note, so an "allowed-and-logged" flow can't masquerade as
   "detection worked" and hide a real finding (operator instruction, ORG2026-70:
   *the policy reference is just a reference — the verdict comes from the test*).
+  ⚠ **File-sourced (appliance/SOC) detections apply only in BLACKBOX.** They
+  represent the SD-WAN boundary, which is NOT in path for a **whitebox** run (the
+  direct allow-all baseline) — so in whitebox a passed attack is a clean
+  **SUCCESS**, and only a module's OWN `detected_regex` (self-reported, e.g. the
+  target host logged/blocked it) can still score DETECTED. (Same principle as the
+  whitebox port-policy suppression: a whitebox result comes purely from the test,
+  with no boundary artifact — detection OR policy — layered on.)
 - **BLOCKED** — filtered/dropped in transit (timeout / filtered port) → control
   likely worked (green).
 - **NO-SERVICE** — port closed/refused (RST): service absent, **not** a control
