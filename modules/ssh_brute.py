@@ -56,11 +56,14 @@ META = {
     "id": "ssh_brute",
     "name": "SSH Brute Force",
     "category": "Network Exploitation",
-    # Pinned near the end (order 98, just before icmp_flood at 99) — the brute
-    # burst trips an SSH-brute signature that BLACKLISTS the tester source, so
-    # it runs after all the quiet modules; only icmp_flood (the DoS flood) runs
-    # after it.
-    "order": 98,
+    # DEAD LAST (order 100, after icmp_flood/DoS at 99). The brute burst trips an
+    # SSH-brute signature that BLACKLISTS the whole tester source, and that ban
+    # lasts LONGER than the DoS anti-flood lockout (and longer than the wait-unblock
+    # window) — so if anything ran after ssh_brute it would be stuck INCONCLUSIVE
+    # waiting for a ban that won't clear in time. Running it absolutely last means
+    # its long blacklist contaminates nothing; the shorter DoS bans (icmp/syn) that
+    # run just before it DO clear inside the wait window.
+    "order": 100,
     "test_type": "va",
     "control": "Brute-force protection / rate-limit (SSH)",
     "fix": "SD-WAN",
