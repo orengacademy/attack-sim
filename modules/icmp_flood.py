@@ -43,9 +43,26 @@ import time
 
 BASELINE_COUNT = 15        # normal-rate ICMP sample
 BASELINE_INTERVAL = "0.2"  # seconds between baseline pings (5 pps)
-FLOOD_COUNT = 50000        # high-rate packets to send
-FLOOD_INTERVAL_US = 200    # microseconds between flood packets (~5000 pps target)
-FLOOD_SECONDS = 12         # wall-clock cap on the flood leg
+
+
+def _int_env(name, default, lo=1):
+    try:
+        return max(lo, int(os.environ.get(name) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+# High-rate flood params — ALL overridable so the operator / SD-WAN team can CRANK
+# the aggression until the anti-DoS either DROPS the flood (BLOCKED = it prevents at
+# that rate) or confirms it never drops (a finding: it only ALERTS). Defaults are
+# ~10k pps for 15s (2x the old 5k/12s). HARNESS_ICMP_SIZE adds payload for a
+# BANDWIDTH flood (e.g. 1400 -> ~112 Mbit/s at 10k pps) to trip a bps-based threshold
+# that a small-packet pps flood won't reach.
+FLOOD_PPS = _int_env("HARNESS_ICMP_PPS", 10000)                        # target packets/sec
+FLOOD_SECONDS = _int_env("HARNESS_ICMP_SECONDS", 15)                   # wall-clock cap (s)
+FLOOD_COUNT = _int_env("HARNESS_ICMP_COUNT", FLOOD_PPS * FLOOD_SECONDS)  # total packets
+FLOOD_SIZE = _int_env("HARNESS_ICMP_SIZE", 0, lo=0)                    # ICMP payload bytes (0=header-only)
+FLOOD_INTERVAL_US = max(1, 1_000_000 // FLOOD_PPS)                     # hping3 -i uX derived from pps
 LOW_LOSS = 20              # <= this %: that rate is "getting through"
 RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
 # RTT shaping is a SECONDARY signal and noisy: on a fast/local link, flooding a
@@ -59,12 +76,11 @@ META = {
     "id": "icmp_flood",
     "name": "ICMP Flood (DoS)",
     "category": "Network Exploitation",
-    # Pinned DEAD LAST (order 99) — the single very last module in the batch,
-    # after ssh_brute (order 98) and every trips_ips IPS-signature attack. The
-    # engine's defer-last stable sort keeps loader order within the deferred
-    # group, so the highest `order` runs last. Both DoS/brute floods run at the
-    # very end so the anti-DoS rate-limit / blacklist they trip can't
-    # contaminate any other module's verdict.
+    # Near the end (order 99), just BEFORE ssh_brute (order 100). Both DoS/brute
+    # floods run at the very end so the anti-DoS rate-limit / blacklist they trip
+    # can't contaminate other modules; ssh_brute is DEAD last because its brute
+    # blacklist outlives icmp's DoS lockout (which clears inside the wait window,
+    # so icmp running just before ssh_brute doesn't strand it).
     "order": 99,
     "test_type": "dos",
     "control": "ICMP rate-limit / flood (DoS) protection",
@@ -193,7 +209,10 @@ def _hping_flood(target):
     import core
     prefix = (["timeout", str(FLOOD_SECONDS)] if shutil.which("timeout") else [])
     cmd = prefix + core.sudo_prefix() + [
-        "hping3", "-1", "-c", str(FLOOD_COUNT), "-i", "u%d" % FLOOD_INTERVAL_US, target]
+        "hping3", "-1", "-c", str(FLOOD_COUNT), "-i", "u%d" % FLOOD_INTERVAL_US]
+    if FLOOD_SIZE > 0:
+        cmd += ["-d", str(FLOOD_SIZE)]        # payload bytes -> bandwidth flood
+    cmd += [target]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=FLOOD_SECONDS + 10, stdin=subprocess.DEVNULL)
@@ -205,8 +224,9 @@ def _hping_flood(target):
 
 
 def run(target, ctx):
-    out = [f"# ICMP flood vs {target} — boundary rate-limit test "
-           f"(baseline {BASELINE_COUNT}-ping vs {FLOOD_COUNT}-pkt high-rate flood)"]
+    out = [f"# ICMP flood vs {target} — boundary rate-limit test (baseline "
+           f"{BASELINE_COUNT}-ping vs {FLOOD_COUNT}-pkt flood @ ~{FLOOD_PPS} pps"
+           + (f", {FLOOD_SIZE}B payload" if FLOOD_SIZE else "") + ")"]
 
     # ---- leg 1: normal-rate baseline (does ordinary ICMP work at all?) --------
     base_loss, base_rtt, base_txt = _baseline(target)
@@ -286,9 +306,11 @@ def run(target, ctx):
     elif flood_loss <= LOW_LOSS:
         out.append(
             f"PASS: the high-rate ICMP flood was delivered end-to-end "
-            f"({flood_loss:.1f}% loss over {FLOOD_COUNT} packets) — the boundary did "
-            "NOT rate-limit or block ICMP flooding (finding: deploy ICMP "
-            "rate-limiting / DoS protection on the SD-WAN).")
+            f"({flood_loss:.1f}% loss over {FLOOD_COUNT} packets @ ~{FLOOD_PPS} pps"
+            + (f", {FLOOD_SIZE}B payload" if FLOOD_SIZE else "") + ") — the boundary did "
+            "NOT DROP this flood (it may only ALERT: detection != prevention). Enable "
+            "anti-DoS PREVENTION/blocking, and crank HARNESS_ICMP_PPS / HARNESS_ICMP_SIZE "
+            "/ HARNESS_ICMP_SECONDS to find the drop threshold or confirm it never drops.")
     elif not base_ok:
         out.append(
             f"[INCONCLUSIVE] even normal-rate ICMP lost {base_loss}% — the host/path is "
