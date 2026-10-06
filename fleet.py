@@ -127,6 +127,7 @@ def main():
     ap.add_argument("--evidence-dir", default="evidence")
     ap.add_argument("--no-color", action="store_true")
     args = ap.parse_args()
+    core.enforce_latest_version()   # refuse to run an outdated copy (see core.py)
 
     try:
         fleet = load_fleet(args.fleet)

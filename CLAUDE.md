@@ -242,6 +242,19 @@ sizes the wait window so a banned source is waited out, not dead-ended; 0 = old
 attacks whose verdict was poisoned by a source-blacklist once the ban clears, so
 they earn a real per-attack verdict; N rounds, default 1, 0 = off).
 
+**Version gate** (`core.enforce_latest_version()`, called from every front-end's
+`main()` — CLI/GUI/web/fleet/preflight, never at import so the offline suite stays
+offline): refuses to run an **outdated** copy. The canonical latest is the
+committed **`VERSION`** file on `main` (public repo → fetched anonymously over
+stdlib urllib; `core.VERSION` reads that same file locally, so it is the single
+source of truth). Confirmed outdated ⇒ **hard stop** (`sys.exit(3)` + how to
+update); can't reach the check (offline/error) ⇒ **warn + run** so air-gapped labs
+still work, **unless** `HARNESS_REQUIRE_LATEST` is set (then it also stops);
+`HARNESS_SKIP_VERSION_CHECK=1` bypasses entirely (deliberate override). A
+client-side gate stops the honest/casual case only — for hard assurance also gate
+a server-side dependency. **Bump the `VERSION` file on every release** (it is what
+gates all older copies); keep a matching git tag/`gh release`.
+
 **`--debug` / Debug checkbox** (`ctx.debug`): injects a verbose flag into an
 allowlisted set of tools (curl `-v`, ldapsearch `-v`, hydra `-d`, impacket
 `-debug`), streams each module's full raw output live on the console, and shows a

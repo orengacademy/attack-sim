@@ -44,6 +44,7 @@ def main():
                          "(e.g. the on-prem DC + the cloud DC). Active — needs "
                          "authorisation, same as running the exploits.")
     args = ap.parse_args()
+    core.enforce_latest_version()   # refuse to run an outdated copy (see core.py)
 
     modules = loader.discover()
     if not modules:

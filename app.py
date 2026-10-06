@@ -1786,6 +1786,7 @@ def main():
     ap.add_argument("--token", default=os.environ.get("HARNESS_WEB_TOKEN"),
                     help="require this token (?token= or X-Token header) on every request")
     args = ap.parse_args()
+    core.enforce_latest_version()   # refuse to serve from an outdated copy (see core.py)
     TOKEN = args.token or None
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
