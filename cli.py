@@ -163,6 +163,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         mid = r.get("attack_id") or r.get("attack")
         d = by_mod.setdefault(mid, {"name": r.get("attack", mid), "cat": r.get("category", ""),
                                     "mitre": ", ".join(r.get("mitre", []) or []),
+                                    "cwe": ", ".join(r.get("cwe", []) or []),
                                     "ports": r.get("ports", "") or "", "policy": r.get("policy", "") or "",
                                     "dir": r.get("direction", ""), "vs": [],
                                     "verdicts": {}, "outputs": {}, "iters": []})
@@ -193,9 +194,16 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     print(_c("┏" + "━" * W + "┓", ACC, no_color))
     _hline(f"  CONTROL VALIDATION — RESULTS   ·   v{core.VERSION}"
            + (f"   ·   SITE {site}" if site else ""))
-    _mode = (getattr(ev, "meta", {}) or {}).get("mode") or (args.mode or "blackbox")
-    _hline(f"  {target}   ·   {_mode}   ·   {n} module(s) × {args.iterations} iter"
-           f"   ·   {elapsed:.0f}s")
+    _meta = getattr(ev, "meta", {}) or {}
+    _mode = _meta.get("mode") or (args.mode or "blackbox")
+    # source -> destination and transport (cloud/on-prem), recorded per run so the
+    # header is self-describing (from where, to what, over which network path).
+    _src = _meta.get("source_ip") or ""
+    _cloud = _meta.get("cloud")
+    _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
+    _dest = f"{_src}  →  {target}" if _src else target
+    _hline(f"  {_dest}   ·   {_mode}" + (f"   ·   {_net}" if _net else "")
+           + f"   ·   {n} module(s) × {args.iterations} iter   ·   {elapsed:.0f}s")
     _hline(f"  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
            + ("   ·   DEBUG" if getattr(args, "debug", False) else ""))
     print(_c("┗" + "━" * W + "┛", ACC, no_color))
@@ -221,10 +229,10 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     # icmp_flood's loss-delta falling in the ambiguous band on one run and
     # not another).
     show_iters = args.iterations > 1
-    NUM, VER, MOD, CAT, PORTS, MITRE, DET = 3, 13, 28, 14, 11, 13, 30
+    NUM, VER, MOD, CAT, PORTS, MITRE, CWE, DET = 3, 13, 26, 13, 11, 13, 11, 28
     ITERS_W = 22 * min(args.iterations, 4)   # grows with iteration count, caps at 4x
     cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT),
-            ("PORTS", PORTS), ("MITRE", MITRE),
+            ("PORTS", PORTS), ("MITRE", MITRE), ("CWE", CWE),
             (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET))]
     if debug:
         cols.append(("TIME", 7))   # per-module wall-clock (debug only)
@@ -264,8 +272,9 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
                 detail = "rate-limited/shaped (boundary policed the flood)"
-        cells = [str(i), f"{icon} {d['v']}", d["name"], cat, d.get("ports", ""), d.get("mitre", "")]
-        colors = [DIM, col, None, ACC, DIM, DIM]
+        cells = [str(i), f"{icon} {d['v']}", d["name"], cat, d.get("ports", ""),
+                 d.get("mitre", ""), d.get("cwe", "")]
+        colors = [DIM, col, None, ACC, DIM, DIM, DIM]
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                    key=lambda it: it[0])

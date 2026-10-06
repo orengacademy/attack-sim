@@ -162,13 +162,17 @@ class HarnessGUI:
         ttk.Label(trow, text="TARGETS", style="Sub.TLabel").pack(side="left")
         ttk.Button(trow, text="+ add", width=7,
                    command=self._add_target_row).pack(side="left", padx=(8, 6))
-        ttk.Label(trow, text="tick a row = whitebox (allow-all) baseline",
+        ttk.Label(trow, text="each row picks its own posture + network",
                   style="Muted.TLabel").pack(side="left")
-        # Each row = an IP/host + a per-target WHITEBOX tick. Row 1 uses the
-        # on-screen creds/cloud/source below; added rows use their OWN remembered
-        # cfg. "+ add" appends a row (unlimited N, like CLI --target A,B,C).
+        # Each row = an IP/host + TWO per-target dimensions, chosen right on the row:
+        #   • posture   blackbox (through the SD-WAN as-is) / whitebox (allow-all baseline)
+        #   • net       on-prem  (SMB/RPC direct 445/135)   / cloud    (NAT'd 4445/1135)
+        # Row 1 also uses the on-screen creds/source below; added rows pull their
+        # OWN remembered creds. "+ add" appends a row (unlimited N, like CLI
+        # --target A,B,C). This replaces the old "per-row tick + one global cloud
+        # checkbox" split, which only let row 1 choose its network.
         self._rows_frame = ttk.Frame(f); self._rows_frame.pack(fill="x", padx=10, pady=(2, 2))
-        self.target_rows = []          # [(entry, whitebox_var, row_frame)]
+        self.target_rows = []          # [(entry, posture_var, transport_var, row_frame)]
         self._add_target_row(primary=True)
 
         # ---------- iterations / workers ----------
@@ -204,15 +208,28 @@ class HarnessGUI:
         scell = ttk.Frame(cg); scell.grid(row=2, column=3, sticky="w", padx=(4, 0), pady=2)
         self.ssh_pass_entry = ttk.Entry(scell, width=18, show="•"); self.ssh_pass_entry.pack(side="left")
         self._eye(scell, self.ssh_pass_entry)
-        _hint("Blank = credentials.env / env. SSH creds separate; blank -> DC creds. "
-              "Passwords redacted (***) in evidence.")
+        # SSH login DEFAULTS to the Windows/DC login: the lab's SSH target IS the
+        # Windows Administrator (same Administrator / NewPass123!). Both SSH fields
+        # mirror the DC user+pass (live, as you type) until you set a DISTINCT SSH
+        # value — then they stop following. ssh_brute also falls back to the DC
+        # creds at runtime when the SSH fields are blank.
+        self._ssh_tracks_dc = True
+        self.user_entry.bind("<KeyRelease>", self._on_dc_login_change)
+        self.pass_entry.bind("<KeyRelease>", self._on_dc_login_change)
+        self.ssh_user_entry.bind("<KeyRelease>", self._on_ssh_login_change)
+        self.ssh_pass_entry.bind("<KeyRelease>", self._on_ssh_login_change)
+        _hint("Blank = credentials.env / env. SSH login defaults to the Windows/DC "
+              "Administrator login until you type a different one. Passwords redacted (***) in evidence.")
 
-        # ---------- CLOUD / NAT ports (always editable) ----------
+        # ---------- CLOUD NAT port defaults (per-row "cloud" uses these) ----------
+        # The on-prem/cloud choice lives on each TARGET ROW now. A row set to
+        # "on-prem" reaches SMB/RPC directly on 445/135; a row set to "cloud" uses
+        # the NAT'd alternates below (445->4445, 135->1135, 22->SSH). These boxes
+        # are just the DEFAULT NAT ports every cloud row uses — a per-target
+        # remembered port still wins.
         _sep()
         cf = ttk.Frame(f); cf.pack(fill="x", padx=10, pady=(2, 0))
-        self.cloud_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(cf, text="Cloud target (NAT'd ports)", variable=self.cloud_var,
-                        command=self._toggle_cloud_ports).pack(side="left")
+        ttk.Label(cf, text="Cloud NAT ports", style="Sub.TLabel").pack(side="left")
         ttk.Label(cf, text="SMB").pack(side="left", padx=(12, 2))
         self.smb_port = tk.StringVar(value="4445")
         self._smb_entry = ttk.Entry(cf, textvariable=self.smb_port, width=6)
@@ -225,8 +242,9 @@ class HarnessGUI:
         self.ssh_port = tk.StringVar(value="22")
         self._ssh_port_entry = ttk.Entry(cf, textvariable=self.ssh_port, width=6)
         self._ssh_port_entry.pack(side="left")
-        _hint("Tick to apply the 445->SMB / 135->RPC / 22->SSH NAT mapping (impacket + "
-              "ssh_brute reach the forwarded ports). Boxes stay editable either way.")
+        _hint("Only a row whose net = cloud applies this 445->SMB / 135->RPC / 22->SSH "
+              "NAT mapping (impacket + ssh_brute reach the forwarded ports); on-prem rows "
+              "use 445/135/22 directly.")
 
         # ---------- OPTIONS ----------
         _sep()
@@ -282,6 +300,9 @@ class HarnessGUI:
                     ent.insert(0, dflt[k])
         except Exception:
             pass
+        # SSH user+pass default to the Windows/DC login unless a distinct one is
+        # already configured (env/credentials.env). Sets the "tracks DC" flag.
+        self._sync_ssh_creds()
 
         # ---------- privilege + a visible "what loaded" line ----------
         _sep()
@@ -307,10 +328,57 @@ class HarnessGUI:
             return
         def mk(entry):
             return "✓" if entry.get().strip() else "—"
+        ssh_note = "= Windows login" if getattr(self, "_ssh_tracks_dc", True) else "custom"
         self._prefill_note.configure(
             text=(f"Loaded:  domain {mk(self.domain_entry)}   DC user {mk(self.user_entry)}   "
                   f"DC pass {mk(self.pass_entry)}   |   SSH user {mk(self.ssh_user_entry)}   "
-                  f"SSH pass {mk(self.ssh_pass_entry)}     (dash = empty; SSH blank -> DC creds)"))
+                  f"SSH pass {mk(self.ssh_pass_entry)} ({ssh_note})     (dash = empty)"))
+
+    # ---- SSH login MIRRORS the Windows/DC login (the lab's SSH target IS the
+    # ---- Windows Administrator) — both user AND pass follow the DC fields by
+    # ---- default, until you type a DISTINCT SSH user or pass.
+    def _set_entry(self, entry, value):
+        entry.delete(0, "end")
+        if value:
+            entry.insert(0, value)
+
+    def _on_dc_login_change(self, *_):
+        """User edited the DC/Windows user or pass: while the SSH login is tracking
+        it, keep SSH user+pass in lock-step so 'SSH = Windows Administrator' holds
+        by default."""
+        if getattr(self, "_ssh_tracks_dc", True):
+            self._set_entry(self.ssh_user_entry, self.user_entry.get())
+            self._set_entry(self.ssh_pass_entry, self.pass_entry.get())
+            self._update_prefill_note()
+
+    def _on_ssh_login_change(self, *_):
+        """User edited an SSH field: SSH keeps tracking the DC login only while both
+        SSH fields still equal the DC login (or are blank). A distinct SSH user or
+        pass detaches it, so a genuinely separate SSH login is never clobbered by a
+        later DC edit."""
+        self._recompute_ssh_tracking()
+        self._update_prefill_note()
+
+    def _recompute_ssh_tracking(self):
+        su, sp = self.ssh_user_entry.get(), self.ssh_pass_entry.get()
+        du, dp = self.user_entry.get(), self.pass_entry.get()
+        # Windows usernames are case-INSENSITIVE, so 'administrator' == the DC
+        # 'Administrator' is still "following the Windows login" (passwords are
+        # case-sensitive, so those compare exactly).
+        user_ok = (not su.strip()) or (su.lower() == du.lower())
+        pass_ok = (not sp.strip()) or (sp == dp)
+        self._ssh_tracks_dc = user_ok and pass_ok
+
+    def _sync_ssh_creds(self):
+        """Prefill/recall helper: if an SSH field is blank, fill it from the
+        matching DC field (SSH follows the Windows Administrator login), then
+        (re)compute whether SSH is still tracking the DC login."""
+        if not self.ssh_user_entry.get().strip() and self.user_entry.get().strip():
+            self._set_entry(self.ssh_user_entry, self.user_entry.get())
+        if not self.ssh_pass_entry.get().strip() and self.pass_entry.get().strip():
+            self._set_entry(self.ssh_pass_entry, self.pass_entry.get())
+        self._recompute_ssh_tracking()
+        self._update_prefill_note()
 
     def _refresh_privilege(self):
         ps = core.privilege_status(self.modules)
@@ -508,12 +576,15 @@ class HarnessGUI:
         # tree + BOTH scrollbars in a grid frame (packing the scrollbar after an
         # expanding tree squeezes it to zero width — the old "can't scroll" bug).
         tf = ttk.Frame(left); tf.pack(fill="both", expand=True, padx=2, pady=2)
-        cols = ("no", "time", "tgt", "ports", "dir", "cat", "attack", "iter", "result", "mitre", "cwe")
+        cols = ("no", "time", "tgt", "posture", "net", "ports", "dir", "cat",
+                "attack", "iter", "result", "mitre", "cwe")
         self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
         self._sort_state = {}   # col -> last sort was descending
         # click any heading to sort by that column (toggles asc/desc)
         for c, t, w, a in (("no", "#", 34, "center"), ("time", "Time", 64, "center"),
-                           ("tgt", "Target", 104, "w"), ("ports", "Ports", 72, "w"),
+                           ("tgt", "Target", 104, "w"),
+                           ("posture", "Posture", 72, "center"), ("net", "Net", 60, "center"),
+                           ("ports", "Ports", 72, "w"),
                            ("dir", "Dir", 38, "center"), ("cat", "Category", 118, "w"),
                            ("attack", "Attack", 150, "w"), ("iter", "It", 26, "center"),
                            ("result", "Result", 96, "center"), ("mitre", "MITRE", 110, "w"),
@@ -581,25 +652,36 @@ class HarnessGUI:
         return out
 
     def _add_target_row(self, primary=False):
-        """Append a target row: IP/host entry + a per-target whitebox tick (and a
-        remove button on non-primary rows). The primary row's widgets are also
-        exposed as self.target / self.whitebox_var so recall/save/prefill work."""
-        rf = ttk.Frame(self._rows_frame); rf.pack(anchor="w", pady=1)
+        """Append a target row: IP/host entry + the two per-target dimensions as
+        dropdowns right on the row — posture (blackbox/whitebox) and net
+        (on-prem/cloud) — plus a remove button on non-primary rows. The primary
+        row's widgets are also exposed as self.target / self.posture_var /
+        self.transport_var so recall/save/prefill work. Typing an IP recalls that
+        target's remembered posture + network (and, for the primary row, its
+        creds/source) so a known target lands in the right config automatically."""
+        rf = ttk.Frame(self._rows_frame); rf.pack(anchor="w", pady=2)
         entry = ttk.Entry(rf, width=18); entry.pack(side="left")
-        wb = tk.BooleanVar(value=False)
-        ttk.Checkbutton(rf, text="whitebox", variable=wb).pack(side="left", padx=(6, 0))
+        ttk.Label(rf, text="posture", style="Muted.TLabel").pack(side="left", padx=(10, 2))
+        pv = tk.StringVar(value="blackbox")
+        ttk.Combobox(rf, textvariable=pv, values=["blackbox", "whitebox"],
+                     width=9, state="readonly").pack(side="left")
+        ttk.Label(rf, text="net", style="Muted.TLabel").pack(side="left", padx=(10, 2))
+        tv = tk.StringVar(value="on-prem")
+        ttk.Combobox(rf, textvariable=tv, values=["on-prem", "cloud"],
+                     width=8, state="readonly").pack(side="left")
+        entry.bind("<FocusOut>", lambda e, en=entry, p=pv, t=tv, pr=primary: self._recall_row(en, p, t, pr))
+        entry.bind("<Return>", lambda e, en=entry, p=pv, t=tv, pr=primary: self._recall_row(en, p, t, pr))
         if primary:
             self.target = entry
-            self.whitebox_var = wb
-            entry.bind("<FocusOut>", lambda e: self._recall_target())
-            entry.bind("<Return>", lambda e: self._recall_target())
+            self.posture_var = pv
+            self.transport_var = tv
         else:
             ttk.Button(rf, text="−", width=2,
-                       command=lambda: self._remove_target_row(rf)).pack(side="left", padx=(6, 0))
-        self.target_rows.append((entry, wb, rf))
+                       command=lambda: self._remove_target_row(rf)).pack(side="left", padx=(10, 0))
+        self.target_rows.append((entry, pv, tv, rf))
 
     def _remove_target_row(self, rf):
-        self.target_rows = [(e, w, f) for (e, w, f) in self.target_rows if f is not rf]
+        self.target_rows = [(e, p, t, f) for (e, p, t, f) in self.target_rows if f is not rf]
         rf.destroy()
 
     def _eye(self, parent, entry):
@@ -611,13 +693,20 @@ class HarnessGUI:
                         command=lambda: entry.config(show="" if var.get() else "•"),
                         style="TCheckbutton").pack(side="left", padx=(4, 4))
 
-    def _toggle_cloud_ports(self):
-        # The SMB/RPC/SSH port boxes stay ALWAYS editable/visible now (a disabled,
-        # greyed-out box read as "missing input"). The Cloud tick only decides
-        # whether the NAT map is APPLIED for the run — see _cfg_from_screen /
-        # _apply_cloud_ports, which both gate on self.cloud_var. Kept as a method
-        # because the checkbutton command and _recall_target still call it.
-        return
+    def _recall_row(self, entry, posture_var, transport_var, primary=False):
+        """Fill a row's posture + net dropdowns from that target's remembered
+        config, and — for the primary row — its creds/source/ports too. A target
+        with nothing remembered keeps the row's current (default) selection."""
+        try:
+            rec = core.recall_target(entry.get().strip()) or {}
+        except Exception:
+            rec = {}
+        if rec.get("mode"):
+            posture_var.set("whitebox" if str(rec["mode"]).lower().startswith("w") else "blackbox")
+        if "cloud" in rec:
+            transport_var.set("cloud" if rec.get("cloud") else "on-prem")
+        if primary:
+            self._recall_primary_creds(rec)
 
     def _prefill_last_target(self):
         """On launch, resume the most-recently-used target: set the Target field
@@ -646,30 +735,25 @@ class HarnessGUI:
         self._recall_target()   # fills source/cloud/creds for this target
 
     def _recall_target(self):
-        """Populate source/cloud/ports from the last run against this target."""
-        try:
-            rec = core.recall_target(self.target.get().strip())
-        except Exception:
-            rec = {}
-        if not rec:
+        """Recall the PRIMARY row (posture + net dropdowns) and its creds/source."""
+        self._recall_row(self.target, self.posture_var, self.transport_var, primary=True)
+
+    def _recall_primary_creds(self, rec):
+        """Fill the shared on-screen creds/source/port fields from a target's
+        remembered record. A remembered per-target value WINS over the default
+        prefill, so switching to a known target loads that target's creds (incl.
+        its password). Targets with nothing remembered keep whatever is in the
+        field (the resolved defaults)."""
+        if not hasattr(self, "pass_entry"):
             return
         if rec.get("source") and not self.source_entry.get().strip():
             self.source_entry.insert(0, rec["source"])
-        if rec.get("mode"):
-            self.whitebox_var.set(rec["mode"] == "whitebox")
-        if "cloud" in rec:
-            self.cloud_var.set(bool(rec["cloud"]))
-            if rec.get("smb_port"):
-                self.smb_port.set(str(rec["smb_port"]))
-            if rec.get("rpc_port"):
-                self.rpc_port.set(str(rec["rpc_port"]))
-            if rec.get("ssh_port"):
-                self.ssh_port.set(str(rec["ssh_port"]))
-            self._toggle_cloud_ports()
-        # per-target credentials (DC/AD + separate SSH) + Site ID — a remembered
-        # per-target value WINS over the default prefill, so switching to a known
-        # target loads that target's creds (incl. its password). Targets with
-        # nothing remembered keep whatever is in the field (the resolved defaults).
+        if rec.get("smb_port"):
+            self.smb_port.set(str(rec["smb_port"]))
+        if rec.get("rpc_port"):
+            self.rpc_port.set(str(rec["rpc_port"]))
+        if rec.get("ssh_port"):
+            self.ssh_port.set(str(rec["ssh_port"]))
         for key, entry in (("domain", self.domain_entry), ("dc_user", self.user_entry),
                            ("dc_pass", self.pass_entry),
                            ("ssh_user", self.ssh_user_entry), ("ssh_pass", self.ssh_pass_entry),
@@ -677,25 +761,29 @@ class HarnessGUI:
             if rec.get(key):
                 entry.delete(0, "end")
                 entry.insert(0, rec[key])
+        # SSH pass still defaults to the Windows/DC pass when this target has no
+        # distinct SSH pass remembered.
+        self._sync_ssh_creds()
         self._update_prefill_note()   # reflect this target's loaded creds
 
     def _save_target(self, target):
-        """Remember this target's source/cloud/creds options for next time."""
+        """Remember this target's posture/net/creds options for next time."""
         try:
+            cloud = (self.transport_var.get() == "cloud")
             core.remember_target(
                 target,
                 source=self.source_entry.get().strip() or None,
-                cloud=bool(self.cloud_var.get()),
-                smb_port=(self.smb_port.get().strip() or None) if self.cloud_var.get() else None,
-                rpc_port=(self.rpc_port.get().strip() or None) if self.cloud_var.get() else None,
-                ssh_port=(self.ssh_port.get().strip() or None) if self.cloud_var.get() else None,
+                cloud=cloud,
+                smb_port=(self.smb_port.get().strip() or None) if cloud else None,
+                rpc_port=(self.rpc_port.get().strip() or None) if cloud else None,
+                ssh_port=(self.ssh_port.get().strip() or None) if cloud else None,
                 domain=self.domain_entry.get().strip() or None,
                 dc_user=self.user_entry.get().strip() or None,
                 dc_pass=self.pass_entry.get().strip() or None,
                 ssh_user=self.ssh_user_entry.get().strip() or None,
                 ssh_pass=self.ssh_pass_entry.get().strip() or None,
                 site_id=self.site_entry.get().strip() or None,
-                mode=("whitebox" if self.whitebox_var.get() else "blackbox"))
+                mode=self.posture_var.get())
         except Exception:
             pass
 
@@ -722,7 +810,7 @@ class HarnessGUI:
             if v:
                 creds[key] = v
         cloud_map = None
-        if self.cloud_var.get():
+        if self.transport_var.get() == "cloud":
             try:
                 cloud_map = {445: int((self.smb_port.get() or "4445").strip()),
                              135: int((self.rpc_port.get() or "1135").strip()),
@@ -731,24 +819,43 @@ class HarnessGUI:
                 cloud_map = {445: 4445, 135: 1135, 22: 22}
         return {"creds": creds, "source": self.source_entry.get().strip() or None,
                 "cloud_map": cloud_map,
-                "mode": "whitebox" if self.whitebox_var.get() else "blackbox"}
+                "mode": self.posture_var.get()}
 
-    def _cfg_recalled(self, target):
-        """Build a target's config from its remembered .target_memory.json entry
-        (for the 2nd target, which uses its OWN saved cloud/creds, not the screen)."""
+    def _cfg_recalled(self, target, transport=None):
+        """Build an added row's config from its remembered .target_memory.json entry.
+        A target's OWN remembered creds win; any cred it does NOT remember falls
+        back to the on-screen (primary) creds, so you can type one Administrator /
+        NewPass123! set once and run it against every DC row without per-target
+        setup (the inventory's Windows targets all share that login). `transport`
+        ("on-prem"/"cloud") comes from that row's net dropdown and OVERRIDES the
+        remembered cloud flag, so flipping a row to cloud applies the 4445/1135 NAT
+        map even on first run; on-prem forces the direct 445/135. Called on the MAIN
+        thread, so reading the Tk cred fields here is safe."""
         try:
             rec = core.recall_target(target) or {}
         except Exception:
             rec = {}
         creds = {k: rec[k] for k in ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")
                  if rec.get(k)}
+        # inherit the on-screen primary creds for anything this target doesn't carry
+        for k, ent in (("domain", self.domain_entry), ("dc_user", self.user_entry),
+                       ("dc_pass", self.pass_entry), ("ssh_user", self.ssh_user_entry),
+                       ("ssh_pass", self.ssh_pass_entry)):
+            if k not in creds:
+                v = ent.get().strip()
+                if v:
+                    creds[k] = v
+        if transport in ("cloud", "on-prem"):
+            cloud = (transport == "cloud")
+        else:
+            cloud = bool(rec.get("cloud"))
         cloud_map = None
-        if rec.get("cloud"):
+        if cloud:
             cloud_map = {445: int(rec.get("smb_port") or 4445),
                          135: int(rec.get("rpc_port") or 1135),
                          22: int(rec.get("ssh_port") or 22)}
         return {"creds": creds, "source": rec.get("source") or None, "cloud_map": cloud_map,
-                "mode": rec.get("mode") or "blackbox"}   # 2nd target: its OWN saved posture
+                "mode": rec.get("mode") or "blackbox"}   # added row: its OWN saved posture
 
     @staticmethod
     def _apply_cfg(runner, target, cfg):
@@ -767,7 +874,7 @@ class HarnessGUI:
             runner.ctx.source_ip = cfg["source"]
 
     def _apply_cloud_ports(self, target_ip):
-        """When 'Cloud target' is ticked, register the target's NAT'd SMB/RPC
+        """When the PRIMARY row's net = cloud, register the target's NAT'd SMB/RPC
         ports so the impacket modules reach the forwarded alternates (same
         mechanism as modules/_portpatch.py, applied per run for this target)."""
         try:
@@ -775,8 +882,8 @@ class HarnessGUI:
         except Exception as e:
             self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
             return
-        if not self.cloud_var.get():
-            # Cloud OFF: clear any remap this long-lived GUI left for this target
+        if self.transport_var.get() != "cloud":
+            # on-prem: clear any remap this long-lived GUI left for this target
             # from an earlier cloud run, or a direct (non-NAT) run would keep
             # redirecting SMB/RPC to the stale alternate ports.
             _portpatch.CUSTOM_PORT_TARGETS.pop(target_ip, None)
@@ -894,19 +1001,20 @@ class HarnessGUI:
         # Read the Tk widgets + apply per-target cloud port maps on the MAIN thread
         # (Tk access must not happen off-thread); the blocking preflight + recon
         # (socket probes) then run in a worker so the GUI never freezes.
-        tgts = [(e.get().strip(), (i == 0)) for i, (e, _w, _f) in enumerate(self.target_rows)]
-        tgts = [(t, scr) for t, scr in tgts if t]
+        tgts = [(e.get().strip(), (i == 0), t.get())
+                for i, (e, _p, t, _f) in enumerate(self.target_rows)]
+        tgts = [(t, scr, tr) for t, scr, tr in tgts if t]
         prepared = []
-        for tgt, from_screen in tgts:
+        for tgt, from_screen, transport in tgts:
             ok, why = core.validate_target(tgt)
             if not ok:
                 prepared.append((tgt, False, f"invalid target — {why}")); continue
             try:
                 from modules import _portpatch
                 if from_screen:
-                    self._apply_cloud_ports(tgt)   # honour the on-screen Cloud tick
+                    self._apply_cloud_ports(tgt)   # honour the primary row's net dropdown
                 else:
-                    cfg = self._cfg_recalled(tgt)  # 2nd target: its own saved cloud map
+                    cfg = self._cfg_recalled(tgt, transport)  # added row: its net + saved cloud map
                     if cfg.get("cloud_map"):
                         _portpatch.CUSTOM_PORT_TARGETS[tgt] = cfg["cloud_map"]
                     else:
@@ -1045,13 +1153,14 @@ class HarnessGUI:
         self.log.see("end")
 
     def _add_status(self, aid, name, it, result, direction="", mitre="", cwe="",
-                    category="", target="", ports=""):
+                    category="", target="", ports="", posture="", net=""):
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         import time as _t
         ts = _t.strftime("%H:%M:%S")   # when this result landed (completion time)
         iid = self.status_tree.insert(
             "", "end",
-            values=(self._status_seq, ts, target, ports, direction, category, name, it, result, mitre, cwe),
+            values=(self._status_seq, ts, target, posture, net, ports, direction,
+                    category, name, it, result, mitre, cwe),
             tags=(result,))
         self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
@@ -1111,12 +1220,14 @@ class HarnessGUI:
                     meta = getattr(mod, "META", {}) if mod else {}
                     # the target port(s) this module probes/attacks (icmp/egress have none)
                     ports = core.display_ports(meta, tgt) or "—"
+                    dims = getattr(self, "_target_dims", {}).get(tgt, {})
                     self._add_status(
                         aid, name, it, result,
                         direction=meta.get("direction", "a2b"),
                         mitre=", ".join(meta.get("mitre", [])),
                         cwe=", ".join(meta.get("cwe", [])),
-                        category=meta.get("category", ""), target=tgt, ports=ports)
+                        category=meta.get("category", ""), target=tgt, ports=ports,
+                        posture=dims.get("posture", ""), net=dims.get("net", ""))
                 elif kind == "progress":
                     self.progress["maximum"] = p[1]; self.progress["value"] = p[0]
                 elif kind == "new_target":
@@ -1155,18 +1266,23 @@ class HarnessGUI:
             if not allowed:
                 messagebox.showerror("Target not allowed", f"{tip}: {areason}"); return False
             return True
-        # Each Target ROW: row 1 uses the on-screen config, added rows use their own
-        # remembered cfg; posture comes from THAT row's whitebox tick.
-        for i, (entry, wb, _rf) in enumerate(self.target_rows):
+        # Each Target ROW carries its own posture + net. Row 1 uses the on-screen
+        # creds/source; added rows use their own remembered creds. Both posture
+        # (whitebox/blackbox) and net (on-prem/cloud) come from THAT row's dropdowns.
+        self._target_dims = {}   # target -> {"posture","net"} for the live results table
+        for i, (entry, pv, tv, _rf) in enumerate(self.target_rows):
             tip = entry.get().strip()
             if not tip:
                 continue
             if not _ok_target(tip):
                 return
-            cfg = self._cfg_from_screen() if i == 0 else self._cfg_recalled(tip)
-            cfg["mode"] = "whitebox" if wb.get() else "blackbox"   # per-ROW posture
+            transport = tv.get()                                   # "on-prem" / "cloud"
+            cfg = self._cfg_from_screen() if i == 0 else self._cfg_recalled(tip, transport)
+            cfg["mode"] = pv.get()                                 # per-ROW posture
+            self._target_dims[tip] = {"posture": cfg["mode"], "net": transport}
             if i > 0:
-                core.remember_target(tip, mode=cfg["mode"])        # persist added row's posture
+                # persist the added row's posture + net so next session recalls them
+                core.remember_target(tip, mode=cfg["mode"], cloud=(transport == "cloud"))
             jobs.append((tip, cfg))
         if not jobs:
             messagebox.showwarning("No target", "Enter at least one target."); return
@@ -1192,8 +1308,8 @@ class HarnessGUI:
             auto_retry = 1
         port_overrides = self._collect_port_overrides()
         self._save_target(jobs[0][0])   # remember target 1's on-screen cfg
-        # assessment posture from the Whitebox tick (per target, remembered + in evidence).
-        self._run_mode = "whitebox" if self.whitebox_var.get() else "blackbox"
+        # assessment posture from the primary row's dropdown (per target, remembered + in evidence).
+        self._run_mode = self.posture_var.get()
         self._run_targets = [t for t, _c in jobs]   # cleared from _portpatch at run-end
 
         self.run_btn["state"] = "disabled"; self.stop_btn["state"] = "normal"
@@ -1243,8 +1359,8 @@ class HarnessGUI:
                     runner.ctx.debug = debug
                     self._apply_cfg(runner, tgt, cfg)
                     ev = core.Evidence(label=(tgt if len(jobs) > 1 else None))
-                    # posture is PER TARGET: target 1 from the Whitebox tick, the
-                    # 2nd target from its own remembered mode (via _cfg_recalled).
+                    # posture is PER TARGET: each row carries its own cfg["mode"]
+                    # from that row's posture dropdown (added rows via _cfg_recalled).
                     root = runner.run(selected, iters, ev,
                                       mode=cfg.get("mode", mode), site_id=site_id)
                     roots.append((tgt, root))
