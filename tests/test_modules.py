@@ -118,5 +118,72 @@ class TestNtlmMd4Prereq(unittest.TestCase):
             _util.ntlm_md4_available = orig
 
 
+class TestLog4ShellOOB(unittest.TestCase):
+    """The log4shell module's --active out-of-band exploitation confirmation.
+    Localhost-only: a simulated 'vulnerable target' connects back to the catcher
+    with the marker (what log4j's JNDI lookup would do). No network, no curl."""
+
+    def setUp(self):
+        self.l4s = importlib.import_module("modules.log4shell")
+        s = socket.socket()                      # grab a free high port for the catcher
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+        self._save = (self.l4s._OOB_PORT, self.l4s._OOB_WAIT, self.l4s._fire_oob)
+        self.l4s._OOB_PORT = self.port
+        self.l4s._OOB_WAIT = 2.0
+
+    def tearDown(self):
+        self.l4s._OOB_PORT, self.l4s._OOB_WAIT, self.l4s._fire_oob = self._save
+
+    def test_success_regex_matches_rce_confirmed_and_served(self):
+        rx = self.l4s.META["success_regex"]
+        self.assertTrue(re.search(rx, "RCE-CONFIRMED: callback from 10.0.0.5"))
+        self.assertTrue(re.search(rx, "HTTP_CODE:200 TIME:0.01"))
+
+    def test_callback_host_prefers_source_ip(self):
+        ctx = core.Context(source_ip="127.0.0.1")
+        self.assertEqual(self.l4s._callback_host(ctx, "10.0.0.1"), "127.0.0.1")
+
+    def test_oob_confirmed_when_target_calls_back(self):
+        def fake_fire(target, web_port, host, oob_port, marker, ctx):
+            # emulate log4j performing the JNDI lookup: bind, then search w/ the marker
+            try:
+                c = socket.create_connection((host, oob_port), timeout=2)
+                c.sendall(b"\x30\x0c\x02\x01\x01`\x07\x02\x01\x03\x04\x00\x80\x00")
+                try:
+                    c.recv(32)               # the catcher's BIND_OK
+                except OSError:
+                    pass
+                c.sendall(b"search:" + marker.encode())
+                c.close()
+            except OSError:
+                pass
+            return "simulated vulnerable target connected back"
+        self.l4s._fire_oob = fake_fire
+        ctx = core.Context(source_ip="127.0.0.1", allow_active=True)
+        lines, confirmed = self.l4s._oob_confirm("127.0.0.1", 8080, ctx)
+        blob = "\n".join(lines)
+        self.assertTrue(confirmed, blob)
+        self.assertIn("RCE-CONFIRMED", blob)
+
+    def test_oob_inconclusive_when_no_callback(self):
+        self.l4s._fire_oob = lambda *a, **k: "fired; target did not connect back"
+        ctx = core.Context(source_ip="127.0.0.1", allow_active=True)
+        lines, confirmed = self.l4s._oob_confirm("127.0.0.1", 8080, ctx)
+        blob = "\n".join(lines)
+        self.assertFalse(confirmed)
+        self.assertIn("OOB-INCONCLUSIVE", blob)
+
+    def test_run_default_is_signature_only_and_says_so(self):
+        # stub run_cmd so no real curl/network is needed; default (allow_active=False)
+        ctx = core.Context()
+        ctx.run_cmd = lambda cmd, target: "HTTP_CODE:200 TIME:0.01"
+        out = self.l4s.run("127.0.0.1", ctx)
+        self.assertIn("HTTP_CODE:200", out)
+        self.assertIn("OOB exploitation confirmation OFF", out)
+        self.assertNotIn("RCE-CONFIRMED", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
