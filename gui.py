@@ -247,6 +247,14 @@ class HarnessGUI:
         ttk.Label(og, text="Wait(s)").pack(side="left")
         self.wait_unblock = ttk.Entry(og, width=5); self.wait_unblock.insert(0, "0")
         self.wait_unblock.pack(side="left", padx=(4, 12))
+        # Source-blacklist auto-recovery: how long a ban auto-expires (--ban-expiry,
+        # default 300) and how many rounds to re-test contaminated attacks (--auto-retry).
+        ttk.Label(og, text="Ban(s)").pack(side="left")
+        self.ban_expiry = ttk.Entry(og, width=5); self.ban_expiry.insert(0, "300")
+        self.ban_expiry.pack(side="left", padx=(4, 8))
+        ttk.Label(og, text="Retry").pack(side="left")
+        self.auto_retry = ttk.Entry(og, width=4); self.auto_retry.insert(0, "1")
+        self.auto_retry.pack(side="left", padx=(4, 12))
         ttk.Label(og, text="Site ID").pack(side="left")
         self.site_entry = ttk.Entry(og, width=12)
         self.site_entry.pack(side="left", padx=(4, 10))
@@ -1102,9 +1110,7 @@ class HarnessGUI:
                     mod = self.vars.get(aid, (None, None))[1]
                     meta = getattr(mod, "META", {}) if mod else {}
                     # the target port(s) this module probes/attacks (icmp/egress have none)
-                    ports = ", ".join(
-                        (f"{pp}/{pr}" if pp is not None else pr)
-                        for (pr, pp) in (meta.get("ports") or [])) or "—"
+                    ports = core.display_ports(meta, tgt) or "—"
                     self._add_status(
                         aid, name, it, result,
                         direction=meta.get("direction", "a2b"),
@@ -1176,6 +1182,14 @@ class HarnessGUI:
             wait_unblock = max(0.0, float(self.wait_unblock.get() or 0))
         except (ValueError, TypeError):
             wait_unblock = 0.0
+        try:
+            ban_expiry = max(0.0, float(self.ban_expiry.get() or 300))
+        except (ValueError, TypeError):
+            ban_expiry = 300.0
+        try:
+            auto_retry = max(0, int(self.auto_retry.get() or 1))
+        except (ValueError, TypeError):
+            auto_retry = 1
         port_overrides = self._collect_port_overrides()
         self._save_target(jobs[0][0])   # remember target 1's on-screen cfg
         # assessment posture from the Whitebox tick (per target, remembered + in evidence).
@@ -1221,6 +1235,8 @@ class HarnessGUI:
                     runner.concurrency = workers
                     if wait_unblock > 0:
                         runner.wait_unblock = wait_unblock
+                    runner.ban_expiry = ban_expiry
+                    runner.auto_retry = auto_retry
                     if port_overrides:
                         runner.ctx.port_overrides = port_overrides
                     runner.ctx.allow_active = active

@@ -67,15 +67,10 @@ _VGLOSS = {
 # ---------------------------------------------------------------------------
 # data helpers
 # ---------------------------------------------------------------------------
-def _ports_str(meta):
-    out = []
-    for s in meta.get("ports", []) or []:
-        if isinstance(s, (list, tuple)):
-            pr, pp = s
-            out.append(f"{pp}/{pr}" if pp is not None else str(pr))
-        else:
-            out.append(str(s))
-    return ", ".join(out)
+def _ports_str(meta, target=None):
+    # delegate to the shared core helper so CLI/GUI/web/evidence agree on the ports
+    # format AND the cloud NAT mapping (tcp/445->4445 on a NAT'd target).
+    return core.display_ports(meta, target)
 
 
 # Per-module raw output is kept in the run's state so a results row can be clicked
@@ -185,7 +180,7 @@ def _status_event(aid, name, it, b, v, target):
             "mitre": ", ".join(meta.get("mitre", [])),
             "cwe": ", ".join(meta.get("cwe", [])),
             "direction": meta.get("direction", "a2b"),
-            "ports": _ports_str(meta) or "—"}
+            "ports": _ports_str(meta, target) or "—"}
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +235,14 @@ def _run_worker(run_id, params, targets, module_ids):
         wait_unblock = max(0.0, float(params.get("wait_unblock", 0) or 0))
     except (TypeError, ValueError):
         wait_unblock = 0.0
+    try:
+        ban_expiry = max(0.0, float(params.get("ban_expiry", 300) or 0))
+    except (TypeError, ValueError):
+        ban_expiry = 300.0
+    try:
+        auto_retry = max(0, int(params.get("auto_retry", 1) or 0))
+    except (TypeError, ValueError):
+        auto_retry = 1
     mode = "whitebox" if params.get("mode") == "whitebox" else "blackbox"
     site_id = (params.get("site_id") or "").strip() or None
     active = bool(params.get("active"))
@@ -282,6 +285,8 @@ def _run_worker(run_id, params, targets, module_ids):
             runner.concurrency = workers
             if wait_unblock > 0:
                 runner.wait_unblock = wait_unblock
+            runner.ban_expiry = ban_expiry
+            runner.auto_retry = auto_retry
             runner.ctx.allow_active = active
             runner.ctx.debug = debug
             for k, v in creds.items():
@@ -726,6 +731,8 @@ tbody tr{cursor:pointer} tbody tr:hover{background:var(--surf)}
     <div class=field><label>Iterations</label><input id=iters type=number min=1 max=20 value=1></div>
     <div class=field><label>Workers</label><input id=workers type=number min=1 max=16 value=4></div>
     <div class=field><label>Wait-unblock s</label><input id=wait type=number min=0 value=0></div>
+    <div class=field><label>Ban-expiry s</label><input id=banexp type=number min=0 value=300></div>
+    <div class=field><label>Auto-retry</label><input id=autoretry type=number min=0 value=1></div>
    </div>
    <div class=rowf>
     <div class=field><label>Site</label><input id=site type=text placeholder="ORG2026-70"></div>
@@ -1049,6 +1056,7 @@ function startRun(){
  const targets=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
  const body={targets,module_ids:selectedIds(),mode:MODE,
   iterations:+$("#iters").value,workers:+$("#workers").value,wait_unblock:+$("#wait").value,
+  ban_expiry:+$("#banexp").value,auto_retry:+$("#autoretry").value,
   site_id:$("#site").value,source:$("#source").value,appliance:$("#appliance").value,
   active:$("#active").checked,debug:$("#debug").checked,confirm_roe:$("#roe").checked,
   cloud:$("#cloud").checked,smb_port:+$("#smb").value,rpc_port:+$("#rpc").value,ssh_port:+$("#sshp").value,

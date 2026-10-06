@@ -37,7 +37,7 @@ from datetime import datetime
 # summary.json meta, so any evidence folder is traceable to the build that made
 # it (alongside the git short-SHA in `engine_version`). Single source of truth —
 # cli.py / gui.py import this.
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
@@ -2007,6 +2007,24 @@ def _cloud_port_map(target):
         return {}
 
 
+def display_ports(meta, target=None):
+    """Canonical human-readable ports a module hits, used by the CLI, GUI, web app
+    AND evidence so all four agree (format + the cloud NAT mapping). Shows
+    'tcp/445->4445' on a NAT'd cloud `target` (where the attack REALLY goes, matching
+    recon) and plain 'tcp/445' otherwise; target=None (e.g. the pre-run module list,
+    no target yet) shows the logical ports."""
+    pm = _cloud_port_map(target) if target else {}
+    out = []
+    for spec in (meta.get("ports") or []):
+        proto, port = spec if isinstance(spec, (list, tuple)) else ("tcp", spec)
+        if port is None:
+            out.append(str(proto))
+            continue
+        eff = pm.get(port, port) if proto == "tcp" else port
+        out.append(f"{proto}/{port}->{eff}" if eff != port else f"{proto}/{port}")
+    return ", ".join(out)
+
+
 def reachability(target, modules, timeout=2.0, workers=32):
     """Probe the port(s) each module targets (tcp connect / best-effort udp /
     icmp ping), CONCURRENTLY (each distinct (proto,port) once). Returns {target,
@@ -3028,8 +3046,7 @@ class Runner:
             # a2b = SDWAN/site -> DC (northbound) · b2a = DC -> SDWAN/out (reverse)
             "direction": meta.get("direction", "a2b"),
             # the target port(s) this module probes/attacks ("tcp/80"; egress/icmp = "")
-            "ports": ", ".join(f"{pr}/{p}" if p is not None else str(pr)
-                               for (pr, p) in (meta.get("ports") or [])),
+            "ports": display_ports(meta, self.target_ip),
             "mitre": meta.get("mitre", []),
             "cwe": meta.get("cwe", []),
             "cve": meta.get("cve", ""),
