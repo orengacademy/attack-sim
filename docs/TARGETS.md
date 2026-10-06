@@ -60,6 +60,23 @@ only 445/135/389/88 are forwarded, not the ephemeral RPC range DRSUAPI/DCE-RPC n
 those modules can't complete here (BLOCKED on the dynamic port). Non-RPC modules
 (LDAP/Kerberos/web/DoS) verify fine from anywhere that can reach the DC.
 
+### KVDC — full whitebox vs blackbox battery (2026-10-06, from central host)
+
+| Module | Whitebox `10.38.98.12` | Blackbox `10.38.98.14` | Reading |
+|---|---|---|---|
+| sAMAccountName Spoof | SUCCESS | BLOCKED | **control works** ✓ |
+| SNMP Community Brute | SUCCESS | BLOCKED | **control works** ✓ |
+| LDAP Null Bind | SUCCESS | SUCCESS | finding — allowed both |
+| FTP Anonymous | SUCCESS | SUCCESS | finding — allowed both |
+| PsExec | SUCCESS | NO-SERVICE | wb works; bb 445 down |
+| DCSync | BLOCKED* | NO-SERVICE | *wb needs on-segment box (DRSUAPI dynamic RPC) |
+| ICMP Flood | BLOCKED | DETECTED | policed (wb) / alerted (bb) |
+| Apache / Log4Shell | BLOCKED | BLOCKED | blocked both |
+| SSH Brute | BLOCKED | BLOCKED | blocked both |
+
+Reminder: run `dcsync`/`psexec`/`wmiexec` from the on-segment KVDC attacker box
+(`10.38.98.13`/`10.38.98.15`) for the RPC-dynamic-port path.
+
 ## IPDC  (on-prem, default 445/135)
 
 | Posture | Role | IP | Login |
