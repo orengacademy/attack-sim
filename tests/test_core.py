@@ -769,10 +769,10 @@ class TestCloudTransport(unittest.TestCase):
 
 
 class TestWhiteboxDetectionSuppression(unittest.TestCase):
-    """Appliance/SOC detections (from the detections file) represent the SD-WAN
-    boundary. In WHITEBOX (the direct allow-all baseline, no appliance in path) a
-    passed attack is a clean SUCCESS — the file-sourced detection must NOT apply.
-    In BLACKBOX (through the boundary) it DOES apply (DETECTED)."""
+    """ORG2026-70: a FILE-sourced appliance/SOC detection (detections.json) is
+    REFERENCE — it never flips the verdict. In WHITEBOX it's nulled (no boundary
+    in path, clean baseline); in BLACKBOX it's attached as a reference note but
+    the verdict stays SUCCESS. Neither posture scores DETECTED from the file."""
 
     def _run(self, mode):
         m = types.SimpleNamespace()
@@ -798,9 +798,11 @@ class TestWhiteboxDetectionSuppression(unittest.TestCase):
         self.assertEqual(r["baseline_result"], "SUCCESS")   # appliance detection suppressed
         self.assertNotEqual(r["baseline_result"], "DETECTED")
 
-    def test_blackbox_still_scores_detected(self):
+    def test_blackbox_file_detection_is_reference_not_detected(self):
         r = self._run("blackbox")
-        self.assertEqual(r["baseline_result"], "DETECTED")  # boundary detection applies
+        self.assertEqual(r["baseline_result"], "SUCCESS")   # file detection is reference, not a verdict
+        self.assertIn("REFERENCE", r["verdict"].upper())    # the correlation is still surfaced
+        self.assertEqual(r["detected_source"], "")          # not credited as a detection
 
 
 class TestWaitUnblockFlag(unittest.TestCase):
@@ -1032,11 +1034,14 @@ class TestAllowTelemetryScoresSuccessNotDetected(unittest.TestCase):
         self.assertIn("REFERENCE", r["verdict"])                   # reference is surfaced
         self.assertIn("telemetry", r["verdict"].lower())
 
-    def test_real_signature_still_scores_detected(self):
+    def test_file_signature_is_reference_not_detected(self):
+        # a FILE-sourced signature is an imported correlation, not THIS test ->
+        # it stays SUCCESS with the reference attached, never DETECTED.
         r = self._run_with_detection(
             "Sangfor IPS signature fired 'web Vulnerability' DENY x12 (prevention=yes)")
-        self.assertEqual(r["baseline_result"], "DETECTED")
-        self.assertEqual(r["detected_source"], "Sangfor M4500-F-1")
+        self.assertEqual(r["baseline_result"], "SUCCESS")
+        self.assertEqual(r["detected_source"], "")
+        self.assertIn("REFERENCE", r["verdict"].upper())
 
 
 class TestRuntimePrereqAndInconclusive(unittest.TestCase):
