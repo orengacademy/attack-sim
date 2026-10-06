@@ -17,14 +17,22 @@
     "cloud": true,
     "smb_port": 4445,
     "rpc_port": 1135,
-    "last_used": "2026-10-02T12:47:50.090870",
-    "ssh_port": 22
+    "last_used": "2026-10-06T13:14:59.545099",
+    "ssh_port": 22,
+    "mode": "blackbox",
+    "domain": "lab.local",
+    "dc_user": "Administrator",
+    "dc_pass": "NewPass123!"
   },
   "167.71.222.169": {
     "cloud": true,
     "smb_port": 4445,
     "rpc_port": 1135,
-    "last_used": "2026-10-03T16:10:40.111950",
-    "ssh_port": 22
+    "last_used": "2026-10-06T13:13:51.212664",
+    "ssh_port": 22,
+    "mode": "blackbox",
+    "domain": "lab.local",
+    "dc_user": "Administrator",
+    "dc_pass": "NewPass123!"
   }
 }
