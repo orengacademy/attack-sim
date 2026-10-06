@@ -2527,8 +2527,13 @@ class Runner:
             # serial batch (which itself runs after the parallel batch) so the quiet
             # attacks all get a clean, uncontaminated test first; a ban they trigger
             # then only affects the recovery logic below, not earlier verdicts.
-            # Stable sort: everything else keeps its order.
-            serial.sort(key=_defer_last)
+            # Order by (defer_last, META.order): deferred/blacklisting attacks run
+            # after the quiet ones AND, within that tail, in META["order"] so the
+            # STICKY source-blacklisters (brute order 98, DoS 99) run AFTER the
+            # inline IPS-signature attacks (apache 1 / log4shell 2 / doh 3). Without
+            # this, a stable defer-only sort left ssh_brute (98) ahead of apache/
+            # log4shell (1/2), so its blacklist turned them into false INCONCLUSIVE.
+            serial.sort(key=lambda mm: (_defer_last(mm), mm.META.get("order", 0)))
             if any(_defer_last(m) for m in serial):
                 lastnames = ", ".join(m.META["name"] for m in serial if _defer_last(m))
                 log(f"  (deferring to run LAST so a triggered blacklist / IPS-signature ban "

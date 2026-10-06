@@ -1,0 +1,202 @@
+"""Regression-lock for the single-target verdict LADDER (first-match-wins) in
+core.Runner._process_module_inner, and the dual-target core.classify() order.
+
+Each rung of the ladder is a guard rail against a specific false "control works"
+result; these tests pin the ORDER so a refactor can't silently reshuffle them.
+Pure-stdlib / offline: the module output is crafted and the recon port-state is
+INJECTED (no network, no real recon)."""
+import os
+import sys
+import tempfile
+import threading
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import core  # noqa: E402
+
+
+class _FakeMod:
+    def __init__(self, mid, output, **meta):
+        self.META = {"id": mid, "name": mid, "category": "Test", **meta}
+        self._out = output
+
+    def run(self, target, ctx):
+        return self._out
+
+
+def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
+             detected=None, detections=None):
+    """Drive the REAL classifier for one module and return (baseline_result, verdict).
+    `recon` is the injected TCP port state ('open'/'closed'/'filtered'/...), or None
+    for 'no recon'. Contamination guard + port policy are disabled (not under test)."""
+    r = core.Runner("127.0.0.1")
+    r._canary = None                      # contamination guard off
+    r._blacklisted = False
+    r._bl_lock = threading.Lock()
+    r._mode = "blackbox"
+    r.dual = False
+    r.appliance_ip = None
+    r._pol_by_id = {}
+    r._port_policy = {"name": "t"}
+    r._detections = detections or {}
+    r.auto_retry = 0
+    meta = {"success_regex": success, "blocked_regex": blocked}
+    if detected is not None:
+        meta["detected_regex"] = detected
+    m = _FakeMod("t", raw, **meta)
+    ev = core.Evidence(base=tempfile.mkdtemp())
+    recon_by_id = {"t": {"probes": [("tcp", 80, recon)]}} if recon else {}
+    r._process_module(m, 1, False, {"t"}, {}, recon_by_id, ev,
+                      lambda *a: None, lambda: None)
+    rec = [x for x in ev.records if x["attack_id"] == "t"][-1]
+    return rec["baseline_result"], rec["verdict"]
+
+
+class TestLadderPrecedence(unittest.TestCase):
+    # rung 1: success_regex wins over EVERYTHING (even a matching blocked_regex +
+    # a filtered port) — the attack demonstrably got through.
+    def test_success_beats_blocked_and_filtered(self):
+        b, _ = _verdict("WIN and also BLOCKED-X", recon="filtered")
+        self.assertEqual(b, "SUCCESS")
+
+    def test_success_beats_no_service(self):
+        b, _ = _verdict("WIN", recon="closed")
+        self.assertEqual(b, "SUCCESS")
+
+    # rung 2: a credential failure is NOT a control block — it must beat blocked_regex
+    # (even when blocked_regex is broad enough to match the auth-failure text).
+    def test_authfail_beats_blocked(self):
+        b, _ = _verdict("STATUS_LOGON_FAILURE", blocked=r"STATUS_LOGON_FAILURE", recon="open")
+        self.assertEqual(b, "AUTH-FAILED")
+
+    # rung 3: a module that did NOTHING ([SKIP]) is never a control win, even if the
+    # skip text happens to match blocked_regex.
+    def test_skip_beats_blocked(self):
+        b, _ = _verdict("[SKIP] not configured — BLOCKED-X appears here", recon="filtered")
+        self.assertEqual(b, "SKIPPED")
+
+    # rung 4/5: a module self-declaring a missing prereq / indeterminate result wins
+    # over the recon-inferred BLOCKED (never miscredited to the control).
+    def test_prereq_marker_beats_filtered(self):
+        b, _ = _verdict("[PREREQ-MISSING] needs faketime", recon="filtered")
+        self.assertEqual(b, "PREREQ-MISSING")
+
+    def test_inconclusive_marker_beats_filtered(self):
+        b, _ = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered")
+        self.assertEqual(b, "INCONCLUSIVE")
+
+    # rung 6: refused/closed => NO-SERVICE (service absent, NOT a control block).
+    def test_refused_closed_is_no_service(self):
+        b, _ = _verdict("Connection refused", recon="closed")
+        self.assertEqual(b, "NO-SERVICE")
+
+    # rung 6 GUARD: an incidental "Connection refused" while the attack port is OPEN
+    # must NOT rob a module of the BLOCKED its own blocked_regex earned (the noPac
+    # KDC_ERR_TGT_REVOKED case).
+    def test_refused_while_port_open_keeps_blocked(self):
+        b, _ = _verdict("KDC_ERR_TGT_REVOKED — and a stray Connection refused",
+                        blocked=r"KDC_ERR_TGT_REVOKED", recon="open")
+        self.assertEqual(b, "BLOCKED")
+
+    # rung 7: a tool crash with NO network signal => NO-RESULT, never BLOCKED (a
+    # crashed module must not fabricate "the control worked").
+    def test_tool_fault_beats_filtered(self):
+        b, v = _verdict("[ERROR] module crashed: kaboom", recon="filtered")
+        self.assertEqual(b, "NO-RESULT")
+        self.assertIn("tool fault", v.lower())
+
+    # rung 8: a silent drop (filtered / timeout) => BLOCKED (segmentation / SD-WAN).
+    def test_filtered_is_blocked(self):
+        b, _ = _verdict("nothing notable in output", recon="filtered")
+        self.assertEqual(b, "BLOCKED")
+
+    def test_timeout_is_blocked(self):
+        b, _ = _verdict("[TIMEOUT] no response", recon="open")
+        self.assertEqual(b, "BLOCKED")
+
+    # rung 9: an explicit rejection (blocked_regex) while the port is OPEN => BLOCKED
+    # (in-path IPS/WAF or host hardening — a rejection RESPONSE, not a silent drop).
+    def test_blocked_regex_while_open_is_blocked(self):
+        b, v = _verdict("HTTP/1.1 403 Forbidden", blocked=r"403 Forbidden", recon="open")
+        self.assertEqual(b, "BLOCKED")
+        self.assertIn("rejection", v.lower())
+
+    # rung 10: no marker, no recon signal => NO-RESULT (not a guessed BLOCKED).
+    def test_no_signal_is_no_result(self):
+        b, _ = _verdict("just some ambiguous chatter", recon=None)
+        self.assertEqual(b, "NO-RESULT")
+
+
+class TestDetectedSourcing(unittest.TestCase):
+    """DETECTED = the attack PASSED and a GENUINE detection exists (signature /
+    prevention / an active DENY). A plain session-log ALLOW is telemetry -> SUCCESS."""
+
+    def test_signature_is_detected(self):
+        dets = {"t": {"source": "Sangfor NGAF", "note": "IPS signature fired prevention=yes"}}
+        b, _ = _verdict("WIN", detections=dets)
+        self.assertEqual(b, "DETECTED")
+
+    def test_session_allow_stays_success(self):
+        dets = {"t": {"source": "Sangfor", "note": "session-logged tcp/80: ALLOW (policy=Outbound_NPSA)"}}
+        b, v = _verdict("WIN", detections=dets)
+        self.assertEqual(b, "SUCCESS")
+        self.assertIn("REFERENCE", v.upper())     # telemetry note attached, not a detection
+
+    def test_session_deny_is_detected(self):
+        dets = {"t": {"source": "Sangfor", "note": "session-logged tcp/80: DENY (policy=X)"}}
+        b, _ = _verdict("WIN", detections=dets)
+        self.assertEqual(b, "DETECTED")
+
+    # DETECTED only applies to attacks that PASSED: a BLOCKED attack is just BLOCKED.
+    def test_detection_does_not_apply_to_blocked(self):
+        dets = {"t": {"source": "Sangfor", "note": "IPS signature fired prevention=yes"}}
+        b, _ = _verdict("[TIMEOUT] no response", recon="filtered", detections=dets)
+        self.assertEqual(b, "BLOCKED")
+
+
+class TestDetectedRegexLatentGap(unittest.TestCase):
+    @unittest.expectedFailure
+    def test_module_detected_regex_should_score_detected(self):
+        """LATENT GAP (documented, not yet fixed): a module self-reporting a blue-team
+        detection via META['detected_regex'] is NOT currently scored DETECTED, because
+        _detection_is_real() only accepts notes containing 'signature'/'prevention='/
+        'deny' and the self-report note is "module self-reported a detection signal".
+        No module uses detected_regex today, so this is dormant. This expectedFailure
+        pins the INTENDED behavior: if _detection_is_real is taught to accept the
+        module source, this test flips to an (unexpected) success and should be
+        promoted to a normal assertion."""
+        b, _ = _verdict("WIN plus a BLOCKPAGE banner", detected=r"BLOCKPAGE")
+        self.assertEqual(b, "DETECTED")
+
+
+class TestClassifyDualPrecedence(unittest.TestCase):
+    """The dual-target (through-appliance) classifier core.classify() mirrors the
+    same precedence on its own rungs."""
+    META = {"success_regex": r"WIN", "blocked_regex": r"BLOCKED-X"}
+
+    def test_appliance_success(self):
+        _, a, _ = core.classify(self.META, "WIN", "WIN")
+        self.assertEqual(a, "SUCCESS")
+
+    def test_appliance_blocked(self):
+        _, a, _ = core.classify(self.META, "WIN", "BLOCKED-X")
+        self.assertEqual(a, "BLOCKED")
+
+    def test_appliance_authfail_beats_blocked(self):
+        meta = {"success_regex": r"WIN", "blocked_regex": r"STATUS_LOGON_FAILURE"}
+        _, a, _ = core.classify(meta, "WIN", "STATUS_LOGON_FAILURE")
+        self.assertEqual(a, "AUTH-FAILED")
+
+    def test_appliance_refused_is_no_service(self):
+        _, a, _ = core.classify(self.META, "WIN", "Connection refused")
+        self.assertEqual(a, "NO-SERVICE")
+
+    def test_baseline_not_ok_is_inconclusive(self):
+        # if the allow-all baseline didn't even work, the A-vs-B comparison can't
+        # credit the appliance — the verdict is INCONCLUSIVE regardless of app leg.
+        _, _, v = core.classify(self.META, "nothing happened", "WIN")
+        self.assertIn("INCONCLUSIVE", v.upper())
+
+
+if __name__ == "__main__":
+    unittest.main()
