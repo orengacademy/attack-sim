@@ -47,3 +47,8 @@ evidence_index.db
 
 # Windows "mark-of-the-web" ADS junk from files downloaded via WSL (not real content)
 *:Zone.Identifier
+
+# Browser-automation / MCP tool-session artifacts — verification snapshots can
+# capture form-field values (incl. the committed dummy-lab creds); never commit them.
+.playwright-mcp/
+.serena/
