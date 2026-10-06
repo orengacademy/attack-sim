@@ -291,8 +291,10 @@ editing a live module, keep the indicator-only default and the tear-down.
 - **Keep the ROE gate.** Keep recon advisory (a filtered port may *be* the control).
 - **Tag new modules fully** (`test_type`/`family`/`direction`/`mitre`/`cwe`) so
   they appear in scope filters and the coverage report automatically.
-- **Evidence folder is `DD-MM-HH-MM`** (`Evidence.ts`); same-minute collisions are
-  de-duped. Don't reintroduce a seconds-free collision.
+- **Evidence folder is `run_YYYYMMDD-HHMMSS`** (`Evidence.ts`) — unique & sortable
+  (second-resolution; same-second collisions still de-duped with `-2`/`-3`). Each run
+  writes `summary.json/csv/xlsx` (xlsx colour-filled per verdict — pure-stdlib
+  `evidence_xlsx.py`), `report.html/txt`, the ATT&CK Navigator layer + raw per-module logs.
 - Match surrounding code style; this repo favours dense explanatory comments on
   the *why*.
 
