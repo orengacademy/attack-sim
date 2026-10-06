@@ -47,7 +47,7 @@ def _read_version_file():
         return None
 
 
-VERSION = _read_version_file() or "1.9.3"
+VERSION = _read_version_file() or "1.9.4"
 
 # ---------------------------------------------------------------------
 # Version gate — refuse to run an OUTDATED copy so every operator on the

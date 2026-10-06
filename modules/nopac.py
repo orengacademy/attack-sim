@@ -158,6 +158,11 @@ def run(target, ctx):
         return (f"# noPac vs {target}\n\n[SKIP] no domain password configured "
                 "(set HARNESS_DC_PASS / --dc-pass / credentials.env) — noPac needs "
                 "valid domain creds; skipping to avoid an interactive password prompt.")
+    # ldap3's NTLM bind needs MD4 (pycryptodome / hashlib); report a clear
+    # PREREQ-MISSING instead of a cryptic NO-RESULT crash when it's unavailable.
+    from modules import _util
+    if not _util.ntlm_md4_available():
+        return f"# noPac vs {target}\n\n{_util.MD4_PREREQ_HINT}"
     is_custom = _portpatch.is_custom_port_target(target)
     header = f"# noPac (in-process, impact={IMPACT_MODE}) vs {target}"
     header += " [custom-port patch active]\n\n" if is_custom else "\n\n"

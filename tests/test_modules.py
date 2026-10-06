@@ -94,5 +94,29 @@ class TestEgressModules(unittest.TestCase):
             close()
 
 
+class TestNtlmMd4Prereq(unittest.TestCase):
+    """noPac / sAMAccountName need MD4 (ldap3 NTLM). The helper detects it and the
+    modules report a clean PREREQ-MISSING (not a cryptic NO-RESULT) when it's gone."""
+
+    def test_helper_and_hint(self):
+        _util = importlib.import_module("modules._util")
+        self.assertIsInstance(_util.ntlm_md4_available(), bool)
+        self.assertIn("PREREQ-MISSING", _util.MD4_PREREQ_HINT)
+        self.assertIn("pycryptodome", _util.MD4_PREREQ_HINT)
+
+    def test_modules_report_prereq_when_md4_missing(self):
+        _util = importlib.import_module("modules._util")
+        sama = importlib.import_module("modules.samaccountname_spoof")
+        orig = _util.ntlm_md4_available
+        _util.ntlm_md4_available = lambda: False
+        try:
+            out = sama.run("10.255.255.1", core.Context(credentials={
+                "domain": "lab.local", "dc_user": "Administrator", "dc_pass": "x"}))
+            self.assertIn("PREREQ-MISSING", out)
+            self.assertNotIn("Traceback", out)
+        finally:
+            _util.ntlm_md4_available = orig
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
