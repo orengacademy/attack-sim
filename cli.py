@@ -153,15 +153,14 @@ def _cell(text, w, color, no_color):
 
 
 def _clock(ts):
-    """ISO timestamp -> human-readable HH:MM:SS, or '' when unparseable."""
+    """ISO timestamp -> human-readable 'YYYY-MM-DD HH:MM:SS' (date + time), or '' when unparseable."""
     if not ts:
         return ""
     try:
         import datetime as _dt
-        return _dt.datetime.fromisoformat(str(ts)).strftime("%H:%M:%S")
+        return _dt.datetime.fromisoformat(str(ts)).strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError):
-        s = str(ts)
-        return s[11:19] if len(s) >= 19 else s
+        return str(ts)[:19].replace("T", " ")
 
 
 def _print_summary(ev, args, no_color, elapsed, target=None):
@@ -250,7 +249,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT),
             ("PORTS", PORTS), ("MITRE", MITRE), ("CWE", CWE),
             (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET)),
-            ("TIME", 8)]               # per-module completion clock (HH:MM:SS), human-readable
+            ("TIME", 19)]              # per-module completion timestamp (YYYY-MM-DD HH:MM:SS)
     if debug:
         cols.append(("DUR", 7))   # per-module wall-clock duration (debug only)
     inner = [w for _, w in cols]

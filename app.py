@@ -190,6 +190,7 @@ def _status_event(aid, name, it, b, v, target, posture=""):
             "mitre": ", ".join(meta.get("mitre", [])),
             "cwe": ", ".join(meta.get("cwe", [])),
             "direction": meta.get("direction", "a2b"),
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),   # per-module completion timestamp (date + time)
             "ports": _ports_str(meta, target) or "—"}
 
 
@@ -1240,7 +1241,7 @@ table.evtable .evlinks a.primary{color:var(--acc);border-color:rgba(95,227,232,.
       <th data-col=n>#</th><th data-col=verdict>Verdict</th><th data-col=name>Module</th>
       <th data-col=category>Category</th><th data-col=target>Target</th><th data-col=posture>Posture</th>
       <th data-col=ports>Ports</th><th data-col=mitre>ATT&amp;CK</th><th data-col=cwe>CWE</th><th data-col=it>It</th>
-      <th data-col=detail>Detail</th></tr></thead>
+      <th data-col=detail>Detail</th><th data-col=time>Time</th></tr></thead>
      <tbody id=resbody></tbody></table></div>
     <div class=empty-pane id=resempty>
      <svg class=ei viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.4 aria-hidden=true><circle cx=11 cy=11 r=7></circle><path d="M21 21l-4.3-4.3"></path></svg>
@@ -1470,7 +1471,7 @@ function refresh(){
 
 function addRow(e){
  const row={n:++RESN, verdict:e.verdict||"", id:e.id||"", name:e.name||"", category:e.category||"",
-  target:e.target||"", posture:e.posture||"", ports:e.ports||"", mitre:e.mitre||"", cwe:e.cwe||"", it:e.it||1, detail:e.detail||""};
+  target:e.target||"", posture:e.posture||"", ports:e.ports||"", mitre:e.mitre||"", cwe:e.cwe||"", it:e.it||1, detail:e.detail||"", time:e.ts||""};
  ROWS.push(row);
  COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1;
  syncFilterOptions(); renderRows(row.n); refresh();
@@ -1520,7 +1521,8 @@ function renderRows(insN){
    +`<td>${r.posture?`<span class="pchip ${r.posture[0]==='w'?'w':'b'}">${r.posture[0]==='w'?'white':'black'}</span>`:'<span class=dim>—</span>'}</td>`
    +`<td class=mono>${esc(r.ports)}</td>`
    +`<td class=mono>${esc(r.mitre)}</td><td class=mono>${esc(r.cwe)}</td><td class="mono cell-n">${r.it}</td>`
-   +`<td class=detail title="${esc(r.detail)}">${esc(r.detail)}</td>`;
+   +`<td class=detail title="${esc(r.detail)}">${esc(r.detail)}</td>`
+   +`<td class="mono dim">${esc(r.time)}</td>`;
   tr.addEventListener("click",()=>openRow(r));
   tb.appendChild(tr);});
  markVerdictKey();

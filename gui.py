@@ -58,6 +58,14 @@ STATUS_COLORS = {
     "PREREQ-MISSING": MUTED,   # skipped (tooling/priv)
 }
 
+# Distinct verdict glyphs (same shapes as the CLI) so the Result cell carries an
+# icon, not just a row colour — shown as "<icon> VERDICT".
+STATUS_ICONS = {
+    "SUCCESS": "●", "DETECTED": "◐", "BLOCKED": "■", "NO-SERVICE": "○",
+    "AUTH-FAILED": "▲", "NO-RESULT": "?", "INCONCLUSIVE": "◌",
+    "SKIPPED": "–", "PREREQ-MISSING": "–",
+}
+
 
 def _apply_theme(root):
     """Best-effort modern dark theme; never breaks the app if unavailable."""
@@ -581,7 +589,7 @@ class HarnessGUI:
         self.status_tree = ttk.Treeview(tf, columns=cols, show="headings", height=18)
         self._sort_state = {}   # col -> last sort was descending
         # click any heading to sort by that column (toggles asc/desc)
-        for c, t, w, a in (("no", "#", 34, "center"), ("time", "Time", 64, "center"),
+        for c, t, w, a in (("no", "#", 34, "center"), ("time", "Time", 140, "center"),
                            ("tgt", "Target", 104, "w"),
                            ("posture", "Posture", 72, "center"), ("net", "Net", 60, "center"),
                            ("ports", "Ports", 72, "w"),
@@ -1163,11 +1171,11 @@ class HarnessGUI:
                     category="", target="", ports="", posture="", net=""):
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         import time as _t
-        ts = _t.strftime("%H:%M:%S")   # when this result landed (completion time)
+        ts = _t.strftime("%Y-%m-%d %H:%M:%S")   # when this result landed (date + completion time)
         iid = self.status_tree.insert(
             "", "end",
             values=(self._status_seq, ts, target, posture, net, ports, direction,
-                    category, name, it, result, mitre, cwe),
+                    category, name, it, f"{STATUS_ICONS.get(result, '•')} {result}", mitre, cwe),
             tags=(result,))
         self._status_row_keys[iid] = (aid, it)
         kids = self.status_tree.get_children()
