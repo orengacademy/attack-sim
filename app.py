@@ -192,7 +192,18 @@ def _start_run(params):
     # ROE gate — identical policy to gui/cli: an explicit confirm or a durable opt-in.
     if not (params.get("confirm_roe") or core.roe_accepted()):
         return None, "Rules-of-engagement not confirmed (tick the ROE box)."
-    targets = [t.strip() for t in params.get("targets", []) if t.strip()]
+    # New per-target-row model: each row carries its own posture + net (cloud/
+    # on-prem). Derive the target list from the rows (order-preserving, de-duped);
+    # fall back to the legacy flat `targets` list for older API callers.
+    rows = params.get("rows") or []
+    if rows:
+        targets, seen = [], set()
+        for r in rows:
+            ip = str((r or {}).get("target", "")).strip()
+            if ip and ip not in seen:
+                seen.add(ip); targets.append(ip)
+    else:
+        targets = [t.strip() for t in params.get("targets", []) if t.strip()]
     if not targets:
         return None, "No target given."
     for t in targets:
@@ -271,6 +282,14 @@ def _run_worker(run_id, params, targets, module_ids):
     form_rpc = _int(params.get("rpc_port"), 1135)
     form_ssh = _int(params.get("ssh_port"), 22)
     _CRED_KEYS = ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")
+    # Per-target rows from the redesigned UI: {target: {"posture","cloud"}}. When a
+    # target has a row, its posture + net come straight from that row (explicit),
+    # overriding the Auto/memory resolution below.
+    row_by_target = {}
+    for r in (params.get("rows") or []):
+        ip = str((r or {}).get("target", "")).strip()
+        if ip:
+            row_by_target[ip] = r
     try:
         from modules import _portpatch
     except Exception:
@@ -284,9 +303,26 @@ def _run_worker(run_id, params, targets, module_ids):
             # Resolve this target's FULL profile. In auto, pull each dimension from
             # the target's memory (fall back to the form for anything unset); in
             # explicit, the form applies to all targets.
-            prof = core.recall_target(target) if auto else {}
-            posture = core.resolve_posture(target, req_mode)
-            if auto:
+            row = row_by_target.get(target)
+            prof = core.recall_target(target) if (auto or row is not None) else {}
+            if row is not None:
+                # EXPLICIT per-row posture + net from the UI. Ports: the target's own
+                # remembered NAT ports win, else the form's NAT defaults. Creds: a
+                # target's OWN remembered cred wins per key, else the shared on-screen
+                # creds — so one Administrator/NewPass123! set covers every DC row.
+                rp = str(row.get("posture", "")).strip().lower()
+                posture = ("whitebox" if rp.startswith("w")
+                           else "blackbox" if rp.startswith("b")
+                           else core.resolve_posture(target, "auto"))
+                t_cloud = bool(row.get("cloud"))
+                t_smb = _int(prof.get("smb_port"), form_smb)
+                t_rpc = _int(prof.get("rpc_port"), form_rpc)
+                t_ssh = _int(prof.get("ssh_port"), form_ssh)
+                t_source = prof.get("source") or form_source
+                t_creds = {k: (prof.get(k) or form_creds.get(k))
+                           for k in _CRED_KEYS if (prof.get(k) or form_creds.get(k))}
+            elif auto:
+                posture = core.resolve_posture(target, req_mode)
                 t_cloud = bool(prof.get("cloud"))
                 t_smb = _int(prof.get("smb_port"), 4445)
                 t_rpc = _int(prof.get("rpc_port"), 1135)
@@ -294,6 +330,7 @@ def _run_worker(run_id, params, targets, module_ids):
                 t_source = prof.get("source") or form_source
                 t_creds = {k: prof.get(k) for k in _CRED_KEYS if prof.get(k)} or form_creds
             else:
+                posture = core.resolve_posture(target, req_mode)
                 t_cloud, t_smb, t_rpc, t_ssh = form_cloud, form_smb, form_rpc, form_ssh
                 t_source, t_creds = form_source, form_creds
             emit({"type": "target", "index": ti, "total": len(targets), "target": target,
@@ -324,14 +361,16 @@ def _run_worker(run_id, params, targets, module_ids):
             if t_source:
                 runner.ctx.source_ip = t_source
             try:
-                if auto:
-                    core.remember_target(target)   # touch last_used; don't clobber the profile
-                else:
+                if row is not None or not auto:
+                    # explicit per-row (or legacy explicit): persist the chosen
+                    # posture + net + ports + creds so the next load prefills them.
                     core.remember_target(target, source=t_source, cloud=t_cloud,
                                          smb_port=(t_smb if t_cloud else None),
                                          rpc_port=(t_rpc if t_cloud else None),
                                          ssh_port=(t_ssh if t_cloud else None),
                                          mode=posture, site_id=site_id, **t_creds)
+                else:
+                    core.remember_target(target)   # Auto: touch last_used; don't clobber the profile
             except Exception:
                 pass
             ev = core.Evidence(label=(target if len(targets) > 1 else None))
@@ -543,7 +582,47 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def _list_runs(limit=40):
+_RUN_META_CACHE = {}   # path -> (summary.json mtime, extracted-meta dict)
+
+
+def _run_meta(path):
+    """Pull the self-describing provenance out of a run's summary.json meta:
+    source -> destination, posture (white/black), transport (cloud/on-prem), site,
+    finding count. Cached by summary.json mtime so re-listing is cheap even with
+    hundreds of runs. Missing/old runs (no summary yet, or pre-dating the extra
+    meta) just come back with blanks — the run is still listed, never dropped."""
+    sp = os.path.join(path, "summary.json")
+    try:
+        mt = os.path.getmtime(sp)
+    except OSError:
+        return {}
+    hit = _RUN_META_CACHE.get(path)
+    if hit and hit[0] == mt:
+        return hit[1]
+    meta = {}
+    try:
+        with open(sp) as f:
+            meta = (json.load(f) or {}).get("meta", {}) or {}
+    except Exception:
+        meta = {}
+    cloud = meta.get("cloud")
+    out = {"target": meta.get("target_ip", "") or "",
+           "source": meta.get("source_ip", "") or "",
+           "appliance": meta.get("appliance_ip", "") or "",
+           "mode": (meta.get("mode") or "").lower(),
+           "cloud": (bool(cloud) if cloud is not None else None),
+           "site": meta.get("site_id", "") or "",
+           "findings": meta.get("finding_count"),
+           "verdicts": meta.get("verdicts") or {},
+           "modules": meta.get("module_count")}
+    _RUN_META_CACHE[path] = (mt, out)
+    return out
+
+
+def _list_runs(limit=None):
+    """Every run/fleet evidence dir (newest first), each enriched with its
+    source->destination / posture / transport provenance. `limit=None` returns
+    ALL of them (the dashboard shows every run — none are dropped)."""
     out = []
     try:
         dirs = [n for n in os.listdir(EVID)
@@ -561,13 +640,21 @@ def _list_runs(limit=40):
         for st in RUNS.values():
             if not st.get("done") and st.get("current_root"):
                 active.add(os.path.basename(str(st["current_root"]).rstrip("/")))
-    for name in dirs[:limit]:
+    for name in (dirs if limit is None else dirs[:limit]):
         p = os.path.join(EVID, name)
         has = {f: os.path.isfile(os.path.join(p, f))
                for f in ("report.html", "summary.json", "summary.csv", "summary.xlsx",
                          "report.txt", "attack_navigator_layer.json")}
+        m = _run_meta(p)
+        # destination falls back to the "__<target>" suffix multi-target runs carry
+        # in the dir name when the summary isn't written yet.
+        dest = m.get("target") or (name.split("__", 1)[1] if "__" in name else "")
         out.append({"name": name, "mtime": os.path.getmtime(p), "files": has,
-                    "active": name in active})
+                    "active": name in active, "target": dest,
+                    "source": m.get("source", ""), "appliance": m.get("appliance", ""),
+                    "mode": m.get("mode", ""), "cloud": m.get("cloud"),
+                    "site": m.get("site", ""), "findings": m.get("findings"),
+                    "modules": m.get("modules")})
     return out
 
 
@@ -671,7 +758,7 @@ b{font-weight:600}
 .btn.stop:disabled{color:var(--faint);border-color:var(--line);background:transparent;cursor:not-allowed}
 /* .btn.running: the disabled state + enabled Stop + filling progress bar signal an active run (no header animation) */
 
-.console{flex:1;display:grid;grid-template-columns:minmax(330px,376px) 1fr;min-height:0}
+.console{flex:1;display:grid;grid-template-columns:minmax(348px,408px) 1fr;min-height:0}
 .rail{border-right:1px solid var(--line);overflow:auto;background:linear-gradient(180deg,var(--panel),var(--bg) 60%)}
 .theatre{overflow:auto;min-width:0}
 @media(max-width:920px){.console{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line)}}
@@ -715,6 +802,40 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 .seg button:hover{color:var(--fg2)}
 .seg button.on{background:linear-gradient(180deg,var(--raise2),var(--raise));color:var(--fg);
  box-shadow:inset 0 0 0 1px rgba(95,227,232,.28),var(--sh1)}
+/* per-target rows: IP + posture (black/white) + net (on-prem/cloud) + remove */
+.tgthead{display:flex;align-items:center;justify-content:space-between;margin:0 0 var(--s2)}
+.tgthead label{margin:0}
+.addtgt{font:inherit;font-size:11.5px;font-weight:600;border:1px solid var(--line);background:var(--bg);color:var(--acc);
+ border-radius:var(--r-pill);padding:4px 12px;cursor:pointer;transition:border-color var(--dur),background var(--dur),color var(--dur)}
+.addtgt:hover{border-color:var(--acc2);background:var(--acc-dim)}
+.addtgt:active{transform:translateY(1px)}
+.targetrows{display:flex;flex-direction:column;gap:var(--s2);max-height:min(40vh,296px);overflow-y:auto;
+ margin:0 calc(-1*var(--s1));padding:2px var(--s1)}
+.targetrows::-webkit-scrollbar{width:8px}
+.targetrows::-webkit-scrollbar-thumb{background:var(--line2);border-radius:var(--r-pill)}
+.trow{display:flex;align-items:center;gap:5px;flex-wrap:nowrap}
+.trow .tip{flex:1 1 96px;min-width:92px;width:auto;font-family:var(--mono);font-size:12px;padding:7px 8px}
+.rseg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg);padding:2px;gap:2px;flex:none}
+.rseg button{border:0;background:transparent;color:var(--fg3);font:inherit;font-size:10px;font-weight:600;letter-spacing:0;
+ padding:4px 7px;cursor:pointer;border-radius:var(--r-xs);transition:background var(--dur),color var(--dur),box-shadow var(--dur);white-space:nowrap}
+.rseg button:hover{color:var(--fg2)}
+.rseg button.on{color:var(--fg);box-shadow:var(--sh1)}
+.rseg.posture button[data-v=whitebox].on{background:var(--acc-dim);color:var(--acc);box-shadow:inset 0 0 0 1px rgba(95,227,232,.42)}
+.rseg.posture button[data-v=blackbox].on{background:linear-gradient(180deg,var(--raise2),var(--raise));box-shadow:inset 0 0 0 1px var(--line2),var(--sh1)}
+.rseg.net button[data-v=cloud].on{background:rgba(90,162,255,.16);color:var(--v-svc);box-shadow:inset 0 0 0 1px rgba(90,162,255,.42)}
+.rseg.net button[data-v=onprem].on{background:linear-gradient(180deg,var(--raise2),var(--raise));box-shadow:inset 0 0 0 1px var(--line2),var(--sh1)}
+.trm{flex:none;border:1px solid var(--line);background:var(--bg);color:var(--faint);width:26px;height:30px;border-radius:var(--r-xs);
+ cursor:pointer;font-size:11px;line-height:1;transition:color var(--dur),border-color var(--dur),background var(--dur);padding:0}
+.trm:hover{color:var(--v-got);border-color:var(--v-got)}
+.tgthint{margin-top:var(--s2);font-size:10.5px;color:var(--faint);line-height:1.55}
+.tgthint b{color:var(--fg3);font-weight:600}
+.tgthint .tk{font-family:var(--mono);font-weight:700;padding:0 3px;border-radius:3px}
+.tgthint .tk.b{color:var(--fg2)} .tgthint .tk.w{color:var(--acc)}
+/* creds: ssh-follows-dc note + NAT-ports subgroup */
+.credhint{font-size:10.5px;color:var(--faint);margin:2px 0 var(--s3);line-height:1.5}
+.natports{margin-top:var(--s3);padding:var(--s3);border:1px solid var(--hair);border-radius:var(--r-sm);background:var(--bg)}
+.natports .subhead{margin-bottom:var(--s2)}
+.natports .subhead .dim{text-transform:none;letter-spacing:0;font-weight:500;color:var(--faint)}
 /* per-target posture/transport readout (Auto mode) */
 .posturemap{margin-top:var(--s2);display:flex;flex-direction:column;gap:3px;font-family:var(--mono);font-size:10.5px}
 .posturemap:empty{display:none}
@@ -936,6 +1057,38 @@ td.dim{color:var(--fg3)}
 .runrow .rlinks a.primary:hover{color:var(--acc-ink);background:var(--acc);border-color:var(--acc)}
 .runrow .nolink{color:var(--faint);font-size:11px;font-family:var(--mono)}
 .runrow .running{margin-left:auto;color:var(--acc);font-size:11px;font-family:var(--mono)}
+/* ---- evidence views: switcher · source->dest · posture/net chips · list/table ---- */
+.runsbar .rh .rseg.evview{flex:none}
+.rseg.evview button{font-size:10.5px;padding:5px 11px}
+.rseg.evview button.on{background:var(--acc-dim);color:var(--acc);box-shadow:inset 0 0 0 1px rgba(95,227,232,.35)}
+.runcount{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.runrow .rtop{display:flex;align-items:center;justify-content:space-between;gap:var(--s2)}
+.runrow .rroute{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font-family:var(--mono);font-size:11px;color:var(--fg2)}
+.runrow .rroute .arrow{color:var(--faint)}
+.runrow .rroute .src{color:var(--fg3)} .runrow .rroute .dst{color:var(--fg);font-weight:500}
+.nchip{display:inline-flex;align-items:center;font-family:var(--mono);font-weight:600;font-size:10px;letter-spacing:.03em;
+ padding:2px 7px;border-radius:var(--r-pill);border:1px solid currentColor;text-transform:uppercase;white-space:nowrap}
+.nchip.cloud{color:var(--v-svc)} .nchip.prem{color:var(--fg3)}
+.evfind{font-family:var(--mono);font-size:10.5px;font-weight:700;color:var(--v-got);white-space:nowrap}
+.evclean{font-family:var(--mono);font-size:10.5px;color:var(--v-blk);white-space:nowrap}
+/* list view = compact single-line rows */
+.runlist.list{display:flex;flex-direction:column;gap:5px}
+.runlist.list .runrow{flex-direction:row;align-items:center;gap:var(--s3);flex-wrap:wrap}
+.runlist.list .runrow .rtop{flex:0 0 auto;justify-content:flex-start;gap:var(--s2)}
+.runlist.list .runrow .rroute{flex:1 1 180px;min-width:150px}
+.runlist.list .runrow .rfiles{margin-left:auto;flex:0 0 auto}
+/* table view */
+.runlist.table{display:block;overflow-x:auto}
+table.evtable{width:100%;border-collapse:collapse;font-size:11.5px}
+table.evtable th{text-align:left;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);font-weight:600;
+ padding:6px 10px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+table.evtable td{padding:7px 10px;border-bottom:1px solid var(--hair);white-space:nowrap;vertical-align:middle}
+table.evtable tr:hover td{background:var(--raise)}
+table.evtable .arrowcell{color:var(--faint);padding:0 2px;text-align:center}
+table.evtable .evlinks{display:flex;gap:4px;flex-wrap:wrap}
+table.evtable .evlinks a{font-family:var(--mono);font-size:10px;color:var(--fg3);padding:2px 7px;border-radius:var(--r-xs);border:1px solid var(--line)}
+table.evtable .evlinks a:hover{color:var(--fg);border-color:var(--line2)}
+table.evtable .evlinks a.primary{color:var(--acc);border-color:rgba(95,227,232,.3);background:var(--acc-dim)}
 
 .hidden{display:none!important}
 
@@ -979,17 +1132,9 @@ td.dim{color:var(--fg3)}
   <div class=group>
    <div class=ghead><h2>Target &amp; scope</h2><span class=rule></span></div>
    <div class=field>
-    <label for=targets>Targets — one host per line</label>
-    <textarea id=targets placeholder="159.223.35.108&#10;167.71.222.169"></textarea>
-   </div>
-   <div class=field>
-    <label>Posture</label>
-    <div class=seg id=modeseg>
-     <button data-v=auto class=on title="each target runs in its own designated posture">Auto · per-target</button>
-     <button data-v=blackbox title="through the SD-WAN as-is">Black-box</button>
-     <button data-v=whitebox title="allow-all baseline">White-box</button>
-    </div>
-    <div class=posturemap id=postureMap></div>
+    <div class=tgthead><label>Targets</label><button type=button id=addtgt class=addtgt>+ add target</button></div>
+    <div class=targetrows id=targetRows></div>
+    <div class=tgthint>each row picks its own <b>posture</b> — <span class="tk b">black</span>/<span class="tk w">white</span> — and <b>net</b> — on-prem (SMB/RPC direct <b>445/135</b>) / cloud (NAT'd <b>4445/1135</b>)</div>
    </div>
    <div class=rowf>
     <div class=field><label for=iters>Iterations</label><input id=iters type=number min=1 max=20 value=1></div>
@@ -1012,15 +1157,18 @@ td.dim{color:var(--fg3)}
    <label class=chk><input type=checkbox id=debug> Debug (verbose tools + timing)</label>
    <details class=cred id=credpanel>
     <summary>Credentials &amp; cloud NAT ports</summary>
-    <label class=chk style="margin:var(--s2) 0"><input type=checkbox id=cloud> Cloud target (NAT'd SMB/RPC/SSH)</label>
-    <div class=rowf>
-     <div class=field><label for=smb>SMB</label><input id=smb type=number value=4445></div>
-     <div class=field><label for=rpc>RPC</label><input id=rpc type=number value=1135></div>
-     <div class=field><label for=sshp>SSH</label><input id=sshp type=number value=22></div>
-    </div>
     <div class=rowf><div class=field><label for=domain>Domain</label><input id=domain type=text></div><div class=field><label for=dcuser>DC user</label><input id=dcuser type=text></div></div>
     <div class=field><label for=dcpass>DC password</label><input id=dcpass type=password></div>
     <div class=rowf><div class=field><label for=sshuser>SSH user</label><input id=sshuser type=text></div><div class=field><label for=sshpass>SSH password</label><input id=sshpass type=password></div></div>
+    <div class=credhint id=sshnote>SSH login follows the Windows/DC Administrator by default — type a different SSH value to override.</div>
+    <div class=natports>
+     <div class=subhead>Cloud NAT ports <span class=dim>— used by any row set to <b>cloud</b></span></div>
+     <div class=rowf>
+      <div class=field><label for=smb>SMB</label><input id=smb type=number value=4445></div>
+      <div class=field><label for=rpc>RPC</label><input id=rpc type=number value=1135></div>
+      <div class=field><label for=sshp>SSH</label><input id=sshp type=number value=22></div>
+     </div>
+    </div>
     <div class=loaded id=loaded></div>
    </details>
   </div>
@@ -1115,7 +1263,13 @@ td.dim{color:var(--fg3)}
   </div>
 
   <div class=runsbar>
-   <div class=rh><h3>Recent evidence</h3><span class=rule></span></div>
+   <div class=rh><h3>Evidence</h3><span class=runcount id=runcount></span><span class=rule></span>
+    <div class="rseg evview" id=evview>
+     <button type=button data-v=gallery class=on title="cards">Gallery</button>
+     <button type=button data-v=list title="compact rows">List</button>
+     <button type=button data-v=table title="full table">Table</button>
+    </div>
+   </div>
    <div class=runlist id=runs>—</div>
   </div>
  </section>
@@ -1132,7 +1286,7 @@ td.dim{color:var(--fg3)}
 
 <script>
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let BOOT=null, MODE="auto", ES=null, COUNTS={}, RESN=0;
+let BOOT=null, ES=null, COUNTS={}, RESN=0;
 let ROWS=[], RUNID=null, SORT={col:"n",dir:1}, RUNNING=false, EVRUNS=[];
 let RUNCFG={}, CURTGT=null, PROG={};   // live run config / current target / module progress
 // 6-bucket visual grouping (spectrum / legend / row colors)
@@ -1161,20 +1315,66 @@ async function boot(){
  const C=BOOT.creds||{};
  $("#domain").value=C.domain||""; $("#dcuser").value=C.dc_user||""; $("#dcpass").value=C.dc_pass||"";
  $("#sshuser").value=C.ssh_user||""; $("#sshpass").value=C.ssh_pass||"";
+ syncSshCreds();                       // SSH login follows the Windows/DC Administrator by default
+ $("#dcuser").addEventListener("input",onDcLoginChange);
+ $("#dcpass").addEventListener("input",onDcLoginChange);
+ $("#sshuser").addEventListener("input",onSshLoginChange);
+ $("#sshpass").addEventListener("input",onSshLoginChange);
  if(Object.values(cl).some(Boolean) || Object.keys(BOOT.target_config||{}).length)
    { const d=$("#credpanel"); if(d) d.open=true; }
- if(BOOT.targets&&BOOT.targets.length){ $("#targets").value=BOOT.targets.join("\n");
-   prefillTarget(BOOT.targets[0]); }
- $("#targets").addEventListener("input",()=>{
-   const first=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean)[0];
-   if(first) prefillTarget(first); renderPostureMap();});
- buildBattery(); buildVerdictKey(); applyPreset("original"); refresh(); renderRows(); renderPostureMap(); loadRuns();
+ // one editable row per known target (posture + net from its saved profile); the
+ // FIRST row also drives the shared creds panel. No targets yet -> one blank row.
+ const tgts=BOOT.targets||[];
+ if(tgts.length){ tgts.forEach(ip=>{const tc=(BOOT.target_config||{})[ip]||{};
+    addTargetRow(ip, String(tc.mode||"").toLowerCase().startsWith("w")?"whitebox":"blackbox", !!tc.cloud);});
+    prefillTarget(tgts[0]); }
+ else { addTargetRow("","blackbox",false); }
+ $("#addtgt").addEventListener("click",()=>{addTargetRow("","blackbox",false).querySelector(".tip").focus();});
+ buildBattery(); buildVerdictKey(); applyPreset("original"); refresh(); renderRows(); loadRuns();
 }
 
-// Prefill the whole form for ONE target from its saved config.
+// ---- per-target rows: IP + posture (black/white) + net (on-prem/cloud) ----
+function segVal(seg){const on=seg.querySelector("button.on");return on?on.dataset.v:seg.querySelector("button").dataset.v;}
+function setSeg(seg,val){[...seg.children].forEach(b=>b.classList.toggle("on",b.dataset.v===val));}
+function mkSeg(kind,val,opts){
+ const seg=document.createElement("div"); seg.className="rseg "+kind;
+ opts.forEach(([v,label,title])=>{const b=document.createElement("button");b.type="button";b.dataset.v=v;b.textContent=label;if(title)b.title=title;if(v===val)b.classList.add("on");seg.appendChild(b);});
+ seg.addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;setSeg(seg,b.dataset.v);});
+ return seg;
+}
+function targetRows(){return $$("#targetRows .trow");}
+function firstTargetRow(){return $("#targetRows .trow");}
+function addTargetRow(ip,posture,cloud){
+ const host=$("#targetRows");
+ const row=document.createElement("div"); row.className="trow";
+ const inp=document.createElement("input"); inp.className="tip"; inp.type="text"; inp.placeholder="host / IP"; inp.value=ip||"";
+ const pseg=mkSeg("posture",posture||"blackbox",[["blackbox","black","through the SD-WAN as-is"],["whitebox","white","allow-all baseline"]]);
+ const nseg=mkSeg("net",cloud?"cloud":"onprem",[["onprem","on-prem","SMB/RPC direct 445/135"],["cloud","cloud","NAT'd 4445/1135"]]);
+ const rm=document.createElement("button"); rm.type="button"; rm.className="trm"; rm.title="remove target"; rm.textContent="✕";
+ rm.addEventListener("click",()=>{ if(targetRows().length>1){row.remove();} else {inp.value="";} });
+ const onIp=()=>onTargetIp(row,inp.value.trim());
+ inp.addEventListener("change",onIp); inp.addEventListener("blur",onIp);
+ row.append(inp,pseg,nseg,rm); host.appendChild(row);
+ return row;
+}
+// Typing a known IP recalls that target's saved posture + net; the first row also
+// fills the shared creds panel (like the desktop GUI's primary row).
+function onTargetIp(row,ip){
+ const tc=(BOOT.target_config||{})[ip]; if(!tc) return;
+ setSeg(row.querySelector(".rseg.posture"), String(tc.mode||"").toLowerCase().startsWith("w")?"whitebox":"blackbox");
+ setSeg(row.querySelector(".rseg.net"), tc.cloud?"cloud":"onprem");
+ if(firstTargetRow()===row) prefillTarget(ip);
+}
+function readTargetRows(){
+ return targetRows().map(row=>({
+   target: row.querySelector(".tip").value.trim(),
+   posture: segVal(row.querySelector(".rseg.posture")),
+   cloud: segVal(row.querySelector(".rseg.net"))==="cloud"
+ })).filter(r=>r.target);
+}
+// Prefill the shared creds panel + NAT-port defaults for ONE target from its config.
 function prefillTarget(ip){
  const tc=(BOOT.target_config||{})[ip]; if(!tc) return;
- $("#cloud").checked=!!tc.cloud;
  if(tc.smb_port) $("#smb").value=tc.smb_port;
  if(tc.rpc_port) $("#rpc").value=tc.rpc_port;
  if(tc.ssh_port) $("#sshp").value=tc.ssh_port;
@@ -1185,29 +1385,16 @@ function prefillTarget(ip){
  if(tc.dc_pass) $("#dcpass").value=tc.dc_pass;
  if(tc.ssh_user) $("#sshuser").value=tc.ssh_user;
  if(tc.ssh_pass) $("#sshpass").value=tc.ssh_pass;
- // posture is NOT forced onto the global toggle any more — 'Auto · per-target'
- // resolves each target's designated posture at run time (see renderPostureMap).
+ syncSshCreds();   // SSH follows the Windows/DC login unless this target has a distinct one
 }
-// Show each entered target's resolved posture + transport. In Auto, read it from
-// that target's saved profile; in explicit, the chosen posture applies to all.
-function renderPostureMap(){
- const host=$("#postureMap"); if(!host) return;
- const ips=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
- const tc=BOOT&&BOOT.target_config||{};
- if(!ips.length){ host.innerHTML=""; return; }
- if(MODE!=="auto"){
-  host.innerHTML=`<span class=pm><span class=hint>explicit <b>${esc(MODE)}</b> applied to all ${ips.length} target(s) — form config used</span></span>`;
-  return;
- }
- host.innerHTML=ips.slice(0,8).map(ip=>{
-  const p=tc[ip]||{}; const post=(String(p.mode||"").toLowerCase().startsWith("w"))?"whitebox":"blackbox";
-  const cls=post==="whitebox"?"w":"b";
-  const known=!!tc[ip];
-  const xport=p.cloud?("cloud "+(p.smb_port||4445)+"/"+(p.rpc_port||1135)):"on-prem direct";
-  const tail=known?`<span class=xp>· ${esc(xport)}</span>`:`<span class=xp>· not designated → blackbox · on-prem</span>`;
-  return `<span class=pm><span class=ip>${esc(ip)}</span> <span class="pp ${cls}">${post}</span> ${tail}</span>`;
- }).join("")+(ips.length>8?`<span class=pm><span class=hint>+${ips.length-8} more…</span></span>`:"");
-}
+// ---- SSH login MIRRORS the Windows/DC Administrator (same identity) ----
+let SSH_TRACKS_DC=true;
+function onDcLoginChange(){ if(SSH_TRACKS_DC){ $("#sshuser").value=$("#dcuser").value; $("#sshpass").value=$("#dcpass").value; } }
+function onSshLoginChange(){ const su=$("#sshuser").value,sp=$("#sshpass").value,du=$("#dcuser").value,dp=$("#dcpass").value;
+ // Windows usernames are case-insensitive (administrator == Administrator); passwords are not.
+ SSH_TRACKS_DC=((!su.trim()||su.toLowerCase()===du.toLowerCase())&&(!sp.trim()||sp===dp)); }
+function syncSshCreds(){ if(!$("#sshuser").value.trim()&&$("#dcuser").value.trim())$("#sshuser").value=$("#dcuser").value;
+ if(!$("#sshpass").value.trim()&&$("#dcpass").value.trim())$("#sshpass").value=$("#dcpass").value; onSshLoginChange(); }
 function syncRoe(){ $("#roeswitch").classList.toggle("armed",$("#roe").checked); }
 
 // Verdict key: every verdict with color + plain-language meaning; each chip also toggles the table filter.
@@ -1371,13 +1558,16 @@ function logLine(t){
 }
 
 function startRun(){
- const targets=$("#targets").value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
- const body={targets,module_ids:selectedIds(),mode:MODE,
+ const rows=readTargetRows();
+ if(!rows.length){setStatus("No target given — add at least one target row.","err");return;}
+ // Each row carries its own posture + net; the NAT ports + creds below apply to any
+ // cloud row / to a target that doesn't remember its own.
+ const body={rows,module_ids:selectedIds(),
   iterations:+$("#iters").value,workers:+$("#workers").value,wait_unblock:+$("#wait").value,
   ban_expiry:+$("#banexp").value,auto_retry:+$("#autoretry").value,
   site_id:$("#site").value,source:$("#source").value,appliance:$("#appliance").value,
   active:$("#active").checked,debug:$("#debug").checked,confirm_roe:$("#roe").checked,
-  cloud:$("#cloud").checked,smb_port:+$("#smb").value,rpc_port:+$("#rpc").value,ssh_port:+$("#sshp").value,
+  smb_port:+$("#smb").value,rpc_port:+$("#rpc").value,ssh_port:+$("#sshp").value,
   creds:{domain:$("#domain").value,dc_user:$("#dcuser").value,dc_pass:$("#dcpass").value,
          ssh_user:$("#sshuser").value,ssh_pass:$("#sshpass").value}};
  fetch("api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
@@ -1441,27 +1631,70 @@ function finish(err){
  renderRows();
  if(ES)ES.close(); loadRuns();
 }
+// Evidence runsbar: ALL runs (never truncated), each self-describing — source ->
+// destination, posture (white/black), net (on-prem/cloud) — in three views.
+let EV=[], EVVIEW="gallery";
+try{ EVVIEW=localStorage.getItem("evview")||"gallery"; }catch(e){}
+const EVFMT=[["report.html","report"],["summary.json","json"],["summary.csv","csv"],["summary.xlsx","xlsx"],["report.txt","txt"],["attack_navigator_layer.json","att&ck"]];
 async function loadRuns(){
  const j=await (await fetch("api/runs")).json();
- const FMT=[["report.html","report"],["summary.json","json"],["summary.csv","csv"],["summary.xlsx","xlsx"],["report.txt","txt"],["attack_navigator_layer.json","att&ck"]];
- $("#runs").innerHTML=(j.runs||[]).slice(0,40).map(r=>{
-  const b="evidence/"+r.name+"/";
-  const links=FMT.filter(([f])=>r.files[f]).map(([f,l])=>{
-    const blank=(f.endsWith(".csv")||f.endsWith(".xlsx"))?"":"target=_blank ";
-    const pri=(f==="report.html")?" class=primary":"";
-    return `<a ${blank}href="${b}${f}"${pri}>${l}</a>`;}).join("");
-  return `<div class=runrow><span class=rn>${esc(r.name)}</span>`
-   +(r.active?`<span class=running>running…</span>`
-     :(links?`<span class=rlinks>${links}</span>`:`<span class=nolink>no summary</span>`))+`</div>`;
- }).join("")||"—";
+ EV=j.runs||[];
+ renderEvidence();
+}
+function evLinks(r){
+ const b="evidence/"+r.name+"/";
+ return EVFMT.filter(([f])=>r.files[f]).map(([f,l])=>{
+   const blank=(f.endsWith(".csv")||f.endsWith(".xlsx"))?"":"target=_blank ";
+   const pri=(f==="report.html")?" class=primary":"";
+   return `<a ${blank}href="${b}${f}"${pri}>${l}</a>`;}).join("");
+}
+function evRoute(r){
+ const dst=r.target?esc(r.target):"—";
+ return r.source?`<span class=src>${esc(r.source)}</span><span class=arrow>→</span><span class=dst>${dst}</span>`
+                :`<span class=dst>${dst}</span>`;
+}
+function evPost(m){ return m?`<span class="pchip ${m[0]==='w'?'w':'b'}">${m[0]==='w'?'white':'black'}</span>`:""; }
+function evNet(c){ return c===true?`<span class="nchip cloud">cloud</span>`:(c===false?`<span class="nchip prem">on-prem</span>`:""); }
+function evFind(r){ return (r.findings>0)?`<span class=evfind>${r.findings} finding${r.findings>1?'s':''}</span>`
+                       :(r.findings===0?`<span class=evclean>clean</span>`:""); }
+function renderEvidence(){
+ const host=$("#runs"); if(!host) return;
+ host.className="runlist "+EVVIEW;
+ const cc=$("#runcount"); if(cc) cc.textContent=EV.length?(EV.length+" run"+(EV.length>1?"s":"")):"";
+ const sw=$("#evview"); if(sw)[...sw.children].forEach(b=>b.classList.toggle("on",b.dataset.v===EVVIEW));
+ if(!EV.length){ host.innerHTML='<div class=nolink>no evidence yet</div>'; return; }
+ if(EVVIEW==="table"){ host.innerHTML=evTable(); return; }
+ host.innerHTML=EV.map(r=>{
+   const status=r.active?`<span class=running>running…</span>`
+     :(evLinks(r)?`<span class=rlinks>${evLinks(r)}</span>`:`<span class=nolink>no summary</span>`);
+   return `<div class=runrow>`
+     +`<div class=rtop><span class=rn>${esc(r.name)}</span>${evFind(r)}</div>`
+     +`<div class=rroute>${evRoute(r)} ${evPost(r.mode)} ${evNet(r.cloud)}</div>`
+     +`<div class=rfiles>${status}</div></div>`;
+ }).join("");
+}
+function evTable(){
+ const dim='<span class=dim>—</span>';
+ const head=`<tr><th>Run</th><th>Source</th><th></th><th>Destination</th><th>Posture</th><th>Net</th><th>Findings</th><th>Evidence</th></tr>`;
+ const body=EV.map(r=>`<tr>`
+   +`<td class=mono>${esc(r.name)}</td>`
+   +`<td class=mono>${r.source?esc(r.source):dim}</td>`
+   +`<td class=arrowcell>${r.source?'→':''}</td>`
+   +`<td class=mono>${r.target?esc(r.target):dim}</td>`
+   +`<td>${evPost(r.mode)||dim}</td>`
+   +`<td>${evNet(r.cloud)||dim}</td>`
+   +`<td>${r.active?'<span class=running>running…</span>':(r.findings>0?`<span class=evfind>${r.findings}</span>`:(r.findings===0?'<span class=evclean>0</span>':dim))}</td>`
+   +`<td class=evlinks>${r.active?'':(evLinks(r)||dim)}</td>`
+ +`</tr>`).join("");
+ return `<table class=evtable><thead>${head}</thead><tbody>${body}</tbody></table>`;
 }
 
 $("#roe").addEventListener("change",syncRoe);
-$("#modeseg").addEventListener("click",e=>{if(!e.target.dataset.v)return;
- MODE=e.target.dataset.v;$$("#modeseg button").forEach(b=>b.classList.toggle("on",b.dataset.v===MODE));renderPostureMap();});
 $$("[data-preset]").forEach(b=>b.addEventListener("click",()=>applyPreset(b.dataset.preset)));
 $("#runbtn").addEventListener("click",startRun);
 $("#stopbtn").addEventListener("click",()=>fetch("api/run/"+$("#stopbtn").dataset.id+"/stop",{method:"POST"}));
+$("#evview").addEventListener("click",e=>{const b=e.target.closest("button");if(!b||!b.dataset.v)return;
+ EVVIEW=b.dataset.v; try{localStorage.setItem("evview",EVVIEW);}catch(e){} renderEvidence();});
 // --- three-way tab switch (Results / Live log / History) ---
 const TABS=[["#tabRes","#paneRes"],["#tabLog","#paneLog"],["#tabHist","#paneHist"]];
 function showTab(tab){TABS.forEach(([t,p])=>{const on=(t===tab);

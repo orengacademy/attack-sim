@@ -90,7 +90,7 @@ python3 cli.py --target <ip> --all --confirm-roe              # run ALL modules 
 python3 cli.py --target <ip> --attack-sim --confirm-roe       # the USS boundary scope
 python3 cli.py --target <DC-ip> --domain lab.local --dc-user Administrator \
   --dc-pass '<pw>' --only dcsync,kerberoast,psexec --confirm-roe   # AD vs a DC (creds remembered)
-python3 cli.py --target <ip> --ssh-user labadmin --ssh-pass '<pw>' --only ssh_brute --confirm-roe   # SSH creds, separate from the DC creds
+python3 cli.py --target <ip> --only ssh_brute --confirm-roe   # ssh_brute: SSH login FOLLOWS the DC/Windows Administrator by default; add --ssh-user/--ssh-pass only for a DISTINCT SSH account
 ```
 Both the GUI and the CLI **run preflight + recon first** (tool/port/service
 health) before any attack. The CLI then shows clean numbered live results and a

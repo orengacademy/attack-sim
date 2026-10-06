@@ -37,7 +37,7 @@ from datetime import datetime
 # summary.json meta, so any evidence folder is traceable to the build that made
 # it (alongside the git short-SHA in `engine_version`). Single source of truth —
 # cli.py / gui.py import this.
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 # ---------------------------------------------------------------------
 # Configuration. Non-secret defaults (domain/user) live here; the PASSWORD is
@@ -50,10 +50,12 @@ VERSION = "1.7.0"
 DEFAULT_TIMEOUT = 300  # seconds per attack module
 _CRED_ENV = {"domain": "HARNESS_DOMAIN", "dc_user": "HARNESS_DC_USER",
              "dc_pass": "HARNESS_DC_PASS",
-             # SSH creds are SEPARATE from the DC creds: a dual-role target is
-             # both an SSH host (e.g. labadmin) AND a Windows DC front
-             # (Administrator), and one identity can't serve both. ssh_brute
-             # uses these and falls back to dc_user/dc_pass only when unset.
+             # SSH creds FOLLOW the DC/Windows Administrator by default: this lab's
+             # SSH target IS the Windows Administrator (same Administrator /
+             # NewPass123!). ssh_brute uses these and falls back to dc_user/dc_pass
+             # when unset, so leaving them blank still logs in as the DC admin. They
+             # stay overridable for the rare target with a genuinely DISTINCT SSH
+             # account (set HARNESS_SSH_USER/PASS or the per-target GUI/CLI fields).
              "ssh_user": "HARNESS_SSH_USER", "ssh_pass": "HARNESS_SSH_PASS"}
 _CRED_DEFAULTS = {"domain": "lab.local", "dc_user": "Administrator", "dc_pass": "",
                   "ssh_user": "", "ssh_pass": ""}
@@ -2318,6 +2320,19 @@ class Runner:
         # Self-describing run provenance (so summary.json/INDEX need no outside
         # context to diff runs): what was hit, from where, with which engine build.
         ev.meta["target_ip"] = self.target_ip
+        ev.meta["source_ip"] = getattr(self.ctx, "source_ip", "") or ""
+        # Transport provenance: is this target reached via NAT'd alternate ports
+        # (cloud) or direct 445/135 (on-prem)? Recorded so evidence can show
+        # cloud-vs-on-prem per run without re-deriving it (front-end-agnostic:
+        # every driver sets the port map through _portpatch before the run).
+        try:
+            from modules import _portpatch
+            _pm = _portpatch.CUSTOM_PORT_TARGETS.get(self.target_ip)
+            ev.meta["cloud"] = bool(_pm)
+            if _pm:
+                ev.meta["nat_ports"] = {str(k): v for k, v in _pm.items()}
+        except Exception:
+            pass
         if self.dual:
             ev.meta["appliance_ip"] = self.appliance_ip
         ev.meta["module_count"] = len(modules)
