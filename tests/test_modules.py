@@ -281,5 +281,35 @@ class TestDohBypassHardened(unittest.TestCase):
         self.assertTrue(re.search(self.doh.META["blocked_regex"], "DOH-BLOCKED: no DoH response"))
 
 
+class TestIcmpRateReport(unittest.TestCase):
+    """icmp_flood now reports the ACHIEVED flood rate (a single host rarely reaches
+    the configured pps) and flags an under-powered run so a below-threshold PASS
+    isn't read as 'no policing'."""
+
+    def setUp(self):
+        self.icmp = importlib.import_module("modules.icmp_flood")
+
+    def test_parse_sent(self):
+        self.assertEqual(
+            self.icmp._parse_sent("47987 packets transmitted, 46681 received, 3% packet loss"), 47987)
+        self.assertIsNone(self.icmp._parse_sent("no stats here"))
+
+    def test_rate_report_source_limited(self):
+        # 47987 sent in 15s @ target 20000 pps -> ~3200 pps, well under half -> source-limited
+        rate, limited = self.icmp._rate_report(47987, 15, 1400, 20000)
+        self.assertIn("ACHIEVED", rate)
+        self.assertIn("Mbit/s", rate)
+        self.assertTrue(limited)
+
+    def test_rate_report_at_target_not_limited(self):
+        rate, limited = self.icmp._rate_report(300000, 15, 1400, 20000)   # ~20000 pps
+        self.assertFalse(limited)
+
+    def test_rate_report_no_sent(self):
+        rate, limited = self.icmp._rate_report(None, 15, 1400, 20000)
+        self.assertIn("configured target", rate)
+        self.assertFalse(limited)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

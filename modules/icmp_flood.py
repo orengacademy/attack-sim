@@ -130,6 +130,27 @@ def _parse_rtt_avg(text):
     return float(m.group(1)) if m else None
 
 
+def _parse_sent(text):
+    """Packets actually transmitted, from a ping/hping3 'N packets transmitted' line."""
+    m = re.search(r"(\d+)\s+packets transmitted", text or "")
+    return int(m.group(1)) if m else None
+
+
+def _rate_report(sent, seconds, size, target_pps):
+    """(rate_str, source_limited) describing the load ACTUALLY pushed. A single host
+    over the internet usually can't reach the configured pps (NIC/CPU/link cap), so a
+    PASS must report the REAL achieved rate — otherwise 'delivered @ ~20000 pps'
+    overstates it and a below-threshold PASS reads as 'no policing' when the control
+    simply was never reached. source_limited flags that the achieved rate fell well
+    short of the target (the bottleneck is here, not the boundary)."""
+    if not sent or not seconds or seconds <= 0:
+        return ("~%s pps (configured target)" % f"{target_pps:,}", False)
+    pps = sent / seconds
+    mbps = sent * ((size or 0) + 28) * 8 / seconds / 1e6   # +28 = IPv4(20)+ICMP(8) headers
+    return ("~%s pps / ~%d Mbit/s ACHIEVED over %ds (configured target ~%s pps)"
+            % (f"{pps:,.0f}", mbps, seconds, f"{target_pps:,}"), pps < 0.5 * target_pps)
+
+
 # TCP ports probed to decide "is the host actually UP?" when ICMP is 100% lost,
 # ordered by how commonly they answer on a Windows DC / Linux server / appliance.
 _LIVENESS_PORTS = (445, 80, 443, 22, 389, 3389, 8080, 139, 135, 21, 23, 53, 1135, 4445)
@@ -281,6 +302,7 @@ def run(target, ctx):
     use_hping = shutil.which("hping3") is not None
     flood_loss = flood_rtt = None
     flood_txt = ""
+    sent = None
     if use_hping:
         out.append("## high-rate flood (engine: hping3 -1, counted fast mode)")
         flood_loss, flood_rtt, flood_txt = _hping_flood(target)
@@ -293,7 +315,8 @@ def run(target, ctx):
                 "ONE of: (a) sudo setcap cap_net_raw,cap_net_admin+eip $(which "
                 "hping3); (b) a NOPASSWD sudoers rule for hping3; or (c) run as root.")
             return "\n".join(out)
-        out.append(f"flood: loss={flood_loss}%  avg_rtt={flood_rtt}ms")
+        sent = _parse_sent(flood_txt)
+        out.append(f"flood: loss={flood_loss}%  avg_rtt={flood_rtt}ms  sent={sent}")
     else:
         # Fallback: Python flood + a during-flood ping sample. Can confirm the
         # flood had an effect, but can't fully characterise rate-limiting.
@@ -320,6 +343,7 @@ def run(target, ctx):
                 "(a) install hping3 (sudo apt install hping3); (b) run as root; or "
                 "(c) sudo sysctl -w net.ipv4.ping_group_range='0 2147483647'.")
             return "\n".join(out)
+        sent = py_result.get("sent")
         out.append(f"python flood: sent {py_result.get('sent', 0)} ICMP echoes via "
                    f"{py_result.get('mode', '?')}; during-flood loss={flood_loss}%")
 
@@ -328,6 +352,9 @@ def run(target, ctx):
         out.append("[INCONCLUSIVE] could not parse the flood's delivery ratio — review raw log.")
         return "\n".join(out)
 
+    # Report the load ACTUALLY pushed (a single host rarely reaches the configured
+    # pps), so a PASS can't be mistaken for "no policing at any volume".
+    rate_str, source_limited = _rate_report(sent, FLOOD_SECONDS, FLOOD_SIZE, FLOOD_PPS)
     base_ok = base_loss is not None and base_loss <= LOW_LOSS
     delta = (flood_loss - base_loss) if base_loss is not None else None
     inflated = (base_rtt and flood_rtt and base_rtt > 0
@@ -347,13 +374,24 @@ def run(target, ctx):
             f">= {RTT_ABS_FLOOR:.0f}ms) — the boundary shaped/throttled the high-rate "
             "ICMP (policing — control held).")
     elif flood_loss <= LOW_LOSS:
-        out.append(
-            f"PASS: the high-rate ICMP flood was delivered end-to-end "
-            f"({flood_loss:.1f}% loss over {FLOOD_COUNT} packets @ ~{FLOOD_PPS} pps"
-            + (f", {FLOOD_SIZE}B payload" if FLOOD_SIZE else "") + ") — the boundary did "
-            "NOT DROP this flood (it may only ALERT: detection != prevention). Enable "
-            "anti-DoS PREVENTION/blocking, and crank HARNESS_ICMP_PPS / HARNESS_ICMP_SIZE "
-            "/ HARNESS_ICMP_SECONDS to find the drop threshold or confirm it never drops.")
+        msg = ("PASS: the high-rate ICMP flood was delivered end-to-end "
+               f"({flood_loss:.1f}% loss, {rate_str}"
+               + (f", {FLOOD_SIZE}B payload" if FLOOD_SIZE else "") + ") — the boundary did NOT "
+               "DROP this volume (it may only ALERT, or the volume stayed UNDER its anti-DoS "
+               "threshold: detection != prevention).")
+        if source_limited:
+            # the achieved rate fell well short of the target — the test under-powered the
+            # control, so a PASS here is "not policed AT THIS VOLUME", not "no policing".
+            msg += (" [under-powered] the ACHIEVED rate is well below the configured target — the "
+                    "bottleneck is THIS source host/link, not the boundary, so the anti-DoS "
+                    "threshold likely was never reached. A single host over the internet usually "
+                    "can't hit a carrier/SD-WAN anti-DoS ceiling: raise HARNESS_ICMP_SIZE (bigger "
+                    "packets = more Mbit/s for a bits/sec-based policer), run from a fatter/closer "
+                    "link, or drive MULTIPLE sources (fleet.py) to actually cross the drop threshold.")
+        else:
+            msg += (" Crank HARNESS_ICMP_PPS / HARNESS_ICMP_SIZE / HARNESS_ICMP_SECONDS to find the "
+                    "drop threshold or confirm it never drops.")
+        out.append(msg)
     elif not base_ok:
         # Baseline ICMP is (near-)100% lost, so there's no normal-vs-flood
         # differential. Rather than dead-end at INCONCLUSIVE, let the TEST decide:
