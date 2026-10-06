@@ -32,6 +32,7 @@ confirm the flood had an effect but not fully characterise rate-limiting).
 
 needs_root (raw sockets / CAP_NET_RAW). Run only inside an authorised window.
 """
+import errno
 import os
 import re
 import shutil
@@ -127,6 +128,47 @@ def _parse_rtt_avg(text):
     ('round-trip .. = a/b/c') statistics line, or None."""
     m = re.search(r"(?:rtt|round-trip)[^=]*=\s*[\d.]+/([\d.]+)/", text or "")
     return float(m.group(1)) if m else None
+
+
+# TCP ports probed to decide "is the host actually UP?" when ICMP is 100% lost,
+# ordered by how commonly they answer on a Windows DC / Linux server / appliance.
+_LIVENESS_PORTS = (445, 80, 443, 22, 389, 3389, 8080, 139, 135, 21, 23, 53, 1135, 4445)
+
+
+def _host_up_via_tcp(target, ctx=None, timeout=1.0, budget=6.0):
+    """Is the host's TCP stack reachable? Returns (up, how). ANY probed port that
+    is open OR explicitly refuses with a RST proves the host is UP and reachable;
+    only an all-timeouts result (silent drop) leaves it unconfirmed. Used when
+    ICMP is 100% lost: a confirmed-up host with 0 ICMP = ICMP filtered (a real
+    BLOCK), whereas an unconfirmable host is genuinely indeterminate. Honours
+    ctx egress bind; bounded by `budget` so it can never hang the run. The verdict
+    it feeds comes purely from what the probes observed — no posture/policy
+    reliance (ORG2026-70)."""
+    deadline = time.time() + budget
+    for port in _LIVENESS_PORTS:
+        if time.time() > deadline:
+            break
+        sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if ctx is not None:
+                try:
+                    ctx.bind_source(sk)
+                except Exception:
+                    pass
+            sk.settimeout(timeout)
+            rc = sk.connect_ex((target, port))
+        except OSError:
+            continue
+        finally:
+            try:
+                sk.close()
+            except OSError:
+                pass
+        if rc == 0:
+            return True, f"tcp/{port} (open)"
+        if rc == errno.ECONNREFUSED:
+            return True, f"tcp/{port} (RST — stack reachable)"
+    return False, None
 
 
 # --------------------------------------------------------------------------
@@ -313,10 +355,28 @@ def run(target, ctx):
             "anti-DoS PREVENTION/blocking, and crank HARNESS_ICMP_PPS / HARNESS_ICMP_SIZE "
             "/ HARNESS_ICMP_SECONDS to find the drop threshold or confirm it never drops.")
     elif not base_ok:
-        out.append(
-            f"[INCONCLUSIVE] even normal-rate ICMP lost {base_loss}% — the host/path is "
-            "unreliable (down, or ICMP filtered entirely), so the high-rate "
-            f"{flood_loss:.1f}% loss isn't a clean rate-limit signal. Review raw log.")
+        # Baseline ICMP is (near-)100% lost, so there's no normal-vs-flood
+        # differential. Rather than dead-end at INCONCLUSIVE, let the TEST decide:
+        # if the host's TCP stack ANSWERS (open or RST), the host is UP and
+        # reachable, so ICMP dropped end-to-end is a real BLOCK (ICMP filtered by
+        # the boundary/host — control held), not an unreachable host. If TCP can't
+        # confirm it's up (all silent), stay INCONCLUSIVE — it may be down, or the
+        # source may have just been quarantined by the flood. No posture/policy
+        # reliance — the verdict is from what the probes observed (ORG2026-70).
+        up, how = _host_up_via_tcp(target, ctx) if base_loss is not None else (False, None)
+        if up:
+            out.append(
+                f"BLOCKED-ICMP-FILTERED: normal-rate ICMP lost {base_loss:.0f}% and the flood "
+                f"{flood_loss:.0f}%, but the host is confirmed UP via {how} — ICMP is dropped/"
+                "filtered end-to-end while TCP passes, so the boundary/host BLOCKS ICMP "
+                "(control held). A real block, not an unreachable host.")
+        else:
+            out.append(
+                f"[INCONCLUSIVE] even normal-rate ICMP lost {base_loss}% and TCP liveness "
+                "couldn't confirm the host is up (no port answered) — can't separate a down/"
+                "unreachable host (or a source the flood just got quarantined) from ICMP "
+                f"filtered entirely, so the {flood_loss:.1f}% flood loss isn't a clean "
+                "rate-limit signal. Review raw log.")
     else:
         out.append(
             f"[INCONCLUSIVE] flood {flood_loss:.1f}% loss vs {base_loss}% baseline — "

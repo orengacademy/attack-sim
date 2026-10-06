@@ -185,5 +185,49 @@ class TestLog4ShellOOB(unittest.TestCase):
         self.assertNotIn("RCE-CONFIRMED", out)
 
 
+class TestIcmpHostLivenessBlock(unittest.TestCase):
+    """ICMP 100%-loss refinement: when baseline ICMP is fully lost the verdict is
+    decided by TCP liveness (a real test observation, not posture) — host up on
+    TCP + ICMP gone => BLOCKED (ICMP filtered); host unconfirmable => INCONCLUSIVE.
+    Localhost-only, offline."""
+
+    def setUp(self):
+        self.icmp = importlib.import_module("modules.icmp_flood")
+        self._ports = self.icmp._LIVENESS_PORTS
+
+    def tearDown(self):
+        self.icmp._LIVENESS_PORTS = self._ports
+
+    def test_open_port_confirms_up(self):
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        try:
+            self.icmp._LIVENESS_PORTS = (port,)
+            up, how = self.icmp._host_up_via_tcp("127.0.0.1", core.Context())
+            self.assertTrue(up)
+            self.assertIn(str(port), how)
+        finally:
+            srv.close()
+
+    def test_refused_port_confirms_up(self):
+        # a closed localhost port -> RST (ECONNREFUSED) -> the host is still UP
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        self.icmp._LIVENESS_PORTS = (p,)
+        up, how = self.icmp._host_up_via_tcp("127.0.0.1", core.Context(), timeout=1.0, budget=3.0)
+        self.assertTrue(up)
+
+    def test_silent_host_not_confirmed(self):
+        # TEST-NET-1 (unroutable) -> connect times out -> cannot confirm up
+        self.icmp._LIVENESS_PORTS = (80,)
+        up, _ = self.icmp._host_up_via_tcp("192.0.2.1", core.Context(), timeout=0.4, budget=1.0)
+        self.assertFalse(up)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
