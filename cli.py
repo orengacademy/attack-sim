@@ -625,35 +625,33 @@ def main():
         # flag was omitted, then persist whatever we end up using.
         mem = core.recall_target(target)
         source = args.source if args.source is not None else mem.get("source")
-        cloud = args.cloud if args.cloud is not None else bool(mem.get("cloud"))
+        # Transport is TARGET-authoritative: a canonical cloud DC (159/167) is ALWAYS
+        # NAT'd 4445/1135 (so dcsync/psexec/wmiexec can't be pointed at the dead raw
+        # 445/135 and wrongly score BLOCKED); everything else is on-prem 445/135
+        # unless explicitly forced cloud. --cloud/--no-cloud/memory only matter for a
+        # NON-canonical target.
+        cloud = core.is_cloud_target(target) or (
+            args.cloud if args.cloud is not None else bool(mem.get("cloud")))
         # posture (whitebox/blackbox) is per-target: an explicit flag wins, else
         # ('auto'/omitted) the target's DESIGNATED posture from memory, else blackbox.
         mode = core.resolve_posture(target, args.mode)
         if (args.mode in (None, "auto")) and mem.get("mode"):
             print(f"[recall] posture {mode} (designated for {target})")
-        smb = args.smb_port or (mem.get("smb_port") if cloud else None) or 4445
-        rpc = args.rpc_port or (mem.get("rpc_port") if cloud else None) or 1135
         ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 22
         if source:
             runner.ctx.source_ip = source
             if args.source is None:
                 print(f"[recall] source {source} (remembered for {target})")
-        if cloud:
-            try:
-                from modules import _portpatch
-                _portpatch.CUSTOM_PORT_TARGETS[target] = {445: int(smb), 135: int(rpc), 22: int(ssh_p_port)}
-                tag = "" if args.cloud is not None else " (recalled)"
-                print(f"[cloud{tag}] {target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh_p_port}")
-            except Exception as e:
-                print(f"[!] could not enable cloud ports: {e}", file=sys.stderr)
-        else:
-            # ensure a stale cloud remap for this IP (from an earlier target in the
-            # same process) can't leak in — direct target uses real ports.
-            try:
-                from modules import _portpatch
-                _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
-            except Exception:
-                pass
+        # Register (or clear) the NAT map target-authoritatively (canonical cloud is
+        # never cleared; non-cloud never gets 4445/1135 unless forced).
+        eff_cloud, eff_map = core.apply_transport(target, cloud, ssh_p_port)
+        cloud = eff_cloud
+        smb = (eff_map or {}).get(445, 4445)
+        rpc = (eff_map or {}).get(135, 1135)
+        if eff_map:
+            tag = " (canonical cloud)" if core.is_cloud_target(target) else (
+                "" if args.cloud is not None else " (recalled)")
+            print(f"[cloud{tag}] {target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{eff_map.get(22, 22)}")
 
         # Apply an explicit --ssh-port even WITHOUT --cloud: a direct Linux target
         # may run SSH on a non-standard port. Feed it to ssh_brute via

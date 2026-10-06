@@ -28,20 +28,39 @@ targets are unaffected. Add an entry here when a new NAT'd target shows up.
 """
 import socket
 
-CUSTOM_PORT_TARGETS = {
-    # target_ip: {real_port: forwarded_port, ...}
-    # MyGovNet cloud DCs (DigitalOcean): the ONLY ports that differ from a
-    # standard/KVDC DC are SMB and RPC — exposed on alternate high ports
-    # (RPC 135 -> 1135, SMB 445 -> 4445, SSH 22 -> 2222). NetBIOS 139 is not
-    # forwarded and not needed (impacket uses 445). Everything else (LDAP 389/636,
-    # Kerberos 88, GC 3268/3269, RDP 3389) is standard on both. KVDC/on-prem DCs
-    # are NOT listed here, so they pass straight through on the real ports.
-    # NOTE: the socket.connect monkeypatch only redirects IN-PROCESS sockets
-    # (impacket); subprocess tools (hydra for ssh_brute) read the alt port from
-    # this map directly — ssh_brute does exactly that for the 22 entry.
-    "159.223.35.108": {445: 4445, 135: 1135, 22: 2222},
-    "167.71.222.169": {445: 4445, 135: 1135, 22: 2222},
-}
+# The CANONICAL cloud NAT map (SMB 445->4445, RPC 135->1135, SSH 22->2222). The
+# cloud/on-prem distinction is a property of the TARGET, not of a toggle: these are
+# the ONLY NAT'd cloud DCs, so they ALWAYS use the alternates and every other target
+# ALWAYS uses the real 445/135. core.is_cloud_target() reads CLOUD_TARGETS, and the
+# front-ends force cloud for these IPs (and never clear their mapping) so the AD
+# modules can't be pointed at the dead raw 445/135 and wrongly score BLOCKED.
+CLOUD_NAT_MAP = {445: 4445, 135: 1135, 22: 2222}
+# MyGovNet cloud DCs (DigitalOcean) — the ONLY cloud targets. KVDC/IPDC on-prem DCs
+# are NOT listed, so they pass straight through on the real 445/135. Everything else
+# (LDAP 389/636, Kerberos 88, GC 3268/3269, RDP 3389) is standard on both.
+CLOUD_TARGETS = ("159.223.35.108", "167.71.222.169")
+
+# Live per-target map the front-ends mutate for a run. SEEDED from the canonical
+# cloud set; a canonical cloud target's entry must never be removed (see core).
+# NOTE: the socket.connect monkeypatch only redirects IN-PROCESS sockets (impacket);
+# subprocess tools (hydra for ssh_brute) read the alt port from this map directly.
+CUSTOM_PORT_TARGETS = {ip: dict(CLOUD_NAT_MAP) for ip in CLOUD_TARGETS}
+
+
+def is_cloud_target(target_ip):
+    """True iff this IP is a CANONICAL cloud target (always NAT'd 4445/1135)."""
+    return str(target_ip or "").strip() in CLOUD_TARGETS
+
+
+def canonical_cloud_map(target_ip, ssh_port=None):
+    """The NAT map a canonical cloud target must use: SMB 445->4445, RPC 135->1135,
+    and SSH 22->ssh_port (default 2222). Returns None for a non-cloud target."""
+    if not is_cloud_target(target_ip):
+        return None
+    m = dict(CLOUD_NAT_MAP)
+    if ssh_port:
+        m[22] = int(ssh_port)
+    return m
 # Default cloud SSH alternate port, used by the CLI/GUI when registering a cloud
 # target so ssh_brute hits the forwarded SSH port.
 DEFAULT_CLOUD_SSH_PORT = 2222

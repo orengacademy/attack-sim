@@ -697,13 +697,18 @@ class HarnessGUI:
         """Fill a row's posture + net dropdowns from that target's remembered
         config, and — for the primary row — its creds/source/ports too. A target
         with nothing remembered keeps the row's current (default) selection."""
+        tip = entry.get().strip()
         try:
-            rec = core.recall_target(entry.get().strip()) or {}
+            rec = core.recall_target(tip) or {}
         except Exception:
             rec = {}
         if rec.get("mode"):
             posture_var.set("whitebox" if str(rec["mode"]).lower().startswith("w") else "blackbox")
-        if "cloud" in rec:
+        # Net is TARGET-authoritative: a canonical cloud DC (159/167) is always
+        # cloud; otherwise fall back to the remembered flag.
+        if core.is_cloud_target(tip):
+            transport_var.set("cloud")
+        elif "cloud" in rec:
             transport_var.set("cloud" if rec.get("cloud") else "on-prem")
         if primary:
             self._recall_primary_creds(rec)
@@ -860,12 +865,12 @@ class HarnessGUI:
     @staticmethod
     def _apply_cfg(runner, target, cfg):
         """Apply a plain config dict to a runner (worker thread; no Tk access)."""
+        # Target-authoritative: a canonical cloud DC is ALWAYS NAT'd (its map is
+        # never cleared); a non-cloud target gets 4445/1135 only if the row chose
+        # cloud. Stops the AD modules hitting the dead raw 445/135 -> BLOCKED.
         try:
-            from modules import _portpatch
-            if cfg.get("cloud_map"):
-                _portpatch.CUSTOM_PORT_TARGETS[target] = cfg["cloud_map"]
-            else:
-                _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
+            cm = cfg.get("cloud_map") or {}
+            core.apply_transport(target, bool(cfg.get("cloud_map")), cm.get(22))
         except Exception:
             pass
         for k, v in cfg.get("creds", {}).items():
@@ -882,17 +887,19 @@ class HarnessGUI:
         except Exception as e:
             self._log(f"[WARN] could not apply cloud SMB/RPC ports: {e}")
             return
-        if self.transport_var.get() != "cloud":
+        # Target-authoritative: canonical cloud DCs are always NAT'd (even if the
+        # row shows on-prem); a non-canonical target is NAT'd only when net=cloud.
+        want_cloud = (self.transport_var.get() == "cloud") or core.is_cloud_target(target_ip)
+        if not want_cloud:
             # on-prem: clear any remap this long-lived GUI left for this target
             # from an earlier cloud run, or a direct (non-NAT) run would keep
             # redirecting SMB/RPC to the stale alternate ports.
             _portpatch.CUSTOM_PORT_TARGETS.pop(target_ip, None)
             return
         try:
-            smb = int((self.smb_port.get() or "4445").strip())
-            rpc = int((self.rpc_port.get() or "1135").strip())
             ssh = int((self.ssh_port.get() or "22").strip())
-            _portpatch.CUSTOM_PORT_TARGETS[target_ip] = {445: smb, 135: rpc, 22: ssh}
+            eff_cloud, eff_map = core.apply_transport(target_ip, True, ssh)
+            smb, rpc, ssh = eff_map.get(445, 4445), eff_map.get(135, 1135), eff_map.get(22, ssh)
             self._log(f"Cloud target: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{ssh} for "
                       f"{target_ip} (AD modules + ssh_brute use the alternates).")
         except Exception as e:

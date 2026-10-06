@@ -40,6 +40,11 @@ mimetypes.add_type("text/csv", ".csv")
 
 MODULES = loader.discover()
 MOD_BY_ID = {m.META["id"]: m for m in MODULES}
+try:
+    from modules import _portpatch as _pp
+    _CLOUD_TARGETS = tuple(getattr(_pp, "CLOUD_TARGETS", ()))
+except Exception:
+    _CLOUD_TARGETS = ()
 
 # one run at a time (the engine swaps process-global state — _portpatch monkey-
 # patch, redirect_stdout — so concurrent runs would collide, same as the GUI).
@@ -165,6 +170,9 @@ def _bootstrap():
         "creds": {k: creds.get(k, "") for k in
                   ("domain", "dc_user", "dc_pass", "ssh_user", "ssh_pass")},
         "target_config": tcfg,
+        # Canonical cloud DCs (always NAT'd 4445/1135) — the UI forces net=cloud for
+        # these so a run can't mislabel their transport; the engine forces it anyway.
+        "cloud_targets": list(_CLOUD_TARGETS),
         "modules": mods, "presets": presets, "targets": targets,
         "verdict_order": _VORDER,
         "verdict_colors": {v: _VCOLOR.get(v, "#8b90a6") for v in _VORDER},
@@ -333,13 +341,15 @@ def _run_worker(run_id, params, targets, module_ids):
                 posture = core.resolve_posture(target, req_mode)
                 t_cloud, t_smb, t_rpc, t_ssh = form_cloud, form_smb, form_rpc, form_ssh
                 t_source, t_creds = form_source, form_creds
+            # Transport is TARGET-authoritative: a canonical cloud DC (159/167) is
+            # ALWAYS NAT'd 4445/1135 and its mapping is never cleared; everything
+            # else is on-prem 445/135 unless the row explicitly chose cloud. This
+            # stops the AD modules being pointed at the dead raw 445/135 (-> BLOCKED).
+            t_cloud, _tmap = core.apply_transport(target, t_cloud, t_ssh)
+            if _tmap:
+                t_smb, t_rpc = _tmap.get(445, t_smb), _tmap.get(135, t_rpc)
             emit({"type": "target", "index": ti, "total": len(targets), "target": target,
                   "posture": posture, "cloud": bool(t_cloud)})
-            if _portpatch is not None:
-                if t_cloud:
-                    _portpatch.CUSTOM_PORT_TARGETS[target] = {445: t_smb, 135: t_rpc, 22: t_ssh}
-                else:
-                    _portpatch.CUSTOM_PORT_TARGETS.pop(target, None)
             runner = core.Runner(
                 target, appliance,
                 on_log=lambda m: emit({"type": "log", "line": str(m)}),
@@ -1326,7 +1336,7 @@ async function boot(){
  // FIRST row also drives the shared creds panel. No targets yet -> one blank row.
  const tgts=BOOT.targets||[];
  if(tgts.length){ tgts.forEach(ip=>{const tc=(BOOT.target_config||{})[ip]||{};
-    addTargetRow(ip, String(tc.mode||"").toLowerCase().startsWith("w")?"whitebox":"blackbox", !!tc.cloud);});
+    addTargetRow(ip, String(tc.mode||"").toLowerCase().startsWith("w")?"whitebox":"blackbox", isCloudTarget(ip)||!!tc.cloud);});
     prefillTarget(tgts[0]); }
  else { addTargetRow("","blackbox",false); }
  $("#addtgt").addEventListener("click",()=>{addTargetRow("","blackbox",false).querySelector(".tip").focus();});
@@ -1359,10 +1369,14 @@ function addTargetRow(ip,posture,cloud){
 }
 // Typing a known IP recalls that target's saved posture + net; the first row also
 // fills the shared creds panel (like the desktop GUI's primary row).
+// Canonical cloud DCs (159/167) are ALWAYS cloud — the server forces 4445/1135
+// regardless, and the UI reflects it so the net toggle can't mislabel the run.
+function isCloudTarget(ip){ return (BOOT.cloud_targets||[]).includes(String(ip||"").trim()); }
 function onTargetIp(row,ip){
+ if(isCloudTarget(ip)) setSeg(row.querySelector(".rseg.net"), "cloud");
  const tc=(BOOT.target_config||{})[ip]; if(!tc) return;
  setSeg(row.querySelector(".rseg.posture"), String(tc.mode||"").toLowerCase().startsWith("w")?"whitebox":"blackbox");
- setSeg(row.querySelector(".rseg.net"), tc.cloud?"cloud":"onprem");
+ if(!isCloudTarget(ip)) setSeg(row.querySelector(".rseg.net"), tc.cloud?"cloud":"onprem");
  if(firstTargetRow()===row) prefillTarget(ip);
 }
 function readTargetRows(){
