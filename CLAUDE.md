@@ -3,7 +3,8 @@
 Guidance for Claude Code (and humans) working in this repo. Read this first; the
 user-facing **[README.md](README.md)** has the full operator manual, and
 **[deploy/DEPLOY.md](deploy/DEPLOY.md)** / **[deploy/cloud/README.md](deploy/cloud/README.md)**
-cover the lab targets.
+cover the lab targets. The per-site target inventory (IPs/postures/creds;
+active site **KVDC**) is in **[docs/TARGETS.md](docs/TARGETS.md)**.
 
 ## What this is
 

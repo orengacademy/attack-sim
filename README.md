@@ -56,6 +56,7 @@ sudo deploy/refresh-lab.sh --install-cron # keep the vuln services alive (restar
 The Windows AD DC can be a Vagrant VM, a QEMU/libvirt VM, or a cloud DC
 (Terraform) — see [Deploying the vulnerable target(s)](#deploying-the-vulnerable-targets).
 If the targets already exist, skip this and just point the harness at their IPs.
+The engagement's lab inventory (sites, IPs, postures, creds) is in **[docs/TARGETS.md](docs/TARGETS.md)** — active site: **KVDC**.
 
 ## 4. Configure (git-ignored operator files)
 - **Linux target creds** → `credentials.env` (copy `credentials.env.example`);
