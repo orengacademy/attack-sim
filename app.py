@@ -173,11 +173,11 @@ def _bootstrap():
     }
 
 
-def _status_event(aid, name, it, b, v, target):
+def _status_event(aid, name, it, b, v, target, posture=""):
     me = MOD_BY_ID.get(aid)
     meta = me.META if me else {}
     return {"type": "status", "id": aid, "name": name, "it": it,
-            "verdict": b, "detail": v, "target": target,
+            "verdict": b, "detail": v, "target": target, "posture": posture,
             "category": meta.get("category", ""),
             "mitre": ", ".join(meta.get("mitre", [])),
             "cwe": ", ".join(meta.get("cwe", [])),
@@ -212,7 +212,8 @@ def _start_run(params):
                 return None, "A run is already in progress — wait for it to finish or stop it."
         run_id = uuid.uuid4().hex[:12]
         st = {"q": queue.Queue(), "done": False, "runner": None,
-              "roots": [], "error": None, "started": time.time(), "outputs": {}}
+              "roots": [], "error": None, "started": time.time(), "outputs": {},
+              "current_root": None}
         RUNS[run_id] = st
 
     t = threading.Thread(target=_run_worker, args=(run_id, params, targets, module_ids), daemon=True)
@@ -309,7 +310,7 @@ def _run_worker(run_id, params, targets, module_ids):
                 on_output=lambda aid, name, it, raw, _t=target: (
                     _stash_output(st, f"{_t}|{aid}|{it}", raw),
                     emit({"type": "output", "id": aid, "name": name, "it": it, "target": _t}))[-1],
-                on_status=lambda aid, name, it, b, v, _t=target: emit(_status_event(aid, name, it, b, v, _t)))
+                on_status=lambda aid, name, it, b, v, _t=target, _p=posture: emit(_status_event(aid, name, it, b, v, _t, _p)))
             st["runner"] = runner
             runner.concurrency = workers
             if wait_unblock > 0:
@@ -334,8 +335,13 @@ def _run_worker(run_id, params, targets, module_ids):
             except Exception:
                 pass
             ev = core.Evidence(label=(target if len(targets) > 1 else None))
+            # expose the in-flight evidence dir so /api/runs can show it as
+            # "running…" instead of "no summary" (finalize writes the summaries
+            # only when the run — incl. any source-blacklist wait — completes).
+            st["current_root"] = os.path.relpath(ev.root, HERE)
             root = runner.run(mods, iters, ev, mode=posture, site_id=site_id)
             rel = os.path.relpath(root, HERE)
+            st["current_root"] = None
             st["roots"].append({"target": target, "root": rel})
             emit({"type": "target_done", "target": target, "root": rel})
             if getattr(runner, "_stop", False):
@@ -508,11 +514,14 @@ class Handler(BaseHTTPRequestHandler):
     # --- evidence file serving (read-only, traversal-guarded) -----------
     def _serve_evidence(self, rel):
         rel = rel.split("?")[0]
-        full = os.path.normpath(os.path.join(EVID, rel))
-        if not full.startswith(os.path.realpath(EVID) + os.sep) and full != os.path.realpath(EVID):
-            # normpath can still escape via symlinks; compare realpaths
-            if not os.path.realpath(full).startswith(os.path.realpath(EVID)):
-                return self._json({"error": "forbidden"}, 403)
+        # ONE path validator (no normpath-vs-realpath differential): resolve
+        # symlinks on both sides and require the resolved path to be the evidence
+        # dir itself or a descendant. The trailing os.sep is mandatory — without
+        # it a sibling like `evidence_backup` would prefix-match `.../evidence`.
+        base = os.path.realpath(EVID)
+        full = os.path.realpath(os.path.join(EVID, rel))
+        if full != base and not full.startswith(base + os.sep):
+            return self._json({"error": "forbidden"}, 403)
         if os.path.isdir(full):
             try:
                 items = sorted(os.listdir(full))
@@ -545,12 +554,20 @@ def _list_runs(limit=40):
     # evidence naming formats (DD-MM-HH-MM vs older ISO), which don't sort
     # consistently by name.
     dirs.sort(key=lambda n: os.path.getmtime(os.path.join(EVID, n)), reverse=True)
+    # the in-flight run's evidence dir (one run at a time) has no summaries yet —
+    # mark it so the UI shows "running…" rather than "no summary".
+    active = set()
+    with RUN_LOCK:
+        for st in RUNS.values():
+            if not st.get("done") and st.get("current_root"):
+                active.add(os.path.basename(str(st["current_root"]).rstrip("/")))
     for name in dirs[:limit]:
         p = os.path.join(EVID, name)
         has = {f: os.path.isfile(os.path.join(p, f))
                for f in ("report.html", "summary.json", "summary.csv", "summary.xlsx",
                          "report.txt", "attack_navigator_layer.json")}
-        out.append({"name": name, "mtime": os.path.getmtime(p), "files": has})
+        out.append({"name": name, "mtime": os.path.getmtime(p), "files": has,
+                    "active": name in active})
     return out
 
 
@@ -792,28 +809,26 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 .evidence{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--fg3);padding-bottom:9px}
 .evidence b{color:var(--fg3);font-weight:500}
 .evidence a{margin-left:9px}
+.evidence .evtgt{margin-left:12px}
+.evidence .evtgt i{color:var(--fg2);font-style:normal;font-weight:600}
+.evidence .evtgt a{margin-left:7px}
 
 .pane{padding-top:var(--s4);animation:fade var(--dur) var(--ease)}
 @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
 
 /* verdict key (collapsed glossary) */
-.vkeywrap{margin:0 var(--s7) var(--s3)}
-.vkeywrap>summary{cursor:pointer;color:var(--fg3);font-size:11.5px;padding:var(--s2) 0;list-style:none;user-select:none;
- display:inline-flex;align-items:center;gap:var(--s2);transition:color var(--dur)}
-.vkeywrap>summary:hover{color:var(--fg2)}
-.vkeywrap>summary::-webkit-details-marker{display:none}
-.vkeywrap>summary::before{content:"";width:5px;height:5px;border-right:1.5px solid var(--acc);border-bottom:1.5px solid var(--acc);
- transform:rotate(-45deg);transition:transform var(--dur) var(--ease)}
-.vkeywrap[open]>summary::before{transform:rotate(45deg)}
-.vkey{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s2);padding:var(--s3) 0 var(--s1)}
-@media(max-width:720px){.vkey{grid-template-columns:1fr}}
-.vkey .vk{display:flex;align-items:center;gap:var(--s2);padding:8px 11px;border:1px solid var(--line);
- border-radius:var(--r-sm);background:var(--panel);cursor:pointer;transition:border-color var(--dur),background var(--dur)}
+/* verdict legend: compact, always-visible pill chips (swatch + verdict), click to
+ * filter the table, full meaning on hover. A clear visible key, not a hidden drawer. */
+.vkeywrap{margin:0 var(--s7) var(--s3);display:flex;align-items:baseline;gap:var(--s3);flex-wrap:wrap}
+.vkeywrap .vklabel{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--fg3);font-weight:600;flex:none}
+.vkey{display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0}
+.vkey .vk{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border:1px solid var(--line);
+ border-radius:var(--r-pill);background:var(--panel);cursor:pointer;transition:border-color var(--dur),background var(--dur)}
 .vkey .vk:hover{border-color:var(--line2);background:var(--raise)}
-.vkey .vk.on{border-color:var(--acc);background:var(--raise);box-shadow:inset 0 0 0 1px rgba(95,227,232,.25)}
+.vkey .vk.on{border-color:var(--acc);background:var(--raise);box-shadow:inset 0 0 0 1px rgba(95,227,232,.3)}
 .vkey .vk .sw{width:9px;height:9px;border-radius:3px;flex:none;box-shadow:0 0 7px currentColor}
-.vkey .vk b{color:var(--fg);font-family:var(--mono);font-weight:600;font-size:10.5px;flex:none;letter-spacing:.02em}
-.vkey .vk span{color:var(--fg3);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vkey .vk b{color:var(--fg2);font-family:var(--mono);font-weight:600;font-size:10.5px;letter-spacing:.02em}
+.vkey .vk:hover b,.vkey .vk.on b{color:var(--fg)}
 
 /* toolbar (results + history) */
 .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);padding:var(--s2) var(--s7) var(--s3)}
@@ -848,6 +863,10 @@ td.cell-n{color:var(--faint)}
  border:1px solid currentColor;line-height:1.5}
 .vchip .d{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;box-shadow:0 0 6px currentColor}
 .vchip .t{color:var(--fg)}
+/* posture chip (Results table) — whitebox=accent, blackbox=muted */
+.pchip{display:inline-flex;align-items:center;font-family:var(--mono);font-weight:600;font-size:10px;letter-spacing:.03em;
+ padding:2px 7px;border-radius:var(--r-pill);border:1px solid currentColor;text-transform:uppercase;white-space:nowrap}
+.pchip.w{color:var(--acc)} .pchip.b{color:var(--fg3)}
 .detail{color:var(--fg2);max-width:460px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5;max-height:3em}
 td.dim{color:var(--fg3)}
 
@@ -916,6 +935,7 @@ td.dim{color:var(--fg3)}
 .runrow .rlinks a.primary{color:var(--acc);border-color:rgba(95,227,232,.3);background:var(--acc-dim)}
 .runrow .rlinks a.primary:hover{color:var(--acc-ink);background:var(--acc);border-color:var(--acc)}
 .runrow .nolink{color:var(--faint);font-size:11px;font-family:var(--mono)}
+.runrow .running{margin-left:auto;color:var(--acc);font-size:11px;font-family:var(--mono)}
 
 .hidden{display:none!important}
 
@@ -1044,7 +1064,7 @@ td.dim{color:var(--fg3)}
    </div>
 
    <div id=paneRes class=pane>
-    <details class=vkeywrap><summary>Verdict key — what each outcome means</summary><div class=vkey id=vkey></div></details>
+    <div class=vkeywrap id=vkeywrap><span class=vklabel>Verdict legend</span><div class=vkey id=vkey></div></div>
     <div class=toolbar id=resToolbar>
      <input id=fq class=fq type=text placeholder="filter… module / detail / ATT&amp;CK / CWE">
      <select id=fverdict><option value="">all verdicts</option></select>
@@ -1060,8 +1080,8 @@ td.dim{color:var(--fg3)}
     <div class=wrap id=resWrap><table id=restable>
      <thead><tr>
       <th data-col=n>#</th><th data-col=verdict>Verdict</th><th data-col=name>Module</th>
-      <th data-col=category>Category</th><th data-col=target>Target</th><th data-col=ports>Ports</th>
-      <th data-col=mitre>ATT&amp;CK</th><th data-col=cwe>CWE</th><th data-col=it>It</th>
+      <th data-col=category>Category</th><th data-col=target>Target</th><th data-col=posture>Posture</th>
+      <th data-col=ports>Ports</th><th data-col=mitre>ATT&amp;CK</th><th data-col=cwe>CWE</th><th data-col=it>It</th>
       <th data-col=detail>Detail</th></tr></thead>
      <tbody id=resbody></tbody></table></div>
     <div class=empty-pane id=resempty>
@@ -1113,7 +1133,8 @@ td.dim{color:var(--fg3)}
 <script>
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 let BOOT=null, MODE="auto", ES=null, COUNTS={}, RESN=0;
-let ROWS=[], RUNID=null, SORT={col:"n",dir:1}, RUNNING=false;
+let ROWS=[], RUNID=null, SORT={col:"n",dir:1}, RUNNING=false, EVRUNS=[];
+let RUNCFG={}, CURTGT=null, PROG={};   // live run config / current target / module progress
 // 6-bucket visual grouping (spectrum / legend / row colors)
 const KIND={SUCCESS:"got",DETECTED:"det",BLOCKED:"blk","NO-SERVICE":"svc",
  "AUTH-FAILED":"det","NO-RESULT":"det",INCONCLUSIVE:"inc",SKIPPED:"skip","PREREQ-MISSING":"skip"};
@@ -1195,7 +1216,7 @@ function buildVerdictKey(){
  (BOOT.verdict_order||[]).forEach(v=>{
   const c=vcolor(v), g=(BOOT.verdict_gloss||{})[v]||"";
   const el=document.createElement("div"); el.className="vk"; el.dataset.v=v; el.title=v+" — "+g;
-  el.innerHTML=`<i class=sw style="color:${c}"></i><b>${esc(v)}</b><span>${esc(g)}</span>`;
+  el.innerHTML=`<i class=sw style="color:${c}"></i><b>${esc(v)}</b>`;
   el.addEventListener("click",()=>{
     const f=$("#fverdict");
     if(f.value===v){f.value="";}
@@ -1248,7 +1269,7 @@ function refresh(){
 
 function addRow(e){
  const row={n:++RESN, verdict:e.verdict||"", id:e.id||"", name:e.name||"", category:e.category||"",
-  target:e.target||"", ports:e.ports||"", mitre:e.mitre||"", cwe:e.cwe||"", it:e.it||1, detail:e.detail||""};
+  target:e.target||"", posture:e.posture||"", ports:e.ports||"", mitre:e.mitre||"", cwe:e.cwe||"", it:e.it||1, detail:e.detail||""};
  ROWS.push(row);
  COUNTS[e.verdict]=(COUNTS[e.verdict]||0)+1;
  syncFilterOptions(); renderRows(row.n); refresh();
@@ -1264,7 +1285,7 @@ function syncFilterOptions(){
 function filteredRows(){
  const q=$("#fq").value.trim().toLowerCase(), fv=$("#fverdict").value, fc=$("#fcat").value, ft=$("#ftarget").value;
  let rows=ROWS.filter(r=>(!fv||r.verdict===fv)&&(!fc||r.category===fc)&&(!ft||r.target===ft)
-   &&(!q||[r.name,r.detail,r.mitre,r.cwe,r.id,r.category].join(" ").toLowerCase().includes(q)));
+   &&(!q||[r.name,r.detail,r.mitre,r.cwe,r.id,r.category,r.target,r.posture].join(" ").toLowerCase().includes(q)));
  const c=SORT.col, d=SORT.dir, num=(c==="n"||c==="it");
  rows.sort((a,b)=>{let x=a[c],y=b[c]; if(num){x=+x;y=+y;} else {x=(""+x).toLowerCase();y=(""+y).toLowerCase();}
    return x<y?-d:x>y?d:a.n-b.n;});
@@ -1294,7 +1315,9 @@ function renderRows(insN){
   tr.innerHTML=`<td class="mono cell-n">${r.n}</td>`
    +`<td><span class=vchip style="color:${c}"><span class=d></span><span class=t>${esc(r.verdict)}</span></span></td>`
    +`<td>${esc(r.name)}</td><td class=dim>${esc(r.category)}</td>`
-   +`<td class=mono>${esc(r.target)}</td><td class=mono>${esc(r.ports)}</td>`
+   +`<td class=mono>${esc(r.target)}</td>`
+   +`<td>${r.posture?`<span class="pchip ${r.posture[0]==='w'?'w':'b'}">${r.posture[0]==='w'?'white':'black'}</span>`:'<span class=dim>—</span>'}</td>`
+   +`<td class=mono>${esc(r.ports)}</td>`
    +`<td class=mono>${esc(r.mitre)}</td><td class=mono>${esc(r.cwe)}</td><td class="mono cell-n">${r.it}</td>`
    +`<td class=detail title="${esc(r.detail)}">${esc(r.detail)}</td>`;
   tr.addEventListener("click",()=>openRow(r));
@@ -1308,7 +1331,7 @@ function renderRows(insN){
 async function openRow(r){
  const c=HEX[kindOf(r.verdict)];
  $("#dtitle").innerHTML=`<span class=vchip style="color:${c}"><span class=d></span><span class=t>${esc(r.verdict)}</span></span><span class=nm>${esc(r.name)}</span>`;
- $("#dmeta").innerHTML=[r.target,r.category,r.ports,r.mitre&&("ATT&CK "+r.mitre),r.cwe&&("CWE "+r.cwe),"iter "+r.it]
+ $("#dmeta").innerHTML=[r.target,r.posture,r.category,r.ports,r.mitre&&("ATT&CK "+r.mitre),r.cwe&&("CWE "+r.cwe),"iter "+r.it]
    .filter(Boolean).map(x=>"<span>"+esc(x)+"</span>").join("");
  $("#dbody").textContent="loading raw output…";
  openDrawer();
@@ -1323,7 +1346,7 @@ function openDrawer(){$("#scrim").hidden=false;$("#drawer").hidden=false;}
 function closeDrawer(){$("#scrim").hidden=true;$("#drawer").hidden=true;}
 // export the CURRENTLY FILTERED rows
 function exportRows(fmt){
- const rows=filteredRows(), cols=["n","verdict","name","id","category","target","ports","mitre","cwe","it","detail"];
+ const rows=filteredRows(), cols=["n","verdict","name","id","category","target","posture","ports","mitre","cwe","it","detail"];
  let data,mime,ext;
  if(fmt==="json"){data=JSON.stringify(rows,null,1);mime="application/json";ext="json";}
  else if(fmt==="md"){data="| "+cols.join(" | ")+" |\n|"+cols.map(()=>"---").join("|")+"|\n"
@@ -1361,7 +1384,8 @@ function startRun(){
   .then(r=>r.json()).then(j=>{
    if(j.error){setStatus(j.error,"err");return;}
    RUNNING=true;
-   COUNTS={};RESN=0;ROWS=[];RUNID=j.run_id;$("#resbody").innerHTML="";$("#rowcount").textContent="";
+   COUNTS={};RESN=0;ROWS=[];RUNID=j.run_id;EVRUNS=[];CURTGT=null;PROG={};RUNCFG={};
+   $("#resbody").innerHTML="";$("#rowcount").textContent="";
    $("#log").innerHTML="";$("#evidence").textContent="";$("#prog").style.width="0";
    refresh();renderRows();
    $("#runbtn").disabled=true;$("#runbtn").classList.add("running");
@@ -1375,24 +1399,38 @@ function stream(id){
  ES.onmessage=ev=>{const e=JSON.parse(ev.data);
   if(e.type==="log")logLine(e.line);
   else if(e.type==="status")addRow(e);
-  else if(e.type==="progress")$("#prog").style.width=(e.total?100*e.done/e.total:0)+"%";
-  else if(e.type==="started"){const pm=(e.mode==="auto")?"auto · per-target":e.mode;
-    setStatus(`running ${e.count} modules · ${pm} · ${e.iterations} iteration(s) · ${e.workers} workers`+(e.site_id?` · site ${e.site_id}`:"")+(e.active?" · active":""),"run");}
-  else if(e.type==="target")logLine(`\n==== target ${e.index}/${e.total}: ${e.target}`+(e.posture?` · ${e.posture}`:"")+(e.cloud?" · cloud":"")+` ====`);
-  else if(e.type==="target_done")showEvidence(e.root);
+  else if(e.type==="progress"){PROG={done:e.done,total:e.total};$("#prog").style.width=(e.total?100*e.done/e.total:0)+"%";renderRunStatus();}
+  else if(e.type==="started"){RUNCFG={count:e.count,iters:e.iterations,workers:e.workers,site:e.site_id,active:e.active,
+    mode:(e.mode==="auto")?"auto":e.mode,total:(e.targets||[]).length};CURTGT=null;PROG={};renderRunStatus();}
+  else if(e.type==="target"){CURTGT={index:e.index,total:e.total,target:e.target,posture:e.posture||"",cloud:!!e.cloud};
+    PROG={};$("#prog").style.width="0";renderRunStatus();
+    logLine(`\n==== target ${e.index}/${e.total}: ${e.target}`+(e.posture?` · ${e.posture}`:"")+(e.cloud?" · cloud":"")+` ====`);}
+  else if(e.type==="target_done")showEvidence(e.root,e.target);
   else if(e.type==="done")finish();
   else if(e.type==="error"){logLine("[error] "+e.error);finish(e.error);}
  };
  ES.onerror=()=>{};
 }
-function showEvidence(root){
- const b="evidence/"+root.replace(/^evidence\//,"")+"/";
- $("#evidence").innerHTML="<b>evidence</b> "
-  +`<a target=_blank href="${b}report.html">report</a>`
-  +`<a target=_blank href="${b}summary.json">json</a>`
-  +`<a href="${b}summary.csv">csv</a>`
-  +`<a href="${b}summary.xlsx">xlsx</a>`
-  +`<a target=_blank href="${b}report.txt">txt</a>`;
+// Per-target live status: which target (N/M), its posture, and module progress.
+function renderRunStatus(){
+ if(!RUNNING) return;
+ const c=RUNCFG||{}, t=CURTGT, p=PROG||{};
+ let head = t ? ((c.total>1?`[${t.index}/${t.total}] `:"")+t.target+(t.posture?` · ${t.posture}`:"")+(t.cloud?" · cloud":"")) : "starting…";
+ const mods = p.total ? `${p.done}/${p.total} modules` : `${c.count||"?"} modules`;
+ let tail = [mods, c.mode, (c.iters>1?`${c.iters} iter`:""), (c.workers?`${c.workers} workers`:""), (c.site?`site ${c.site}`:""), (c.active?"active":"")].filter(Boolean).join(" · ");
+ setStatus(`${head} · ${tail}`,"run");
+}
+// Accumulate each target's evidence links so a MULTI-target run shows them all
+// (the old code overwrote the strip with the last target only, and omitted att&ck).
+function showEvidence(root,target){
+ EVRUNS.push({root:String(root).replace(/^evidence\//,""),target:target||""});
+ const FMT=[["report.html","report",1],["summary.json","json",1],["summary.csv","csv",0],["summary.xlsx","xlsx",0],["report.txt","txt",1],["attack_navigator_layer.json","att&ck",1]];
+ const multi=EVRUNS.length>1;
+ $("#evidence").innerHTML="<b>evidence</b> "+EVRUNS.map(ev=>{
+  const base="evidence/"+ev.root+"/";
+  const links=FMT.map(([f,l,bl])=>`<a ${bl?"target=_blank ":""}href="${base}${f}">${l}</a>`).join("");
+  return multi?`<span class=evtgt><i>${esc(ev.target||ev.root)}</i>${links}</span>`:links;
+ }).join("");
 }
 function finish(err){
  RUNNING=false;
@@ -1413,7 +1451,8 @@ async function loadRuns(){
     const pri=(f==="report.html")?" class=primary":"";
     return `<a ${blank}href="${b}${f}"${pri}>${l}</a>`;}).join("");
   return `<div class=runrow><span class=rn>${esc(r.name)}</span>`
-   +(links?`<span class=rlinks>${links}</span>`:`<span class=nolink>no summary</span>`)+`</div>`;
+   +(r.active?`<span class=running>running…</span>`
+     :(links?`<span class=rlinks>${links}</span>`:`<span class=nolink>no summary</span>`))+`</div>`;
  }).join("")||"—";
 }
 
@@ -1429,7 +1468,9 @@ function showTab(tab){TABS.forEach(([t,p])=>{const on=(t===tab);
   $(t).classList.toggle("on",on);$(t).setAttribute("aria-selected",on?"true":"false");$(p).classList.toggle("hidden",!on);});
   if(tab==="#tabHist") loadHistory();}
 TABS.forEach(([t])=>$(t).addEventListener("click",()=>showTab(t)));
-["#fq","#fverdict","#fcat","#ftarget"].forEach(s=>$(s).addEventListener("input",()=>renderRows()));
+// listen for BOTH input (typing in #fq) and change (a <select> firing change on
+// selection — not all browsers emit input for <select>, which broke filter-by-IP).
+["#fq","#fverdict","#fcat","#ftarget"].forEach(s=>["input","change"].forEach(ev=>$(s).addEventListener(ev,()=>renderRows())));
 $$("#restable thead th").forEach(th=>th.addEventListener("click",()=>{
  const c=th.dataset.col; if(!c)return;
  SORT.dir=(SORT.col===c)?-SORT.dir:1; SORT.col=c; renderRows();}));
@@ -1484,7 +1525,7 @@ function renderHist(){
  $$("#histtable thead th").forEach(th=>{const a=th.querySelector(".ar"); if(a)a.remove();
   if(th.dataset.hcol===HSORT.col){const s=document.createElement("span");s.className="ar";s.textContent=HSORT.dir>0?"▲":"▼";th.appendChild(s);}});
 }
-["#hq","#hverdict","#htarget","#hsite"].forEach(s=>$(s).addEventListener("input",loadHistory));
+["#hq","#hverdict","#htarget","#hsite"].forEach(s=>["input","change"].forEach(ev=>$(s).addEventListener(ev,loadHistory)));
 $$("#histtable thead th").forEach(th=>th.addEventListener("click",()=>{
  const c=th.dataset.hcol; if(!c)return; HSORT.dir=(HSORT.col===c)?-HSORT.dir:1; HSORT.col=c; renderHist();}));
 $("#reindex").addEventListener("click",async()=>{

@@ -510,9 +510,24 @@ def main():
             if not ok:
                 print(f"[!] {t}: {why}", file=sys.stderr)
                 return 2
+        # co-designate TRANSPORT when --cloud/--no-cloud (and optional ports) are
+        # given, so one command pins the whole profile — e.g. an on-prem DC:
+        #   --target 10.38.98.12 --set-posture whitebox --no-cloud   (direct 445/135)
+        # A wrong cloud flag is exactly what makes SMB modules (dcsync/psexec/…)
+        # hit a closed NAT port and read as NO-SERVICE instead of connecting.
+        extra = {}
+        if args.cloud is not None:
+            extra["cloud"] = bool(args.cloud)
+            if args.cloud:
+                extra["smb_port"] = args.smb_port or 4445
+                extra["rpc_port"] = args.rpc_port or 1135
+                extra["ssh_port"] = args.ssh_port or 22
         for t in tgts:
-            core.remember_target(t, mode=args.set_posture)
-            print(f"[posture] {t} -> {args.set_posture} (designated; no attack run)")
+            core.remember_target(t, mode=args.set_posture, **extra)
+            xp = ""
+            if "cloud" in extra:
+                xp = " · " + (f"cloud {extra['smb_port']}/{extra['rpc_port']}" if extra["cloud"] else "on-prem direct")
+            print(f"[posture] {t} -> {args.set_posture}{xp} (designated; no attack run)")
         return 0
 
     target_defaulted = not any(

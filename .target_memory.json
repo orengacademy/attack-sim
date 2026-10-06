@@ -8,7 +8,7 @@
   },
   "127.0.0.1": {
     "cloud": false,
-    "last_used": "2026-10-06T17:45:11.057298",
+    "last_used": "2026-10-06T18:11:56.733369",
     "ssh_user": "labadmin",
     "ssh_pass": "Passw0rd!",
     "site_id": "ORG2026-70",
@@ -32,7 +32,7 @@
     "cloud": true,
     "smb_port": 4445,
     "rpc_port": 1135,
-    "last_used": "2026-10-06T17:41:02.782616",
+    "last_used": "2026-10-06T17:48:32.491312",
     "ssh_port": 22,
     "mode": "blackbox",
     "domain": "lab.local",
@@ -43,23 +43,23 @@
     "site_id": "551667"
   },
   "10.38.98.12": {
-    "cloud": true,
+    "cloud": false,
     "mode": "whitebox",
     "domain": "lab.local",
     "dc_user": "Administrator",
     "dc_pass": "NewPass123!",
-    "last_used": "2026-10-06T17:41:02.647162",
+    "last_used": "2026-10-06T18:10:36.915681",
     "site_id": "551667",
     "ssh_user": "administrator",
     "ssh_pass": "NewPass123!"
   },
   "10.38.98.14": {
-    "cloud": true,
+    "cloud": false,
     "mode": "blackbox",
     "domain": "lab.local",
     "dc_user": "Administrator",
     "dc_pass": "NewPass123!",
-    "last_used": "2026-10-06T17:41:02.786513",
+    "last_used": "2026-10-06T18:10:37.055106",
     "site_id": "551667",
     "ssh_user": "administrator",
     "ssh_pass": "NewPass123!"
