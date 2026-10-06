@@ -152,6 +152,18 @@ def _cell(text, w, color, no_color):
     return _c(text, color, no_color) if color else text
 
 
+def _clock(ts):
+    """ISO timestamp -> human-readable HH:MM:SS, or '' when unparseable."""
+    if not ts:
+        return ""
+    try:
+        import datetime as _dt
+        return _dt.datetime.fromisoformat(str(ts)).strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        s = str(ts)
+        return s[11:19] if len(s) >= 19 else s
+
+
 def _print_summary(ev, args, no_color, elapsed, target=None):
     """Modern end-of-run summary from the evidence records: a verdict-distribution
     strip plus one aligned, colour-coded TABLE of every module's result."""
@@ -174,6 +186,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         d["iters"].append((r.get("iteration"), br))
         if r.get("duration_s") is not None:
             d["dur"] = max(d.get("dur", 0.0), r["duration_s"])
+        if r.get("timestamp"):
+            d["ts"] = r["timestamp"]       # per-module completion time (latest wins)
     for d in by_mod.values():
         d["v"] = next((v for v in _VERDICT_ORDER if v in d["vs"]), (d["vs"] or ["?"])[0])
 
@@ -188,6 +202,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     W = 78
 
     def _hline(text):
+        if len(text) > W:                    # keep the right border aligned
+            text = text[:W - 1] + "…"
         print(_c("┃", ACC, no_color) + _c(f"{text:<{W}}", BOLD, no_color)
               + _c("┃", ACC, no_color))
     print()
@@ -202,9 +218,9 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     _cloud = _meta.get("cloud")
     _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
     _dest = f"{_src}  →  {target}" if _src else target
-    _hline(f"  {_dest}   ·   {_mode}" + (f"   ·   {_net}" if _net else "")
-           + f"   ·   {n} module(s) × {args.iterations} iter   ·   {elapsed:.0f}s")
-    _hline(f"  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
+    _hline(f"  {_dest}   ·   {_mode}" + (f"   ·   {_net}" if _net else ""))
+    _hline(f"  {n} module(s) × {args.iterations} iter   ·   {elapsed:.0f}s   ·   "
+           f"{_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
            + ("   ·   DEBUG" if getattr(args, "debug", False) else ""))
     print(_c("┗" + "━" * W + "┛", ACC, no_color))
 
@@ -229,13 +245,14 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     # icmp_flood's loss-delta falling in the ambiguous band on one run and
     # not another).
     show_iters = args.iterations > 1
-    NUM, VER, MOD, CAT, PORTS, MITRE, CWE, DET = 3, 13, 26, 13, 11, 13, 11, 28
+    NUM, VER, MOD, CAT, PORTS, MITRE, CWE, DET = 3, 13, 26, 13, 11, 13, 11, 22
     ITERS_W = 22 * min(args.iterations, 4)   # grows with iteration count, caps at 4x
     cols = [("#", NUM), ("VERDICT", VER), ("MODULE", MOD), ("CATEGORY", CAT),
             ("PORTS", PORTS), ("MITRE", MITRE), ("CWE", CWE),
-            (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET))]
+            (("ITERATIONS", ITERS_W) if show_iters else ("DETAIL", DET)),
+            ("TIME", 8)]               # per-module completion clock (HH:MM:SS), human-readable
     if debug:
-        cols.append(("TIME", 7))   # per-module wall-clock (debug only)
+        cols.append(("DUR", 7))   # per-module wall-clock duration (debug only)
     inner = [w for _, w in cols]
 
     def rule(left, mid, right):
@@ -282,6 +299,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                 f"{n}:{v} ({_VERDICT_GLOSS_SHORT.get(v, '?')})" for n, v in iters_sorted))
         else:
             cells.append(detail)
+        colors.append(DIM)
+        cells.append(_clock(d.get("ts")))       # TIME — human-readable HH:MM:SS
         colors.append(DIM)
         if debug:
             cells.append(f"{d.get('dur', 0.0):.1f}s")
@@ -586,6 +605,11 @@ def main():
             st = s.strip()
             if st.lower().startswith(("target:", "baseline:")):
                 return  # per-module verdict line — re-rendered by on_status
+            # the engine's plain "===" banner (Harness v / MODE / SITE ID) is
+            # re-rendered as a modern CLI banner before the run; drop it from the
+            # console (still written to the evidence run.log).
+            if st == "=" * 60 or st.startswith(("Harness v", "MODE:", "SITE ID:")):
+                return
             for c in _cats:                 # "  [Category] Name" now-running line
                 if c and st.startswith(f"[{c}]"):
                     return
@@ -599,10 +623,17 @@ def main():
 
         def _on_status(aid, name, it, b, v):
             _prog["n"] += 1
+            nn, tot = _prog["n"], _total
             col, icon = _VERDICT_STYLE.get(b, ("", "•"))
-            idx = _c(f"[{_prog['n']:>2}/{_total}]", DIM, args.no_color)
-            verd = _c(f"{icon} {b:<13}", col, args.no_color)
-            print(f"  {idx} {verd} {name}")
+            # realtime progress: a bar that grows as modules complete, + % + clock
+            pct = int(100 * nn / tot) if tot else 100
+            bw = 12
+            fill = max(0, min(bw, int(round(bw * nn / tot)))) if tot else bw
+            bar = _c("█" * fill, ACC, args.no_color) + _c("░" * (bw - fill), DIM, args.no_color)
+            counter = _c(f"{nn:>3}/{tot}", DIM, args.no_color)
+            clock = _c(time.strftime("%H:%M:%S"), DIM, args.no_color)
+            verd = _c(f"{icon} {b:<12}", col, args.no_color)
+            print(f"  {counter} ▕{bar}▏{_c(f'{pct:>3}%', BOLD, args.no_color)} {clock}  {verd} {name}")
 
         runner = core.Runner(target, args.appliance or None, on_log=_on_log,
                              on_output=_on_output, on_status=_on_status)
@@ -703,6 +734,28 @@ def main():
                              smb_port=(smb if cloud else None), rpc_port=(rpc if cloud else None),
                              ssh_port=(ssh_p_port if (cloud or args.ssh_port) else None),
                              **cred_fields)
+
+        # ---- modern CLI banner (the engine's plain === banner is suppressed on
+        # the console by _on_log and kept in the evidence run.log) ----
+        _net = "cloud" if cloud else "on-prem"
+        _dest = f"{source} → {target}" if source else str(target)
+        _wb = str(mode).lower().startswith("w")
+        _modeline = ("WHITEBOX · allow-all baseline — attacks SHOULD pass"
+                     if _wb else "BLACKBOX · through the SD-WAN — what the boundary stops")
+        _BW = 72
+
+        def _bl(txt, color):
+            body = f"  {txt}"
+            if len(body) > _BW:                   # keep the right border aligned
+                body = body[:_BW - 1] + "…"
+            print(_c("│", ACC, args.no_color) + _c(f"{body:<{_BW}}", color, args.no_color)
+                  + _c("│", ACC, args.no_color))
+        print()
+        print(_c("╭" + "─" * _BW + "╮", ACC, args.no_color))
+        _bl(f"▌ CONTROL VALIDATION HARNESS   ·   BAS   ·   v{core.VERSION}", BOLD)
+        _bl(_modeline, ACC)
+        _bl(f"{_dest}   ·   {_net}" + (f"   ·   site {site_id}" if site_id else ""), DIM)
+        print(_c("╰" + "─" * _BW + "╯", ACC, args.no_color))
 
         t0 = time.time()
         try:
