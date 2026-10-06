@@ -593,9 +593,9 @@ class HarnessGUI:
                            ("tgt", "Target", 104, "w"),
                            ("posture", "Posture", 72, "center"), ("net", "Net", 60, "center"),
                            ("ports", "Ports", 72, "w"),
-                           ("dir", "Dir", 38, "center"), ("cat", "Category", 118, "w"),
-                           ("attack", "Attack", 150, "w"), ("iter", "It", 26, "center"),
-                           ("result", "Result", 96, "center"), ("mitre", "MITRE", 110, "w"),
+                           ("dir", "Dir", 38, "center"), ("cat", "Category", 150, "w"),
+                           ("attack", "Attack", 280, "w"), ("iter", "It", 26, "center"),
+                           ("result", "Result", 120, "center"), ("mitre", "MITRE", 110, "w"),
                            ("cwe", "CWE", 80, "w")):
             self.status_tree.heading(c, text=t, command=lambda cc=c: self._sort_tree(cc))
             self.status_tree.column(c, width=w, anchor=a, stretch=False)
