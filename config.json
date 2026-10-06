@@ -38,6 +38,9 @@
   "external_resolver": "8.8.8.8",
   "_external_resolver": "a public resolver IP for the 'is the internal DNS resolver forced' test.",
 
+  "blocked_canary_domain": "",
+  "_blocked_canary_domain": "a domain YOUR environment's DNS/category filter BLOCKS (e.g. an adult/gambling/malware-categorised domain your SD-WAN sinkholes, like a known-blocked site). The DoH-bypass module resolves THIS over DoH to prove category/POLICY bypass (not just reachability) and then connects to the resolved IP to prove access. Empty -> a SAFE built-in category test canary (Cisco Umbrella's internetbadguys.com, a benign test page). Never a real adult/malware site committed to the repo.",
+
   "doh_providers": [
     "https://cloudflare-dns.com/dns-query",
     "https://dns.google/resolve",

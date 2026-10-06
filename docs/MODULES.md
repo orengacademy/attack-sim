@@ -265,10 +265,10 @@
 ### DNS-over-HTTPS Bypass  `doh_bypass`  _[original]_
 
 - **Scope:** attack_sim/B · direction a2b · ports — (no target port; egress / ICMP) · MITRE T1572 · CWE-693
-- **What it tests / why:** DNS-over-HTTPS bypass check. Unlike the other modules, this doesn't attack the lab target at all — it tests whether the perimeter appliance's DNS filtering can be bypassed by tunnelling DNS over HTTPS (port 443) to a public DoH resolver, matching the manual test script exactly.
-- **Control it validates (how to PREVENT / BLOCK):** DNS filtering / egress control
+- **What it tests / why:** DNS-over-HTTPS bypass (Family B). Does NOT attack the lab target — it tests whether the perimeter's DNS/egress filtering can be bypassed by tunnelling DNS over HTTPS (443) to a public DoH resolver.
+- **Control it validates (how to PREVENT / BLOCK):** DNS filtering / egress control (DNS-layer + DoH + SNI/IP)
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: curl
+- **Needs to run:** tools: curl; config.json: blocked_canary_domain
 
 ### FTP Anonymous Login  `ftp_anonymous`  _[original]_
 
