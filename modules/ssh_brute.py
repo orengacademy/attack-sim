@@ -56,13 +56,16 @@ META = {
     "id": "ssh_brute",
     "name": "SSH Brute Force",
     "category": "Network Exploitation",
-    # DEAD LAST (order 100, after icmp_flood/DoS at 99). The brute burst trips an
-    # SSH-brute signature that BLACKLISTS the whole tester source, and that ban
-    # lasts LONGER than the DoS anti-flood lockout (and longer than the wait-unblock
-    # window) — so if anything ran after ssh_brute it would be stuck INCONCLUSIVE
-    # waiting for a ban that won't clear in time. Running it absolutely last means
-    # its long blacklist contaminates nothing; the shorter DoS bans (icmp/syn) that
-    # run just before it DO clear inside the wait window.
+    # Second-to-last (order 100), just BEFORE icmp_flood (order 101). The brute
+    # burst trips an SSH-brute signature that BLACKLISTS the whole tester source.
+    # It used to run absolutely last, but live testing showed the ICMP flood trips
+    # an EQUALLY persistent anti-DoS source-ban on this SD-WAN — and running icmp
+    # before ssh stranded ssh as a false SUSPECT. So the flood is now dead-last
+    # (see icmp_flood's note) and ssh_brute runs just ahead of it: ssh still gets a
+    # clean, un-banned test (nothing bans the source before it), and whichever ban
+    # it then trips contaminates only the final flood, whose own verdict is already
+    # measured in-flight. Both are the last things to run; order only decides which
+    # of the two ban-trippers goes truly last (operator choice: the flood).
     "order": 100,
     "test_type": "va",
     "control": "Brute-force protection / rate-limit (SSH)",

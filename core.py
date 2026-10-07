@@ -2947,10 +2947,14 @@ class Runner:
         return False
 
     def _flag_if_blacklisted(self, verdict, log):
-        """Called on a non-SUCCESS verdict (BLOCKED / NO-SERVICE / NO-RESULT): if the
-        canary says the source is blacklisted, this verdict may be ban fallout, not a
-        per-attack control — annotate it SUSPECT so the operator isn't misled (and so
-        the auto-retry pass can find it)."""
+        """Called on a non-SUCCESS verdict (BLOCKED / NO-SERVICE / NO-RESULT /
+        INCONCLUSIVE): if the canary says the source is blacklisted, this verdict may
+        be ban fallout, not a per-attack control — annotate it SUSPECT so the operator
+        isn't misled (and so the auto-retry pass, which keys off contaminated=True,
+        can find it). INCONCLUSIVE is included because a module that couldn't decide
+        (icmp_flood: baseline ICMP 100% lost AND TCP-liveness all-timeouts) is itself a
+        late-ban signal; re-probing here catches a quarantine the earlier verdicts
+        missed. Canary still up → verdict returned unchanged (no false SUSPECT)."""
         if not self._canary:
             return verdict
         if self._detect_ban(log):
@@ -3044,7 +3048,9 @@ class Runner:
             # Parity with the single-target path: a BLOCKED through the appliance
             # gets the contamination-guard SUSPECT check, and a BLOCKED/NO-SERVICE
             # on a policy-DENIED port is attributed to SEGMENTATION, not the IPS/WAF.
-            if a in ("BLOCKED", "NO-SERVICE", "NO-RESULT"):
+            # INCONCLUSIVE is included for the same reason as the single-target path
+            # (a quarantine-shaped indeterminate re-probes the canary → auto-retry).
+            if a in ("BLOCKED", "NO-SERVICE", "NO-RESULT", "INCONCLUSIVE"):
                 verdict = self._flag_if_blacklisted(verdict, log)
             # Reference only — the appliance verdict (a) is the real test result; the
             # policy note just disambiguates a through-boundary block as segmentation.
@@ -3201,7 +3207,17 @@ class Runner:
             # contamination guard: a BLOCKED could be THIS attack's control OR the
             # source having been blacklisted by an earlier attack. If the canary is
             # now unreachable, flag the verdict as suspect (don't report a false win).
-            if b in ("BLOCKED", "NO-SERVICE", "NO-RESULT"):
+            # INCONCLUSIVE is included: a module that self-declares it couldn't decide
+            # (e.g. icmp_flood with baseline ICMP 100% lost AND TCP-liveness all
+            # timed out — the exact shape of a source that's been quarantined) is
+            # itself a strong LATE-ban signal the earlier BLOCKEDs may have missed.
+            # Re-probing the canary here latches that ban, tags the verdict SUSPECT
+            # (-> contaminated=True), and lets the auto-retry pass re-test it once the
+            # ban clears — instead of dead-ending as a mute INCONCLUSIVE. If the canary
+            # is still up, no tag is added, so a genuine non-ban INCONCLUSIVE
+            # (udp443_quic's handshake-less UDP, petitpotam's unobservable callback)
+            # is left exactly as the module reported it.
+            if b in ("BLOCKED", "NO-SERVICE", "NO-RESULT", "INCONCLUSIVE"):
                 verdict = self._flag_if_blacklisted(verdict, log)
             # Port-policy attribution is a REFERENCE only — the verdict above comes
             # from the actual test (what the probe/attack did on the wire), never
