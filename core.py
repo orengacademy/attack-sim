@@ -2445,6 +2445,12 @@ class Runner:
         # egress/NAT already tripped the appliance — so a later "closed/refused" must
         # NOT be scored a confident NO-SERVICE ("service absent"); see the branch.
         self._unreachable_at_recon = False
+        # Set at recon if the target answered on ANY protocol (TCP open / UDP open /
+        # ICMP up). "Host is up" ground truth for the icmp verdict: ICMP 100% lost +
+        # host-up-on-something (SSH/HTTP/SNMP/…) + source not banned = the boundary
+        # FILTERS ICMP (a real BLOCK), not a down host. Broader than the TCP-only
+        # liveness probe (counts udp/161 etc.).
+        self._host_reachable_at_recon = False
 
         # ----- Target safety: validate + enforce allowlist BEFORE anything -----
         for label, ip in ([("target", self.target_ip)] +
@@ -2608,22 +2614,30 @@ class Runner:
                 if self._canary:
                     log(f"  canary (contamination guard): {self._canary[1] or 'icmp'}"
                         f"/{self._canary[0]} reachable — a later drop flags a source blacklist.")
-                elif rc["probes"]:
-                    # Nothing on the target answered this source at recon — no open TCP
-                    # port, no ICMP. "Everything closed at once" is implausible as genuine
-                    # service-absence for a real target, so it usually means this SOURCE
-                    # can't reach the target at all: a pre-existing source blacklist (a
-                    # CONCURRENT tester sharing this egress/NAT may have tripped the
-                    # appliance before this run started), upstream segmentation, or the
-                    # target is down. Latch it so a per-module "closed/refused" below is
-                    # NOT confidently scored NO-SERVICE ("service absent") — it may be a
-                    # source-side block that the mid-run canary guard can't catch (there
-                    # was no reachable canary to establish in the first place).
+                # HOST-UP ground truth across ALL protocols — TCP open, UDP open, ICMP
+                # up — not just the TCP/ICMP canary. This is the signal the liveness
+                # check needs: "ICMP blocked but SSH/HTTP/SNMP answered" => the host is
+                # UP, so a dropped ICMP is the boundary FILTERING it (a real BLOCK), not
+                # a down host. A host reachable ONLY on udp/161 counts here too (the
+                # TCP-only canary would miss it, which wrongly flagged it unreachable).
+                self._host_reachable_at_recon = any(
+                    st in ("open", "up") for _p, _pt, st in rc["probes"])
+                self.ctx.host_reachable_at_recon = self._host_reachable_at_recon
+                if rc["probes"] and not self._host_reachable_at_recon:
+                    # Nothing answered on ANY protocol (TCP/UDP/ICMP). "Everything closed
+                    # at once" is implausible as genuine service-absence for a real
+                    # target, so it usually means this SOURCE can't reach the target at
+                    # all: a pre-existing source blacklist (a CONCURRENT tester sharing
+                    # this egress/NAT may have tripped the appliance before this run
+                    # started), upstream segmentation, or the target is down. Latch it so
+                    # a per-module "closed/refused" below is NOT confidently scored
+                    # NO-SERVICE ("service absent") — it may be a source-side block the
+                    # mid-run canary guard can't catch (no reachable canary to establish).
                     self._unreachable_at_recon = True
                     log("[WARN] TARGET WHOLLY UNREACHABLE from this source at recon (no open "
-                        "port, no ICMP). If the target is known to host services, this source "
-                        "is likely blocked BEFORE the run — a concurrent tester sharing this "
-                        "egress/NAT may have tripped the appliance — or the target is down / "
+                        "port, no ICMP, no UDP). If the target is known to host services, this "
+                        "source is likely blocked BEFORE the run — a concurrent tester sharing "
+                        "this egress/NAT may have tripped the appliance — or the target is down / "
                         "segmented. NO-SERVICE verdicts below are LOW CONFIDENCE; verify from a "
                         "known-good / whitelisted source.")
             except Exception as e:
@@ -3201,7 +3215,23 @@ class Runner:
                 # --auto-retry re-tests it. No note for a by-design indeterminate
                 # (udp443_quic's handshake-less UDP, petitpotam's unobservable callback).
                 _live = re.search(r"liveness|reachab|quarantin|host is up|ICMP", reason, re.I)
-                if self._canary and _live:
+                if (_live and getattr(self, "_host_reachable_at_recon", False)
+                        and not self._blacklisted):
+                    # Host confirmed UP at recon on SOME protocol (SSH/HTTP/SNMP/ICMP/
+                    # udp…) and the source is NOT banned => the 100% ICMP loss is the
+                    # boundary FILTERING/denying ICMP end-to-end, not a down host. A real
+                    # control — e.g. a blackbox deny-ACL that permits nothing but fronts a
+                    # live target (ICMP blocked while SSH answers), or a host reachable
+                    # only on udp/161 that the TCP-only liveness probe can't see. Score
+                    # BLOCKED, not INCONCLUSIVE. Still verdict-from-the-TEST: recon
+                    # OBSERVED the host up and the attack's ICMP was OBSERVED dropped —
+                    # the posture label plays no part.
+                    b = "BLOCKED"
+                    verdict = ("ICMP 100% lost but the host was confirmed UP at recon (reachable "
+                               "on another protocol) and the source is not banned — the boundary "
+                               "FILTERS/denies ICMP end-to-end (control held); a real block, not a "
+                               "down/unreachable host")
+                elif self._canary and _live:
                     verdict += (" · DISAMBIGUATION: recon saw this host reachable at start "
                                 f"({self._canary[1] or 'icmp'}/{self._canary[0]}) — the host is UP, "
                                 "so this is the tester source being quarantined mid-run, not a "
