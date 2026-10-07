@@ -375,6 +375,35 @@ class TestFloodRunsLast(unittest.TestCase):
         self.assertEqual(tail[-1].META["id"], "icmp_flood")
 
 
+class TestFtpAnonResetBlocked(unittest.TestCase):
+    """FTP anon: a session RESET right after the 220 banner (an IPS resetting the
+    `USER anonymous` command — e.g. Sangfor's FTP-anonymous signature) must read
+    BLOCKED, not NO-RESULT. A real 230 success must still win."""
+
+    def setUp(self):
+        self.m = importlib.import_module("modules.ftp_anonymous")
+
+    def _run(self, canned):
+        class _Ctx:
+            def get_port(self, *a):
+                return 21
+            def run_cmd(self, *a):
+                return canned
+        return self.m.run("10.38.98.132", _Ctx())
+
+    def test_reset_after_banner_marks_blocked(self):
+        out = self._run("< 220 Microsoft FTP Service\n> USER anonymous\n"
+                        "* Recv failure: Connection reset by peer\n* closing connection #0\n")
+        self.assertIn("FTP-BLOCKED", out)
+        self.assertTrue(re.search(self.m.META["blocked_regex"], out, re.I | re.M))
+        self.assertFalse(re.search(self.m.META["success_regex"], out, re.I | re.M))
+
+    def test_230_success_not_overridden(self):
+        out = self._run("< 220 FTP\n> USER anonymous\n< 230 Login successful\n")
+        self.assertNotIn("FTP-BLOCKED", out)
+        self.assertTrue(re.search(self.m.META["success_regex"], out, re.I | re.M))
+
+
 class TestSshBruteBlockedMidTest(unittest.TestCase):
     """ssh_brute: a burst that CONNECTS (tripping the signature) and then a blocked
     credential test must read BLOCKED, not NO-RESULT. Hydra's 'could not connect -
