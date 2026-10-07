@@ -25,13 +25,15 @@ class _FakeMod:
 
 
 def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
-             detected=None, detections=None, banned=False):
+             detected=None, detections=None, banned=False, unreachable=False):
     """Drive the REAL classifier for one module and return (baseline_result, verdict).
     `recon` is the injected TCP port state ('open'/'closed'/'filtered'/...), or None
     for 'no recon'. Port policy is disabled (not under test). `banned=True` arms the
     contamination guard with an ALREADY-LATCHED source blacklist (so _detect_ban
     fast-paths and never does a real network probe) — used to verify which verdicts
-    get the SUSPECT/contaminated tag."""
+    get the SUSPECT/contaminated tag. `unreachable=True` simulates the whole target
+    being unreachable from this source at recon (the concurrent-tester / shared-ban
+    case) so NO-SERVICE is flagged low-confidence."""
     r = core.Runner("127.0.0.1")
     if banned:
         r._canary = ("tcp", 9)            # latched: _detect_ban returns True w/o probing
@@ -39,6 +41,7 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
     else:
         r._canary = None                  # contamination guard off
         r._blacklisted = False
+    r._unreachable_at_recon = unreachable
     r._bl_lock = threading.Lock()
     r._mode = "blackbox"
     r.dual = False
@@ -126,6 +129,21 @@ class TestLadderPrecedence(unittest.TestCase):
     def test_refused_closed_is_no_service(self):
         b, _ = _verdict("Connection refused", recon="closed")
         self.assertEqual(b, "NO-SERVICE")
+
+    # Concurrency / shared-source guard: when the WHOLE target was unreachable from
+    # this source at recon (e.g. a concurrent tester sharing the egress/NAT got the
+    # shared source banned before this run), a "closed" is flagged LOW CONFIDENCE
+    # instead of a confident "service absent" — so one tester's ban can't read as
+    # another's NO-SERVICE. A normally-reachable target keeps the confident verdict.
+    def test_no_service_low_confidence_when_target_unreachable_at_recon(self):
+        b, v = _verdict("Connection refused", recon="closed", unreachable=True)
+        self.assertEqual(b, "NO-SERVICE")
+        self.assertIn("LOW CONFIDENCE", v)
+
+    def test_no_service_confident_when_target_was_reachable(self):
+        b, v = _verdict("Connection refused", recon="closed", unreachable=False)
+        self.assertEqual(b, "NO-SERVICE")
+        self.assertNotIn("LOW CONFIDENCE", v)
 
     # rung 6 GUARD: an incidental "Connection refused" while the attack port is OPEN
     # must NOT rob a module of the BLOCKED its own blocked_regex earned (the noPac
