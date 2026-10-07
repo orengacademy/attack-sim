@@ -244,9 +244,12 @@ the tester source is quarantined (canary down), the engine PAUSES the run (no
 attack traffic, only benign canary polls so the lockout timer counts down) and
 resumes the INSTANT the ban lifts, so a full blackbox/whitebox battery rides out a
 mid-run ban and the trailing modules (icmp_flood, …) still earn REAL verdicts
-instead of INCONCLUSIVE. The cap only bounds the wait; default
-`max(90s, cooldown, ban_expiry+60)` — sized to OUTLAST the lockout with margin; a
-detected ban never gets the old near-useless 30s), `HARNESS_BAN_EXPIRY`
+instead of INCONCLUSIVE. The cap only bounds the wait (the halt returns the INSTANT
+the canary recovers, so a larger cap is free for a short ban and is what rescues a
+long one); default `max(90s, cooldown, 2*ban_expiry+60)` ≈ 660s — sized to ride out
+a real-world ~600s lockout in ONE halt (the old `ban_expiry+60`=360s timed out and
+dead-ended icmp_flood at INCONCLUSIVE); a detected ban never gets the old
+near-useless 30s), `HARNESS_BAN_EXPIRY`
 (`--ban-expiry`: the appliance's known
 source-blacklist auto-expiry — Sangfor "Lockout Duration", default 300s — which
 sizes the wait window so a banned source is waited out, not dead-ended; 0 = old

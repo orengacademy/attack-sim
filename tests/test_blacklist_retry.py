@@ -90,14 +90,15 @@ class TestDetectBanAndRecover(unittest.TestCase):
         self.assertFalse(r._blacklisted)
 
     def test_await_window_sized_to_outlast_ban_expiry(self):
-        # with ban_expiry=300 and no explicit wait-unblock, the wait window must be
-        # >= ban_expiry (sized to outlast it: max(90, cooldown, ban_expiry+60)) so a 5-min auto-expiring ban is waited out.
+        # with ban_expiry=300 and no explicit wait-unblock, the wait window is
+        # max(90, cooldown, 2*ban_expiry+60) = 660s — sized to ride out a real-world
+        # ~600s appliance lockout in ONE halt (the halt returns the instant the canary
+        # recovers, so the larger cap is free for a short ban and rescues a long one).
         r = _mk_runner()
         r._blacklisted = True
         r.ban_expiry = 300.0
         r.wait_unblock = 0.0
         r.cooldown = 0.0
-        captured = {}
         r._canary_reachable = lambda: False            # never recovers -> full window
         slept = {"total": 0.0}
         orig_sleep = core.time.sleep
@@ -109,9 +110,9 @@ class TestDetectBanAndRecover(unittest.TestCase):
             self.assertFalse(r._await_unblacklist(lambda m: None, "x"))
         finally:
             core.time.sleep = orig_sleep
-        # it should have slept ~ the whole window (ban_expiry+60 = 360s, in 5s steps),
-        # proving the smart halt outlasts a 300s ban rather than the old 30s.
-        self.assertGreaterEqual(slept["total"], 330.0)
+        # it should have slept ~ the whole 660s window (in 5s steps), proving the smart
+        # halt now outlasts a ~600s lockout, not just the old ban_expiry+60 = 360s.
+        self.assertGreaterEqual(slept["total"], 600.0)
 
     def test_detected_ban_floor_is_not_the_old_30s(self):
         # Even with ban_expiry=0 (and no explicit wait), a DETECTED ban must get a
