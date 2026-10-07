@@ -2439,6 +2439,12 @@ class Runner:
         self._canary = None
         self._blacklisted = False
         self._bl_lock = _th.Lock()
+        # Set at recon if the WHOLE target was unreachable from this source (no open
+        # port, no ICMP). For a target that normally hosts services that usually means
+        # this source is blocked BEFORE the run — e.g. a CONCURRENT tester sharing this
+        # egress/NAT already tripped the appliance — so a later "closed/refused" must
+        # NOT be scored a confident NO-SERVICE ("service absent"); see the branch.
+        self._unreachable_at_recon = False
 
         # ----- Target safety: validate + enforce allowlist BEFORE anything -----
         for label, ip in ([("target", self.target_ip)] +
@@ -2602,6 +2608,24 @@ class Runner:
                 if self._canary:
                     log(f"  canary (contamination guard): {self._canary[1] or 'icmp'}"
                         f"/{self._canary[0]} reachable — a later drop flags a source blacklist.")
+                elif rc["probes"]:
+                    # Nothing on the target answered this source at recon — no open TCP
+                    # port, no ICMP. "Everything closed at once" is implausible as genuine
+                    # service-absence for a real target, so it usually means this SOURCE
+                    # can't reach the target at all: a pre-existing source blacklist (a
+                    # CONCURRENT tester sharing this egress/NAT may have tripped the
+                    # appliance before this run started), upstream segmentation, or the
+                    # target is down. Latch it so a per-module "closed/refused" below is
+                    # NOT confidently scored NO-SERVICE ("service absent") — it may be a
+                    # source-side block that the mid-run canary guard can't catch (there
+                    # was no reachable canary to establish in the first place).
+                    self._unreachable_at_recon = True
+                    log("[WARN] TARGET WHOLLY UNREACHABLE from this source at recon (no open "
+                        "port, no ICMP). If the target is known to host services, this source "
+                        "is likely blocked BEFORE the run — a concurrent tester sharing this "
+                        "egress/NAT may have tripped the appliance — or the target is down / "
+                        "segmented. NO-SERVICE verdicts below are LOW CONFIDENCE; verify from a "
+                        "known-good / whitelisted source.")
             except Exception as e:
                 log(f"[WARN] recon skipped (non-fatal): {e}")
         else:
@@ -3190,6 +3214,19 @@ class Runner:
                 verdict = ("port closed / connection refused — the service isn't running "
                            "or isn't accessible on the target; NOT an SD-WAN block "
                            "(attack could not apply)")
+                # Concurrency / shared-source guard: if the WHOLE target was unreachable
+                # from this source at recon, "closed" is NOT a trustworthy "service
+                # absent" — it may be a SOURCE-side block (a concurrent tester on the
+                # same egress/NAT got the shared source banned, or segmentation / the
+                # target is down). Flag it low-confidence so one tester's ban can't read
+                # as another's "no service". (The mid-run canary guard can't catch a ban
+                # that was already in place before recon — there was no canary to lose.)
+                if getattr(self, "_unreachable_at_recon", False):
+                    verdict += ("  [LOW CONFIDENCE: the whole target was unreachable from this "
+                                "source at recon — this 'closed' may be a SOURCE-side block (a "
+                                "concurrent tester / shared-source ban / segmentation / target "
+                                "down), not a confirmed absent service; verify from a known-good "
+                                "source]")
             # TOOL-INTERNAL fault with NO network signal of its own -> NO-RESULT.
             # Must come BEFORE the port_filtered->BLOCKED branch: recon's filtered
             # port is a SEPARATE probe, and crediting a crashed/abandoned module's
