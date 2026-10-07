@@ -174,12 +174,17 @@ classifier bug so far was caught by reading them, not by trusting the verdict.
   BLOCKED verdict its own `blocked_regex` earned (this is why patched noPac now
   scores BLOCKED, not NO-SERVICE).
 - **AUTH-FAILED** — credential error (fix `HARNESS_DC_PASS`), not a control result.
-- **INCONCLUSIVE** — the test couldn't reach a verdict (purple). Either the source
-  was IPS-quarantined mid-run, OR a module **self-declared** `[INCONCLUSIVE]`
-  because it genuinely can't decide — a UDP probe with no handshake
-  (`udp443_quic`), or a coercion that fired but whose callback can't be observed
-  from here (`petitpotam` against a non-routable listener). Carries the module's
-  own reason instead of a mute NO-RESULT.
+- **INCONCLUSIVE** — the test couldn't reach a verdict (purple). The source was
+  IPS-quarantined mid-run (a **detected** ban — the loss is the ban, not the
+  control), or a module **self-declared** `[INCONCLUSIVE]` for a by-design
+  unobservable — a UDP probe with no handshake (`udp443_quic`), or a coercion whose
+  callback can't be observed from here (`petitpotam`). ⚠ A **liveness** indeterminate
+  is NOT left here: `icmp_flood`'s 100% silent loss is resolved **decisively from the
+  test** — a silent drop in transit is a **BLOCKED** (same convention as a filtered
+  port), UNLESS a source ban is detected (then INCONCLUSIVE, since the loss is the
+  ban). So `icmp` from a deny-all source reads BLOCKED (boundary dropped it) with a
+  host-liveness caveat, not a mute INCONCLUSIVE — the posture label never decides it
+  (black-box and white-box give the same verdict).
 - **NO-RESULT** — no clear marker; surfaces the `[ERROR]/[WARN]/[SKIP]` hint.
 - **PREREQ-MISSING** — skipped by preflight (missing tool/file/privilege/OS), OR a
   module self-declared `[PREREQ-MISSING]` at **runtime** when a local prerequisite
