@@ -333,5 +333,25 @@ class TestIcmpRateReport(unittest.TestCase):
         self.assertEqual(self.icmp._fmt(12.0, 1), "12.0")
 
 
+class TestDcsyncVssFallback(unittest.TestCase):
+    """dcsync: DRSUAPI (real DCSync) first; for cloud/NAT'd targets where the
+    dynamic RPC endpoint isn't reachable, a LABELLED VSS-over-SMB fallback. Offline
+    checks: the module exposes both paths and success_regex matches a VSS krbtgt line."""
+
+    def setUp(self):
+        self.d = importlib.import_module("modules.dcsync")
+
+    def test_has_both_paths(self):
+        self.assertTrue(hasattr(self.d, "_run_in_process") and hasattr(self.d, "_dump"))
+
+    def test_success_regex_matches_vss_krbtgt_line(self):
+        line = "krbtgt:502:aad3b435b51404eeaad3b435b51404ee:975503e819a3ffb84ee9d23749ac8d52:::"
+        self.assertTrue(re.search(self.d.META["success_regex"], line))
+
+    def test_vss_fallback_label_is_not_a_success_by_itself(self):
+        note = "[VSS-FALLBACK] DRSUAPI/DCSync replication was UNREACHABLE through the cloud NAT"
+        self.assertFalse(re.search(self.d.META["success_regex"], note))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
