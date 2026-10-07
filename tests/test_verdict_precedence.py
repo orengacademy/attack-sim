@@ -25,7 +25,8 @@ class _FakeMod:
 
 
 def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
-             detected=None, detections=None, banned=False, unreachable=False):
+             detected=None, detections=None, banned=False, unreachable=False,
+             reachable_at_recon=False):
     """Drive the REAL classifier for one module and return (baseline_result, verdict).
     `recon` is the injected TCP port state ('open'/'closed'/'filtered'/...), or None
     for 'no recon'. Port policy is disabled (not under test). `banned=True` arms the
@@ -33,7 +34,9 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
     fast-paths and never does a real network probe) — used to verify which verdicts
     get the SUSPECT/contaminated tag. `unreachable=True` simulates the whole target
     being unreachable from this source at recon (the concurrent-tester / shared-ban
-    case) so NO-SERVICE is flagged low-confidence."""
+    case) so NO-SERVICE is flagged low-confidence. `reachable_at_recon=True` simulates
+    the target having answered on SOME protocol at recon (host-up ground truth) so a
+    liveness INCONCLUSIVE can be upgraded to BLOCKED (ICMP filtered, host up)."""
     r = core.Runner("127.0.0.1")
     if banned:
         r._canary = ("tcp", 9)            # latched: _detect_ban returns True w/o probing
@@ -42,6 +45,7 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
         r._canary = None                  # contamination guard off
         r._blacklisted = False
     r._unreachable_at_recon = unreachable
+    r._host_reachable_at_recon = reachable_at_recon
     r._bl_lock = threading.Lock()
     r._mode = "blackbox"
     r.dual = False
@@ -124,6 +128,23 @@ class TestLadderPrecedence(unittest.TestCase):
         b, v = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered", banned=True)
         self.assertEqual(b, "INCONCLUSIVE")
         self.assertNotIn("DISAMBIGUATION", v)
+
+    def test_inconclusive_upgrades_to_blocked_when_host_up_on_another_proto(self):
+        # the operator's case: ICMP 100% lost, TCP-liveness couldn't confirm, BUT recon
+        # saw the host up on SOME protocol (e.g. SSH/SNMP) and the source isn't banned
+        # => the boundary FILTERS ICMP (control held) => BLOCKED, not INCONCLUSIVE.
+        b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
+                        recon="filtered", reachable_at_recon=True, banned=False)
+        self.assertEqual(b, "BLOCKED")
+        self.assertIn("FILTERS/denies ICMP", v)
+
+    def test_inconclusive_stays_when_host_up_but_source_banned(self):
+        # host was up at recon but the source is now banned => can't tell if the ICMP
+        # loss is the policy or the ban => stays INCONCLUSIVE (quarantine note).
+        b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
+                        recon="filtered", reachable_at_recon=True, banned=True)
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertIn("quarantined", v)
 
     def test_inconclusive_wholly_unreachable_points_to_source_block(self):
         # whole target unreachable at recon (no canary) + a liveness indeterminate =>
