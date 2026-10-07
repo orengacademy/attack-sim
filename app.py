@@ -1103,6 +1103,7 @@ td.cell-n{color:var(--faint)}
  padding:2px 7px;border-radius:var(--r-pill);border:1px solid currentColor;text-transform:uppercase;white-space:nowrap}
 .pchip.w{color:var(--acc)} .pchip.b{color:var(--fg3)}
 .detail{color:var(--fg2);max-width:460px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5;max-height:3em}
+td.modcell{white-space:nowrap}   /* full module name on one line — the table scrolls rather than wrap/clip */
 td.dim{color:var(--fg3)}
 
 /* empty state */
@@ -1620,7 +1621,7 @@ function renderRows(insN){
   if(insN&&r.n===insN) tr.className="ins";
   tr.innerHTML=`<td class="mono cell-n">${r.n}</td>`
    +`<td><span class=vchip style="color:${c}"><span class=d></span><span class=t>${esc(r.verdict)}</span></span></td>`
-   +`<td>${esc(r.name)}</td><td class=dim>${esc(r.category)}</td>`
+   +`<td class=modcell>${esc(r.name)}</td><td class=dim>${esc(r.category)}</td>`
    +`<td class=mono>${esc(r.target)}</td>`
    +`<td>${r.posture?`<span class="pchip ${r.posture[0]==='w'?'w':'b'}">${r.posture[0]==='w'?'white':'black'}</span>`:'<span class=dim>—</span>'}</td>`
    +`<td class=mono>${esc(r.ports)}</td>`
