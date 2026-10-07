@@ -448,8 +448,11 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     recs = getattr(ev, "records", []) or []
     inc_mods = sorted({r.get("attack", "?") for r in recs
                        if r.get("baseline_result") == "INCONCLUSIVE"})
+    # a quarantine-stranded INCONCLUSIVE now also carries a SUSPECT tag (v1.9.18) —
+    # list it under INCONCLUSIVE only, never also under the BLOCKED-suspect line.
     susp_mods = sorted({r.get("attack", "?") for r in recs
-                        if "SUSPECT" in (r.get("verdict") or "")})
+                        if "SUSPECT" in (r.get("verdict") or "")
+                        and r.get("baseline_result") != "INCONCLUSIVE"})
     if inc_mods or susp_mods:
         warn = "\033[35m" if not no_color else ""
         rst = _RESET if not no_color else ""

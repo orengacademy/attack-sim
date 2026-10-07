@@ -895,7 +895,11 @@ class Evidence:
                  else r.get("baseline_result")) or "?"
             e = _bymod.setdefault(mid, {"vs": [], "suspect": False})
             e["vs"].append(v)
-            if "SUSPECT" in (r.get("verdict") or ""):
+            # A SUSPECT tag counts toward suspect_count only when the row isn't
+            # itself INCONCLUSIVE: a quarantine-stranded INCONCLUSIVE (v1.9.18) is
+            # counted as inconclusive, never double-counted as suspect too (mirrors
+            # the report.txt / report.html / CLI contamination banners).
+            if "SUSPECT" in (r.get("verdict") or "") and v != "INCONCLUSIVE":
                 e["suspect"] = True
         _dist, _suspect = {}, 0
         for e in _bymod.values():
@@ -999,10 +1003,15 @@ class Evidence:
         # INCONCLUSIVE (never tested; source in IPS quarantine) are NOT per-attack
         # control results, so surface them up top; they must not be read as real
         # BLOCKEDs. Lists the exact modules to re-run clean.
-        _susp_mods = sorted({r.get("attack", r.get("attack_id", "?")) for r in self.records
-                             if "SUSPECT" in (r.get("verdict") or "")})
         _inc_mods = sorted({r.get("attack", r.get("attack_id", "?")) for r in self.records
                             if r.get("baseline_result") == "INCONCLUSIVE"})
+        # A row that's INCONCLUSIVE AND carries a SUSPECT tag (a quarantine-stranded
+        # icmp_flood, since v1.9.18) belongs under the INCONCLUSIVE line only — not
+        # also under "SUSPECT (BLOCKED may be the ban)", which would double-list it
+        # and mislabel an untested row as a BLOCKED.
+        _susp_mods = sorted({r.get("attack", r.get("attack_id", "?")) for r in self.records
+                             if "SUSPECT" in (r.get("verdict") or "")
+                             and r.get("baseline_result") != "INCONCLUSIVE"})
         if _susp_mods or _inc_mods:
             lines += ["  " + "!" * 60,
                       "  ** CONTAMINATED RESULTS — these are NOT control wins; re-run clean",
@@ -1311,10 +1320,13 @@ class Evidence:
                 f'<span class=cnt>{dist[v]}/{n}</span></div>')
         findings = dist.get("SUCCESS", 0)
         # Contamination banner (SUSPECT / INCONCLUSIVE) — see report.txt rationale.
-        susp_mods = sorted({r.get("attack", "?") for r in recs
-                            if "SUSPECT" in (r.get("verdict") or "")})
         inc_mods = sorted({r.get("attack", "?") for r in recs
                            if r.get("baseline_result") == "INCONCLUSIVE"})
+        # INCONCLUSIVE+SUSPECT rows (quarantine-stranded icmp_flood) list under
+        # INCONCLUSIVE only — not twice (mirrors the report.txt banner).
+        susp_mods = sorted({r.get("attack", "?") for r in recs
+                            if "SUSPECT" in (r.get("verdict") or "")
+                            and r.get("baseline_result") != "INCONCLUSIVE"})
         banner = ""
         if susp_mods or inc_mods:
             parts = []
