@@ -3161,6 +3161,22 @@ class Runner:
                 reason = m.group(0).replace("[INCONCLUSIVE]", "").strip()
                 b = "INCONCLUSIVE"
                 verdict = "INCONCLUSIVE — " + (reason or "the test was indeterminate; review raw log")
+                # Recon disambiguation for a LIVENESS/reachability indeterminate (e.g.
+                # icmp_flood's "couldn't confirm the host is up"): if the TARGET was
+                # confirmed reachable at START-of-run recon (a canary port/ICMP
+                # answered), the host did NOT go down mid-run — so this is the tester
+                # SOURCE being quarantined by the boundary, NOT a down/unroutable host.
+                # Stating it removes the down-vs-filtered-vs-quarantined hedge; the
+                # contamination guard just below then flags it contaminated so
+                # --auto-retry re-tests it. No note for a by-design indeterminate
+                # (udp443_quic's handshake-less UDP, petitpotam's unobservable callback).
+                if self._canary and re.search(r"liveness|reachab|quarantin|host is up|ICMP",
+                                              reason, re.I):
+                    verdict += (" · DISAMBIGUATION: recon saw this host reachable at start "
+                                f"({self._canary[1] or 'icmp'}/{self._canary[0]}) — the host is UP, "
+                                "so this is the tester source being quarantined mid-run, not a "
+                                "down/unroutable host; wait out the ban / whitelist the source and "
+                                "it will earn a real verdict")
             # CLOSED / refused -> the service isn't there; this is NOT a control win.
             # ...but only when the attack ports aren't actually OPEN. An exploit
             # whose ports are reachable can still print an incidental "Connection
