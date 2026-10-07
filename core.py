@@ -3200,13 +3200,28 @@ class Runner:
                 # contamination guard just below then flags it contaminated so
                 # --auto-retry re-tests it. No note for a by-design indeterminate
                 # (udp443_quic's handshake-less UDP, petitpotam's unobservable callback).
-                if self._canary and re.search(r"liveness|reachab|quarantin|host is up|ICMP",
-                                              reason, re.I):
+                _live = re.search(r"liveness|reachab|quarantin|host is up|ICMP", reason, re.I)
+                if self._canary and _live:
                     verdict += (" · DISAMBIGUATION: recon saw this host reachable at start "
                                 f"({self._canary[1] or 'icmp'}/{self._canary[0]}) — the host is UP, "
                                 "so this is the tester source being quarantined mid-run, not a "
                                 "down/unroutable host; wait out the ban / whitelist the source and "
                                 "it will earn a real verdict")
+                elif getattr(self, "_unreachable_at_recon", False) and _live:
+                    # The WHOLE target was unreachable from this source at recon (no port,
+                    # no ICMP) — so the attack was never delivered. Far more likely this
+                    # source is BLOCKED at the boundary (a prior/concurrent source ban —
+                    # proven in the field: a source hammered all day is blanket-dropped to
+                    # the target on every port while reaching everything else) than the
+                    # target being down. Say so, and point at the fix, instead of the
+                    # generic down-vs-filtered-vs-quarantined hedge.
+                    verdict += (" · DISAMBIGUATION: the WHOLE target was unreachable from this "
+                                "source at recon (no port, no ICMP) — the attack was never "
+                                "delivered. This source is most likely BLOCKED at the boundary (a "
+                                "prior/concurrent source ban), or the target is down; it is "
+                                "indeterminate FROM HERE — verify from a known-good / whitelisted "
+                                "source (e.g. a source that CAN reach the target), or whitelist "
+                                "this one on the appliance")
             # CLOSED / refused -> the service isn't there; this is NOT a control win.
             # ...but only when the attack ports aren't actually OPEN. An exploit
             # whose ports are reachable can still print an incidental "Connection
