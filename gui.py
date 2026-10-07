@@ -1172,15 +1172,38 @@ class HarnessGUI:
         self._status_seq = getattr(self, "_status_seq", 0) + 1
         import time as _t
         ts = _t.strftime("%Y-%m-%d %H:%M:%S")   # when this result landed (date + completion time)
+        disp = f"{STATUS_ICONS.get(result, '•')} {result}"
         iid = self.status_tree.insert(
             "", "end",
             values=(self._status_seq, ts, target, posture, net, ports, direction,
-                    category, name, it, f"{STATUS_ICONS.get(result, '•')} {result}", mitre, cwe),
+                    category, name, it, disp, mitre, cwe),
             tags=(result,))
         self._status_row_keys[iid] = (aid, it)
+        # auto-grow columns to fit the longest value (full module names / category,
+        # like the CLI's auto-sized table), capped so one value can't run away.
+        self._fit_columns(("attack", name), ("cat", category), ("result", disp))
         kids = self.status_tree.get_children()
         if kids:
             self.status_tree.see(kids[-1])
+
+    def _fit_columns(self, *pairs):
+        """Widen a status-tree column so its longest value shows in FULL (never
+        clipped). Measures with the tree font; capped per column."""
+        import tkinter.font as _tkfont
+        f = getattr(self, "_treefont", None)
+        if f is None:
+            try:
+                f = self._treefont = _tkfont.nametofont("TkDefaultFont")
+            except Exception:
+                return
+        caps = {"attack": 440, "cat": 220, "result": 150}
+        for col, text in pairs:
+            try:
+                want = min(caps.get(col, 300), f.measure(str(text)) + 26)
+                if want > int(self.status_tree.column(col, "width")):
+                    self.status_tree.column(col, width=want)
+            except Exception:
+                pass
 
     def _sort_tree(self, col):
         """Sort the status table by a clicked column heading (toggles asc/desc).
