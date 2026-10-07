@@ -107,6 +107,21 @@ class TestLadderPrecedence(unittest.TestCase):
         self.assertEqual(b, "INCONCLUSIVE")
         self.assertNotIn("SUSPECT", v)
 
+    # Recon disambiguation: a LIVENESS indeterminate (icmp "couldn't confirm host up")
+    # with the host reachable at recon (canary set) is stated as a source quarantine,
+    # not a down host. A by-design indeterminate (handshake-less UDP) gets no such note.
+    def test_inconclusive_liveness_disambiguated_when_host_was_up(self):
+        b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
+                        recon="filtered", banned=True)
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertIn("DISAMBIGUATION", v)
+        self.assertIn("quarantined", v)
+
+    def test_inconclusive_bydesign_not_disambiguated(self):
+        b, v = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered", banned=True)
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertNotIn("DISAMBIGUATION", v)
+
     # rung 6: refused/closed => NO-SERVICE (service absent, NOT a control block).
     def test_refused_closed_is_no_service(self):
         b, _ = _verdict("Connection refused", recon="closed")
