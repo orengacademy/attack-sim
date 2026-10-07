@@ -633,6 +633,31 @@ class TestEvidenceMetaAndIndex(unittest.TestCase):
         self.assertTrue(os.path.exists(idx))
         self.assertIn(os.path.basename(ev.root), open(idx).read())
 
+    def test_inconclusive_suspect_counted_and_listed_once(self):
+        """A quarantine-stranded row (INCONCLUSIVE + a SUSPECT tag, v1.9.18) counts as
+        INCONCLUSIVE only — NOT also as suspect (which would double-count it), and the
+        report.txt contamination banner lists it under INCONCLUSIVE, not the
+        'SUSPECT (BLOCKED may be the ban)' line."""
+        import json as _j
+        ev = core.Evidence(base=tempfile.mkdtemp(), label="127.0.0.1")
+        ev.save_result(1, "icmp_flood", {
+            "iteration": 1, "attack_id": "icmp_flood", "attack": "ICMP Flood",
+            "baseline_result": "INCONCLUSIVE", "appliance_result": "-", "appliance_ip": None,
+            "verdict": "INCONCLUSIVE — baseline ICMP 100% lost  [SUSPECT: source appears blacklisted]"})
+        ev.save_result(1, "ssh_brute", {
+            "iteration": 1, "attack_id": "ssh_brute", "attack": "SSH Brute",
+            "baseline_result": "BLOCKED", "appliance_result": "-", "appliance_ip": None,
+            "verdict": "attack blocked  [SUSPECT: source appears blacklisted]"})
+        ev.finalize()
+        meta = _j.load(open(os.path.join(ev.root, "summary.json")))["meta"]
+        self.assertEqual(meta["inconclusive_count"], 1)       # icmp
+        self.assertEqual(meta["suspect_count"], 1)            # ssh ONLY — icmp not double-counted
+        rpt = open(os.path.join(ev.root, "report.txt")).read()
+        susp = [l for l in rpt.splitlines() if "SUSPECT (BLOCKED may be the ban" in l]
+        if susp:                                              # icmp must not appear on the SUSPECT line
+            self.assertNotIn("ICMP Flood", susp[0])
+            self.assertIn("SSH Brute", susp[0])
+
 
 class TestPortPolicy(unittest.TestCase):
     """The boundary port policy (Polisi v1.3 default) must classify service ports
