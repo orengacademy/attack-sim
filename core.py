@@ -3214,44 +3214,40 @@ class Runner:
                 # contamination guard just below then flags it contaminated so
                 # --auto-retry re-tests it. No note for a by-design indeterminate
                 # (udp443_quic's handshake-less UDP, petitpotam's unobservable callback).
+                # VERDICT FROM THE TEST, DECISIVELY (operator rule, ORG2026-70): a
+                # liveness indeterminate (icmp_flood: ICMP sent, 100% silent loss) is
+                # resolved the SAME way the tool already resolves a filtered TCP port —
+                # a silent drop in transit is a BLOCK. The old mute INCONCLUSIVE hedged
+                # on an UNOBSERVED "maybe the host is down"; that injects a hypothesis
+                # the test never saw, so it's dropped. The only thing that makes a drop
+                # NOT a per-attack control is a source blacklist (then the loss is the
+                # ban) — which the engine DETECTS via the canary, so that's the one case
+                # that stays INCONCLUSIVE. The posture label (whitebox/blackbox) plays no
+                # part — black and white produce the same verdict.
                 _live = re.search(r"liveness|reachab|quarantin|host is up|ICMP", reason, re.I)
-                if (_live and getattr(self, "_host_reachable_at_recon", False)
-                        and not self._blacklisted):
-                    # Host confirmed UP at recon on SOME protocol (SSH/HTTP/SNMP/ICMP/
-                    # udp…) and the source is NOT banned => the 100% ICMP loss is the
-                    # boundary FILTERING/denying ICMP end-to-end, not a down host. A real
-                    # control — e.g. a blackbox deny-ACL that permits nothing but fronts a
-                    # live target (ICMP blocked while SSH answers), or a host reachable
-                    # only on udp/161 that the TCP-only liveness probe can't see. Score
-                    # BLOCKED, not INCONCLUSIVE. Still verdict-from-the-TEST: recon
-                    # OBSERVED the host up and the attack's ICMP was OBSERVED dropped —
-                    # the posture label plays no part.
+                if _live and self._blacklisted:
+                    # Source is in IPS quarantine: the 100% loss is the BAN, not the ICMP
+                    # control — can't be tested. Stays INCONCLUSIVE (contaminated; the
+                    # auto-retry re-tests once the ban clears / whitelist the source).
+                    verdict += (" · source is in IPS quarantine (blacklisted) — the loss is the "
+                                "ban, not the ICMP control; stays indeterminate, re-test after it "
+                                "clears / whitelist the tester source")
+                elif _live:
+                    # Not banned: the ICMP was delivered and DROPPED IN TRANSIT (silent
+                    # 100% loss) — the boundary BLOCKED it. Decisive, from the test.
                     b = "BLOCKED"
-                    verdict = ("ICMP 100% lost but the host was confirmed UP at recon (reachable "
-                               "on another protocol) and the source is not banned — the boundary "
-                               "FILTERS/denies ICMP end-to-end (control held); a real block, not a "
-                               "down/unreachable host")
-                elif self._canary and _live:
-                    verdict += (" · DISAMBIGUATION: recon saw this host reachable at start "
-                                f"({self._canary[1] or 'icmp'}/{self._canary[0]}) — the host is UP, "
-                                "so this is the tester source being quarantined mid-run, not a "
-                                "down/unroutable host; wait out the ban / whitelist the source and "
-                                "it will earn a real verdict")
-                elif getattr(self, "_unreachable_at_recon", False) and _live:
-                    # The WHOLE target was unreachable from this source at recon (no port,
-                    # no ICMP) — so the attack was never delivered. Far more likely this
-                    # source is BLOCKED at the boundary (a prior/concurrent source ban —
-                    # proven in the field: a source hammered all day is blanket-dropped to
-                    # the target on every port while reaching everything else) than the
-                    # target being down. Say so, and point at the fix, instead of the
-                    # generic down-vs-filtered-vs-quarantined hedge.
-                    verdict += (" · DISAMBIGUATION: the WHOLE target was unreachable from this "
-                                "source at recon (no port, no ICMP) — the attack was never "
-                                "delivered. This source is most likely BLOCKED at the boundary (a "
-                                "prior/concurrent source ban), or the target is down; it is "
-                                "indeterminate FROM HERE — verify from a known-good / whitelisted "
-                                "source (e.g. a source that CAN reach the target), or whitelist "
-                                "this one on the appliance")
+                    if getattr(self, "_host_reachable_at_recon", False):
+                        verdict = ("ICMP 100% lost but the host was confirmed UP at recon (reachable "
+                                   "on another protocol — e.g. SSH/SNMP answered) and the source is "
+                                   "not banned — the boundary FILTERS/denies ICMP end-to-end "
+                                   "(control held); a real block, not a down host")
+                    else:
+                        verdict = ("ICMP 100% lost (delivered, dropped in transit) and the source is "
+                                   "not banned — the boundary BLOCKED it, same convention as a "
+                                   "filtered port. NOTE: nothing answered on any protocol from this "
+                                   "source, so host-liveness is unconfirmed from here — if the target "
+                                   "is actually DOWN this would be a false block; verify it is up "
+                                   "from a known-good source")
             # CLOSED / refused -> the service isn't there; this is NOT a control win.
             # ...but only when the attack ports aren't actually OPEN. An exploit
             # whose ports are reachable can still print an incidental "Connection

@@ -117,46 +117,43 @@ class TestLadderPrecedence(unittest.TestCase):
     # Recon disambiguation: a LIVENESS indeterminate (icmp "couldn't confirm host up")
     # with the host reachable at recon (canary set) is stated as a source quarantine,
     # not a down host. A by-design indeterminate (handshake-less UDP) gets no such note.
-    def test_inconclusive_liveness_disambiguated_when_host_was_up(self):
-        b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
-                        recon="filtered", banned=True)
-        self.assertEqual(b, "INCONCLUSIVE")
-        self.assertIn("DISAMBIGUATION", v)
-        self.assertIn("quarantined", v)
-
-    def test_inconclusive_bydesign_not_disambiguated(self):
+    # DECISIVE liveness resolution (verdict from the test, not the posture/mode):
+    # a silent 100% ICMP loss is resolved like a filtered port — dropped in transit =
+    # BLOCKED — UNLESS the source is in a DETECTED ban (then the loss is the ban =>
+    # stays INCONCLUSIVE). The by-design non-liveness indeterminates are untouched.
+    def test_inconclusive_bydesign_untouched(self):
+        # a handshake-less UDP indeterminate is NOT a liveness case => stays INCONCLUSIVE.
         b, v = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered", banned=True)
         self.assertEqual(b, "INCONCLUSIVE")
-        self.assertNotIn("DISAMBIGUATION", v)
 
-    def test_inconclusive_upgrades_to_blocked_when_host_up_on_another_proto(self):
-        # the operator's case: ICMP 100% lost, TCP-liveness couldn't confirm, BUT recon
-        # saw the host up on SOME protocol (e.g. SSH/SNMP) and the source isn't banned
-        # => the boundary FILTERS ICMP (control held) => BLOCKED, not INCONCLUSIVE.
+    def test_inconclusive_liveness_blocked_when_host_up_on_another_proto(self):
+        # ICMP 100% lost, TCP-liveness couldn't confirm, BUT recon saw the host up on
+        # SOME protocol (SSH/SNMP) and the source isn't banned => boundary FILTERS ICMP
+        # => BLOCKED (control held), not INCONCLUSIVE.
         b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
                         recon="filtered", reachable_at_recon=True, banned=False)
         self.assertEqual(b, "BLOCKED")
         self.assertIn("FILTERS/denies ICMP", v)
 
-    def test_inconclusive_stays_when_host_up_but_source_banned(self):
-        # host was up at recon but the source is now banned => can't tell if the ICMP
-        # loss is the policy or the ban => stays INCONCLUSIVE (quarantine note).
-        b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
-                        recon="filtered", reachable_at_recon=True, banned=True)
-        self.assertEqual(b, "INCONCLUSIVE")
-        self.assertIn("quarantined", v)
-
-    def test_inconclusive_wholly_unreachable_points_to_source_block(self):
-        # whole target unreachable at recon (no canary) + a liveness indeterminate =>
-        # the attack was never delivered; point at a source-side block / clean source,
-        # not the generic hedge. (Matches the field case: a source banned at the
-        # target's boundary while still reaching everything else.)
+    def test_inconclusive_liveness_blocked_with_caveat_when_wholly_unreachable(self):
+        # the 167-blackbox case: ICMP sent, 100% silent loss, nothing answered on any
+        # protocol, source NOT banned => dropped in transit = BLOCKED (boundary blocked
+        # it), with a host-liveness-unconfirmed caveat. NOT a mute INCONCLUSIVE.
         b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
                         recon="filtered", unreachable=True, banned=False)
-        self.assertEqual(b, "INCONCLUSIVE")
-        self.assertIn("DISAMBIGUATION", v)
-        self.assertIn("BLOCKED at the boundary", v)
-        self.assertIn("known-good", v)
+        self.assertEqual(b, "BLOCKED")
+        self.assertIn("dropped in transit", v)
+        self.assertIn("host-liveness is unconfirmed", v)
+        self.assertIn("known-good source", v)
+
+    def test_inconclusive_liveness_stays_when_source_banned(self):
+        # a DETECTED source ban is the one case that stays INCONCLUSIVE: the 100% loss
+        # is the ban, not the ICMP control. (Works regardless of recon reachability.)
+        for kw in (dict(reachable_at_recon=True), dict(unreachable=True)):
+            b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
+                            recon="filtered", banned=True, **kw)
+            self.assertEqual(b, "INCONCLUSIVE")
+            self.assertIn("quarantine", v)
 
     # rung 6: refused/closed => NO-SERVICE (service absent, NOT a control block).
     def test_refused_closed_is_no_service(self):
