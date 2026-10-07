@@ -353,5 +353,27 @@ class TestDcsyncVssFallback(unittest.TestCase):
         self.assertFalse(re.search(self.d.META["success_regex"], note))
 
 
+class TestFloodRunsLast(unittest.TestCase):
+    """icmp_flood is the DEAD-LAST attack executed (operator request, ORG2026-70):
+    its flood trips this SD-WAN's PERSISTENT anti-DoS source-ban, so running it after
+    everything else (incl. ssh_brute) means that ban contaminates nothing — ssh and
+    all others get a clean, un-banned test first."""
+
+    def test_icmp_flood_sorts_after_ssh_brute(self):
+        icmp = importlib.import_module("modules.icmp_flood").META
+        ssh = importlib.import_module("modules.ssh_brute").META
+        self.assertTrue(icmp.get("run_last"))
+        self.assertGreater(icmp.get("order", 0), ssh.get("order", 0))
+
+    def test_icmp_flood_is_the_last_deferred_module(self):
+        import loader
+        mods = loader.discover()
+        def defer(m): return bool(m.META.get("run_last") or m.META.get("trips_ips"))
+        serial = [m for m in mods if defer(m) or m.META.get("serial")]
+        serial.sort(key=lambda mm: (defer(mm), mm.META.get("order", 0)))
+        tail = [m for m in serial if defer(m)]
+        self.assertEqual(tail[-1].META["id"], "icmp_flood")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

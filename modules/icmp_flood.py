@@ -102,12 +102,18 @@ META = {
     "id": "icmp_flood",
     "name": "ICMP Flood (DoS)",
     "category": "Network Exploitation",
-    # Near the end (order 99), just BEFORE ssh_brute (order 100). Both DoS/brute
-    # floods run at the very end so the anti-DoS rate-limit / blacklist they trip
-    # can't contaminate other modules; ssh_brute is DEAD last because its brute
-    # blacklist outlives icmp's DoS lockout (which clears inside the wait window,
-    # so icmp running just before ssh_brute doesn't strand it).
-    "order": 99,
+    # DEAD last (order 101), AFTER ssh_brute (order 100). A full ICMP flood trips
+    # this SD-WAN's anti-DoS protection and — as seen live against the Sangfor
+    # (the blacklist WARN fires the instant icmp finishes) — that source ban is
+    # PERSISTENT, outlasting the smart-halt wait window. So anything that runs
+    # AFTER icmp gets stranded as a false BLOCKED/SUSPECT (that's exactly how
+    # ssh_brute was poisoned when icmp ran before it). Running icmp dead-last means
+    # ssh_brute and every other module get a clean, un-banned test first; icmp's
+    # OWN verdict is still measured DURING the flood (the rate-limit/shaping is
+    # observed in-flight, before the ban fully latches), so icmp itself still earns
+    # a real BLOCKED-RATELIMIT / PASS. (Operator request, ORG2026-70: icmp_flood is
+    # the final attack executed.)
+    "order": 101,
     "test_type": "dos",
     "control": "ICMP rate-limit / flood (DoS) protection",
     "fix": "SD-WAN",
