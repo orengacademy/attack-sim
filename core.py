@@ -2898,17 +2898,23 @@ class Runner:
         INCONCLUSIVE, without isolating modules or whitelisting.
 
         It returns the INSTANT the canary recovers (so a 300s auto-expiring ban is
-        waited out in ~300s, not a fixed block); the window is only the CAP. The cap
-        is --wait-unblock/HARNESS_WAIT_UNBLOCK when set, else sized to OUTLAST the
-        appliance lockout with margin: max(90s, cooldown, ban_expiry + 60s) — e.g.
-        the Sangfor 300s "Lockout Duration" default -> a 360s cap. A detected ban
-        never gets the near-useless 30s of old. If the cap is reached still banned,
-        return False (the caller marks the rest INCONCLUSIVE, then auto-retry gives
-        them another full-window shot once the ban finally clears)."""
+        waited out in ~300s, not a fixed block); the window is only the CAP — the
+        ceiling that bounds a stuck/permanent ban. BECAUSE it returns on recovery, a
+        bigger cap is FREE for a short ban (still returns at ~300s) and is what
+        rescues a LONGER lockout. The cap is --wait-unblock/HARNESS_WAIT_UNBLOCK when
+        set, else sized to OUTLAST the appliance lockout with margin:
+        max(90s, cooldown, 2*ban_expiry + 60s) — e.g. the Sangfor 300s "Lockout
+        Duration" default -> a 660s cap, which rides out a real-world ~600s lockout in
+        ONE halt (observed: SSH ban took ~600s to clear) instead of timing out at the
+        old ban_expiry+60 = 360s and dead-ending the trailing module (icmp_flood) at
+        INCONCLUSIVE. Tune --ban-expiry to the appliance's real Lockout Duration for a
+        tighter fit. A detected ban never gets the near-useless 30s of old. If the cap
+        is reached still banned, return False (the caller marks the rest INCONCLUSIVE,
+        then auto-retry gives them another full-window shot once the ban clears)."""
         if not (self._blacklisted and self._canary):
             return True
         wait = self.wait_unblock if (getattr(self, "wait_unblock", 0) or 0) > 0 \
-            else max(90.0, self.cooldown or 0.0, (getattr(self, "ban_expiry", 0) or 0) + 60.0)
+            else max(90.0, self.cooldown or 0.0, 2.0 * (getattr(self, "ban_expiry", 0) or 0) + 60.0)
         log(f"  [blacklist] source appears quarantined — SMART HALT: pausing up to {wait:.0f}s "
             f"(no attack traffic) for the canary {self._canary[1] or 'icmp'}/{self._canary[0]} "
             "to recover, then resuming (whitelist the tester source to avoid this).")
