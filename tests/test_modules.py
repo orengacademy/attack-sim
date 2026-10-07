@@ -375,5 +375,27 @@ class TestFloodRunsLast(unittest.TestCase):
         self.assertEqual(tail[-1].META["id"], "icmp_flood")
 
 
+class TestSshBruteBlockedMidTest(unittest.TestCase):
+    """ssh_brute: a burst that CONNECTS (tripping the signature) and then a blocked
+    credential test must read BLOCKED, not NO-RESULT. Hydra's 'could not connect -
+    Timeout connecting' matches neither success_regex nor blocked_regex by itself
+    (that was the bug), so the module must emit a BRUTE-BLOCKED marker that does."""
+
+    def setUp(self):
+        self.m = importlib.import_module("modules.ssh_brute")
+
+    def test_brute_blocked_marker_scores_blocked(self):
+        line = ("\nBRUTE-BLOCKED: the burst CONNECTED (39 session(s), SSH reachable) and "
+                "TRIPPED the brute-force signature - the credential test ... Protection works.")
+        self.assertTrue(re.search(self.m.META["blocked_regex"], line, re.I | re.M))
+
+    def test_raw_hydra_timeout_alone_matches_nothing(self):
+        # the bug: this hydra line alone scored NO-RESULT; the module must classify it.
+        raw = ("[ERROR] could not connect to ssh://10.35.131.79:22 - Timeout connecting "
+               "to 10.35.131.79")
+        self.assertFalse(re.search(self.m.META["success_regex"], raw, re.I | re.M))
+        self.assertFalse(re.search(self.m.META["blocked_regex"], raw, re.I | re.M))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

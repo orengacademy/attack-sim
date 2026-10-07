@@ -266,13 +266,31 @@ def run(target, ctx):
                        f"the burst + {attempts} rapid attempts — the boundary "
                        "rate-limited/blocked/blacklisted the brute-force burst (protection "
                        "works; the signature should have fired).")
-        elif tally["ok"] == 0 and (tally["refused"] or tally["timeout"]):
-            # neither the burst NOR hydra could reach SSH -> treat as blocked by the
-            # boundary (source blacklisted / filtered), not a silent NO-RESULT.
-            out.append("\nBRUTE-BLOCKED: neither the connection burst nor the credential "
-                       "test could reach SSH — the boundary appears to be dropping the "
-                       "tester source (blacklist/rate-limit). Protection works.")
-        # otherwise: hydra errored mid-run (refused/timeout) -> blocked_regex/NO-RESULT
+        elif re.search(r"could not connect|Timeout connecting|timed out|Connection refused|"
+                       r"Network is unreachable|No route to host", raw, re.I):
+            # Hydra could NOT reach SSH for the credential test. Two shapes, both the
+            # control working — and BOTH must read BLOCKED, never a silent NO-RESULT
+            # (hydra's "could not connect - Timeout connecting" matches neither the old
+            # blocked_regex nor the engine's "timed out" regex, so it used to fall through
+            # to NO-RESULT — the bug this fixes):
+            if tally["ok"] > 0:
+                # the burst CONNECTED (so SSH was reachable at the start) and then the
+                # credential phase was dropped => the burst TRIPPED the brute-force
+                # signature and the boundary blacklisted/rate-limited the source
+                # MID-TEST, before any password could be tried. That's the protection
+                # firing — exactly the intended finding.
+                out.append("\nBRUTE-BLOCKED: the burst CONNECTED (%d session(s), SSH reachable) "
+                           "and TRIPPED the brute-force signature — the credential test that "
+                           "followed could no longer reach SSH (connection blocked/timed out): "
+                           "the boundary blacklisted/rate-limited the source MID-TEST. Protection "
+                           "works." % tally["ok"])
+            else:
+                # neither the burst NOR hydra could reach SSH -> blocked by the boundary
+                # (source blacklisted / filtered) from the outset.
+                out.append("\nBRUTE-BLOCKED: neither the connection burst nor the credential "
+                           "test could reach SSH — the boundary appears to be dropping the "
+                           "tester source (blacklist/rate-limit). Protection works.")
+        # otherwise: hydra errored with no network signal -> blocked_regex/NO-RESULT
         return "\n".join(out)
     finally:
         try:
