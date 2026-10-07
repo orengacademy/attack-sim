@@ -125,6 +125,18 @@ class TestLadderPrecedence(unittest.TestCase):
         self.assertEqual(b, "INCONCLUSIVE")
         self.assertNotIn("DISAMBIGUATION", v)
 
+    def test_inconclusive_wholly_unreachable_points_to_source_block(self):
+        # whole target unreachable at recon (no canary) + a liveness indeterminate =>
+        # the attack was never delivered; point at a source-side block / clean source,
+        # not the generic hedge. (Matches the field case: a source banned at the
+        # target's boundary while still reaching everything else.)
+        b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
+                        recon="filtered", unreachable=True, banned=False)
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertIn("DISAMBIGUATION", v)
+        self.assertIn("BLOCKED at the boundary", v)
+        self.assertIn("known-good", v)
+
     # rung 6: refused/closed => NO-SERVICE (service absent, NOT a control block).
     def test_refused_closed_is_no_service(self):
         b, _ = _verdict("Connection refused", recon="closed")
