@@ -56,12 +56,17 @@ Keep the lab alive with `deploy/refresh-lab.sh --install-cron` (restarts dead
 services/containers/VM every 5 min). Engine is pure-stdlib and runs on any OS;
 tool-dependent modules are `os_supported`-gated / PREREQ-MISSING elsewhere.
 
-- **Rules-of-engagement confirmation is required** — the tool runs real attacks.
-  Satisfied by `--confirm-roe` (per run), a DURABLE explicit opt-in via
-  `--accept-roe` (writes git-ignored `.roe_accepted`) or `HARNESS_CONFIRM_ROE=1`,
-  or the GUI checkbox (pre-ticked when the durable opt-in is on file). Keep it an
-  explicit opt-in — never make real attacks run with NO confirmation at all
-  (a durable opt-in the operator chose is fine; a silent default-on is not).
+- **Rules-of-engagement gate — OFF BY DEFAULT (operator decision, ORG2026-70).**
+  This engagement's ROE/NDA/written authorization is handled EXTERNALLY
+  (contractually), so the in-tool gate was redundant friction and is now **off by
+  default**: every front-end (cli/gui/web/fleet) runs as if `--confirm-roe` were
+  always passed. `core.roe_accepted()` is the single shared check and returns True
+  unless re-armed. The `--confirm-roe`/`--accept-roe` flags remain accepted
+  (harmless no-ops) so existing scripts keep working. **Re-arm the gate with
+  `HARNESS_REQUIRE_ROE=1`** — then a run again needs a deliberate opt-in (per-run
+  `--confirm-roe`, `HARNESS_CONFIRM_ROE=1`, or the durable `.roe_accepted` file from
+  `--accept-roe`). Do NOT re-add a hard default-on gate without the operator asking;
+  the capability is kept (one env var) rather than deleted.
 - Tests are **pure-stdlib, cross-platform, localhost-only, and must stay offline.**
   They cover the classifier, preflight, reachability, credential/redaction,
   allowlist, the socket modules, and robustness (crashing/hanging/bad-regex
@@ -336,7 +341,9 @@ editing a live module, keep the indicator-only default and the tear-down.
 - **No secrets to disk or git** — password comes from env/file and is redacted.
 - **Preserve crash-proofing** — exception boundary + per-call timeouts; one bad
   module must never abort a run, and `finalize()` must always write summaries.
-- **Keep the ROE gate.** Keep recon advisory (a filtered port may *be* the control).
+- **ROE gate is off by default** (ORG2026-70 — external authorization; re-arm with
+  `HARNESS_REQUIRE_ROE=1`); keep it re-armable, don't delete the capability. Keep
+  recon advisory (a filtered port may *be* the control).
 - **Tag new modules fully** (`test_type`/`family`/`direction`/`mitre`/`cwe`) so
   they appear in scope filters and the coverage report automatically.
 - **Evidence folder is `run_YYYYMMDD-HHMMSS`** (`Evidence.ts`) — unique & sortable

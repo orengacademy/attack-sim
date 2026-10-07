@@ -269,12 +269,23 @@ _ROE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".roe_accep
 
 
 def roe_accepted():
-    """Rules-of-engagement confirmed WITHOUT the per-run flag — a durable, explicit
-    opt-in (the operator did it once). This is not a silent bypass: it still
-    requires a deliberate `--accept-roe` / HARNESS_CONFIRM_ROE=1, just once."""
-    if os.environ.get("HARNESS_CONFIRM_ROE", "").lower() in ("1", "true", "yes"):
-        return True
-    return os.path.exists(_ROE_FILE)
+    """Is the rules-of-engagement gate satisfied (no per-run --confirm-roe needed)?
+
+    Operator decision (ORG2026-70): this engagement's ROE/NDA/written authorization is
+    handled EXTERNALLY (contractually), so the in-tool gate is redundant friction and
+    is **OFF BY DEFAULT** — this returns True, i.e. every front-end runs as if
+    --confirm-roe were always passed. The `--confirm-roe`/`--accept-roe` flags remain
+    accepted (harmless no-ops) so existing scripts keep working.
+
+    It is NOT deleted — set `HARNESS_REQUIRE_ROE=1` to RE-ARM the gate, after which a
+    run again needs a deliberate opt-in (per-run --confirm-roe, HARNESS_CONFIRM_ROE=1,
+    or the durable .roe_accepted file from --accept-roe). So a site that still wants
+    the gate can get it back with one env var."""
+    if os.environ.get("HARNESS_REQUIRE_ROE", "").lower() in ("1", "true", "yes"):
+        if os.environ.get("HARNESS_CONFIRM_ROE", "").lower() in ("1", "true", "yes"):
+            return True
+        return os.path.exists(_ROE_FILE)
+    return True   # gate off by default — authorized engagement (re-arm: HARNESS_REQUIRE_ROE=1)
 
 
 def accept_roe():
