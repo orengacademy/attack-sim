@@ -123,7 +123,9 @@ def main():
     ap.add_argument("--active", action="store_true", help="allow active establishment")
     ap.add_argument("--list-targets", action="store_true", help="print the fleet and exit")
     ap.add_argument("--dry-run", action="store_true", help="print the job matrix and exit")
-    ap.add_argument("--confirm-roe", action="store_true", help="required to run (RoE)")
+    ap.add_argument("--confirm-roe", action="store_true",
+                    help="required to run (RoE) — unless a DURABLE opt-in is on file "
+                         "(.roe_accepted via `cli.py --accept-roe`, or HARNESS_CONFIRM_ROE=1)")
     ap.add_argument("--evidence-dir", default="evidence")
     ap.add_argument("--no-color", action="store_true")
     args = ap.parse_args()
@@ -167,9 +169,17 @@ def main():
                   f"{len(sel)} module(s)")
         return 0
 
-    if not args.confirm_roe:
-        print("[!] refusing to run without --confirm-roe (rules-of-engagement / written "
-              "authorisation). This runs real attacks against every target.", file=sys.stderr)
+    # Honor the SAME durable opt-in as cli/gui/web (core.roe_accepted(): the
+    # git-ignored .roe_accepted file or HARNESS_CONFIRM_ROE=1) so the ROE gate is
+    # consistent across every front-end — fleet used to demand --confirm-roe even
+    # with the opt-in on file. Still an explicit, operator-chosen opt-in (never a
+    # silent default-on): with neither, it refuses.
+    if not (args.confirm_roe or core.roe_accepted()):
+        print("[!] refusing to run without rules-of-engagement confirmation (this runs real "
+              "attacks against every target). Satisfy it once with:\n"
+              "    python3 cli.py --accept-roe       # durable opt-in (writes .roe_accepted)\n"
+              "  or set HARNESS_CONFIRM_ROE=1 in your env, or pass --confirm-roe per run.",
+              file=sys.stderr)
         return 2
 
     ts = datetime.now().strftime("%d-%m-%H-%M")

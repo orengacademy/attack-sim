@@ -1135,5 +1135,35 @@ class TestResolvePosture(unittest.TestCase):
         self.assertEqual(core.resolve_posture("9.9.9.9", "nonsense"), "blackbox")
 
 
+class TestRoeGate(unittest.TestCase):
+    """ROE gate policy (ORG2026-70): the engagement's ROE/NDA is handled externally,
+    so the in-tool gate is OFF BY DEFAULT (core.roe_accepted() -> True; every front-end
+    runs as if --confirm-roe were passed). It is re-armable with HARNESS_REQUIRE_ROE=1,
+    after which it again needs a deliberate opt-in (HARNESS_CONFIRM_ROE=1 or the
+    .roe_accepted file). This single check is shared by cli/gui/web/fleet."""
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ("HARNESS_REQUIRE_ROE", "HARNESS_CONFIRM_ROE")}
+        for k in self._saved:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_off_by_default(self):
+        self.assertTrue(core.roe_accepted())      # no env set -> gate off -> True
+
+    def test_rearmed_needs_optin(self):
+        os.environ["HARNESS_REQUIRE_ROE"] = "1"
+        if not os.path.exists(core._ROE_FILE):    # re-armed + no opt-in + no file -> refuse
+            self.assertFalse(core.roe_accepted())
+        os.environ["HARNESS_CONFIRM_ROE"] = "1"    # deliberate opt-in -> allowed again
+        self.assertTrue(core.roe_accepted())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
