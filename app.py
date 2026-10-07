@@ -194,6 +194,84 @@ def _status_event(aid, name, it, b, v, target, posture=""):
             "ports": _ports_str(meta, target) or "—"}
 
 
+def _fmt_recon_web(s):
+    """'None/icmp:up, 21/tcp:open, …' -> 'icmp · tcp 21 22 … · udp 161' (reachable only)."""
+    import re
+    tcp, udp, icmp = [], [], False
+    for tok in s.split(","):
+        m = re.match(r"\s*(\S+?)/(\w+):(\w+)", tok)
+        if not m:
+            continue
+        port, proto, state = m.groups()
+        if proto == "icmp" and state in ("up", "open"):
+            icmp = True
+        elif state == "open" and proto == "tcp":
+            tcp.append(port)
+        elif state == "open" and proto == "udp":
+            udp.append(port)
+    bits = []
+    if icmp:
+        bits.append("icmp")
+    if tcp:
+        bits.append("tcp " + " ".join(tcp))
+    if udp:
+        bits.append("udp " + " ".join(udp))
+    return " · ".join(bits) or s
+
+
+def _parse_setup(lines):
+    """Parse the engine's one-time setup log (platform/preflight/recon/policy) into
+    a structured dict the dashboard renders as 'command-center' bento cards. Defensive:
+    missing fields come back '' / []. Mirrors the CLI's setup panel."""
+    import re
+    used = [False] * len(lines)
+
+    def first(pat):
+        for i, l in enumerate(lines):
+            m = re.search(pat, l)
+            if m:
+                used[i] = True
+                return m
+        return None
+
+    d = {}
+    m = first(r"^Platform:\s*(.+)")
+    if m:
+        parts = [p.strip() for p in m.group(1).split("|")]
+        d["platform"] = parts[0] if parts else ""
+        rt = []
+        for p in parts[1:]:
+            p = p.replace("privilege:", "").replace("pkg mgr:", "").replace("Python", "py").strip()
+            if p:
+                rt.append(p)
+        d["runtime"] = rt
+    for key, pat in (("preflight", r"^Preflight:\s*(.+?)\.?$"), ("active", r"^ACTIVE-ESTABLISHMENT:\s*(\w+)"),
+                     ("detections", r"^Blue-team detections loaded:\s*(\d+)"), ("evidence", r"^Evidence dir:\s*(.+)"),
+                     ("source", r"^Source IP \(egress bind\):\s*(.+)"), ("canary", r"^\s*canary[^:]*:\s*(.+)")):
+        m = first(pat)
+        d[key] = m.group(1) if m else ""
+    first(r"^Path:\s")
+    m = first(r"^Recon \(reachability of ([^)]+)\):\s*(.+)")
+    if m:
+        d["recon_target"] = m.group(1)
+        d["reachable"] = _fmt_recon_web(m.group(2))
+    d["recon_disabled"] = bool(first(r"^\[WARN\] recon"))
+    m = first(r"^\s*suggested[^:]*:\s*(.+)")
+    d["suggested"] = [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
+    m = first(r"^\s*not reachable[^:]*:\s*(.+)")
+    d["filtered"] = [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
+    m = first(r"^Port policy \[([^\]]+)\][^:]*:\s*(.+)")
+    if m:
+        d["policy_name"] = m.group(1)
+        body = m.group(2)
+        for k, pat in (("allowed", r"(\d+) on ALLOWED"), ("denied", r"(\d+) on DENIED"), ("na", r"(\d+) egress")):
+            mm = re.search(pat, body)
+            d["policy_" + k] = mm.group(1) if mm else ""
+    m = first(r"^\s*policy-denied[^:]*:\s*(.+)")
+    d["expect_block"] = [x.strip() for x in m.group(1).split(",") if x.strip()] if m else []
+    return d
+
+
 # ---------------------------------------------------------------------------
 # run orchestration (background thread -> per-run event queue -> SSE)
 # ---------------------------------------------------------------------------
@@ -351,9 +429,23 @@ def _run_worker(run_id, params, targets, module_ids):
                 t_smb, t_rpc = _tmap.get(445, t_smb), _tmap.get(135, t_rpc)
             emit({"type": "target", "index": ti, "total": len(targets), "target": target,
                   "posture": posture, "cloud": bool(t_cloud)})
+            _setupbuf = {"buf": [], "done": False}
+
+            def _onlog(m, _t=target, _sb=_setupbuf):
+                line = str(m)
+                emit({"type": "log", "line": line})   # full log still streams to the Live-log pane
+                if _sb["done"]:
+                    return
+                st = line.strip()
+                if st.startswith("=== Iteration"):
+                    _sb["done"] = True
+                    emit({"type": "setup", "target": _t, "data": _parse_setup(_sb["buf"])})
+                elif st and not st.startswith(("=", "Harness v", "MODE:", "SITE ID:")):
+                    _sb["buf"].append(st)
+
             runner = core.Runner(
                 target, appliance,
-                on_log=lambda m: emit({"type": "log", "line": str(m)}),
+                on_log=_onlog,
                 on_progress=lambda c, t: emit({"type": "progress", "done": c, "total": t}),
                 on_output=lambda aid, name, it, raw, _t=target: (
                     _stash_output(st, f"{_t}|{aid}|{it}", raw),
@@ -932,6 +1024,17 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 .statusbar.ok::before{background:var(--v-blk);box-shadow:0 0 8px var(--v-blk)}
 .statusbar.err{color:var(--v-got)} .statusbar.err::before{background:var(--v-got);box-shadow:0 0 8px var(--v-got)}
 
+/* command-center setup cards (bento) — the engine's platform/recon/policy setup */
+.cmdc{display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:var(--s2);padding:var(--s4) var(--s7) 0}
+.cmdc:empty{display:none}
+.cmdcard{background:var(--raise);border:1px solid var(--line);border-radius:10px;padding:var(--s4) var(--s5);animation:fade var(--dur) var(--ease)}
+.cmdh{font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--acc);margin-bottom:var(--s3)}
+.cmdb{display:flex;flex-direction:column;gap:3px}
+.cmdkv{display:flex;gap:var(--s3);font-family:var(--mono);font-size:11.5px;line-height:1.45}
+.cmdkv .k{color:var(--fg3);min-width:82px;flex:none}
+.cmdkv .v{color:var(--fg2);word-break:break-word}
+.cmdkv .v.ok{color:var(--acc)} .cmdkv .v.warn{color:var(--v-got)}
+
 /* =========================================================== panel (tabs) */
 .panel{padding:0 0 var(--s4)}
 .tabbar{display:flex;align-items:center;gap:0;padding:var(--s4) var(--s7) 0;border-bottom:1px solid var(--line)}
@@ -1213,6 +1316,7 @@ table.evtable .evlinks a.primary{color:var(--acc);border-color:rgba(95,227,232,.
   </div>
   <div class=progress><i id=prog></i></div>
   <div class=statusbar id=runmeta>Idle — pick a target and run the battery.</div>
+  <div class=cmdc id=cmdc></div>
 
   <div class=panel>
    <div class=tabbar role=tablist>
@@ -1592,7 +1696,7 @@ function startRun(){
    RUNNING=true;
    COUNTS={};RESN=0;ROWS=[];RUNID=j.run_id;EVRUNS=[];CURTGT=null;PROG={};RUNCFG={};
    $("#resbody").innerHTML="";$("#rowcount").textContent="";
-   $("#log").innerHTML="";$("#evidence").textContent="";$("#prog").style.width="0";
+   $("#log").innerHTML="";$("#evidence").textContent="";$("#prog").style.width="0";$("#cmdc").innerHTML="";
    refresh();renderRows();
    $("#runbtn").disabled=true;$("#runbtn").classList.add("running");
    $("#stopbtn").disabled=false;$("#stopbtn").dataset.id=j.run_id;
@@ -1600,16 +1704,39 @@ function startRun(){
   });
 }
 function setStatus(txt,cls){const el=$("#runmeta");el.textContent=txt;el.className="statusbar"+(cls?(" "+cls):"");}
+function renderSetup(e){
+ const d=e.data||{}, host=$("#cmdc"); if(!host) return;
+ const kv=(k,v,cls)=> v?`<div class=cmdkv><span class=k>${esc(k)}</span><span class="v${cls?(" "+cls):""}">${esc(v)}</span></div>`:"";
+ const card=(t,b)=> b?`<div class=cmdcard><div class=cmdh>${esc(t)}</div><div class=cmdb>${b}</div></div>`:"";
+ const sug=d.suggested||[], flt=d.filtered||[], blk=d.expect_block||[];
+ let out="";
+ out+=card("Environment",
+   kv("platform",d.platform)
+   +kv("runtime",((d.runtime||[]).join(" · "))+(d.preflight?(" · preflight "+d.preflight):""))
+   +kv("evidence",[d.evidence,(d.active?("active "+d.active):""),(d.detections?(d.detections+" detections"):"")].filter(Boolean).join(" · "))
+   +kv("source",d.source,"ok"));
+ out+=card("Recon"+(d.recon_target?(" · "+d.recon_target):""),
+   kv("reachable",d.reachable,"ok")
+   +(d.recon_disabled?kv("recon","DISABLED (--no-recon)","warn"):"")
+   +kv("suggested",sug.slice(0,6).join(" · ")+(sug.length>6?("   (+"+(sug.length-6)+" more)"):""))
+   +kv("canary",d.canary)
+   +(flt.length?kv("filtered",flt.length+" not reachable (run anyway)"):""));
+ const pc=[d.policy_allowed&&(d.policy_allowed+" allowed"),d.policy_denied&&(d.policy_denied+" denied"),d.policy_na&&(d.policy_na+" n/a")].filter(Boolean).join(" · ");
+ out+=card("Policy"+(d.policy_name?(" · "+d.policy_name):""),
+   kv("ports",pc)+(blk.length?kv("expect-block",blk.join(" · "),"warn"):""));
+ host.innerHTML=out;
+}
 function stream(id){
  if(ES)ES.close(); ES=new EventSource("api/run/"+id+"/stream");
  ES.onmessage=ev=>{const e=JSON.parse(ev.data);
   if(e.type==="log")logLine(e.line);
+  else if(e.type==="setup")renderSetup(e);
   else if(e.type==="status")addRow(e);
   else if(e.type==="progress"){PROG={done:e.done,total:e.total};$("#prog").style.width=(e.total?100*e.done/e.total:0)+"%";renderRunStatus();}
   else if(e.type==="started"){RUNCFG={count:e.count,iters:e.iterations,workers:e.workers,site:e.site_id,active:e.active,
     mode:(e.mode==="auto")?"auto":e.mode,total:(e.targets||[]).length};CURTGT=null;PROG={};renderRunStatus();}
   else if(e.type==="target"){CURTGT={index:e.index,total:e.total,target:e.target,posture:e.posture||"",cloud:!!e.cloud};
-    PROG={};$("#prog").style.width="0";renderRunStatus();
+    PROG={};$("#prog").style.width="0";$("#cmdc").innerHTML="";renderRunStatus();
     logLine(`\n==== target ${e.index}/${e.total}: ${e.target}`+(e.posture?` · ${e.posture}`:"")+(e.cloud?" · cloud":"")+` ====`);}
   else if(e.type==="target_done")showEvidence(e.root,e.target);
   else if(e.type==="done")finish();
