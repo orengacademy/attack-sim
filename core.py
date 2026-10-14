@@ -2853,10 +2853,11 @@ class Runner:
             # agency WAF on 443, the egress gateway — never strands another device's
             # modules or taints their verdicts.
             serial.sort(key=lambda mm: (_is_deferred(mm.META), mm.META.get("order", 0)))
-            if any(_is_deferred(m.META) for m in serial):
-                lastnames = ", ".join(m.META["name"] for m in serial if _is_deferred(m.META))
-                log(f"  (deferring to run LAST so a triggered blacklist / IPS-signature ban "
-                    f"doesn't contaminate other results: {lastnames})")
+            _deferred = [m.META["name"] for m in serial if _is_deferred(m.META)]
+            if _deferred:
+                # compact one-liner (the old wrapping sentence explained the WHY — that's
+                # in the docs/CLAUDE.md now; "ban-safe" conveys it here).
+                log(f"  deferred last (ban-safe): {len(_deferred)} — {', '.join(_deferred)}")
 
             if parallel:
                 log(f"  running {len(parallel)} module(s) with {conc} workers")

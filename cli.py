@@ -835,7 +835,7 @@ def main():
         ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 22
         if source:
             runner.ctx.source_ip = source
-            if args.source is None:
+            if args.source is None and args.debug:   # now in the banner CREDS row
                 print(f"[recall] source {source} (remembered for {target})")
         # Register (or clear) the NAT map target-authoritatively (canonical cloud is
         # never cleared; non-cloud never gets 4445/1135 unless forced).
@@ -846,7 +846,8 @@ def main():
         if eff_map:
             tag = " (canonical cloud)" if core.is_cloud_target(target) else (
                 "" if args.cloud is not None else " (recalled)")
-            print(f"[cloud{tag}] {target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{eff_map.get(22, 22)}")
+            if args.debug:   # transport now shown in the banner TARGET row
+                print(f"[cloud{tag}] {target}: SMB 445->{smb}, RPC 135->{rpc}, SSH 22->{eff_map.get(22, 22)}")
 
         # Apply an explicit --ssh-port even WITHOUT --cloud: a direct Linux target
         # may run SSH on a non-standard port. Feed it to ssh_brute via
@@ -873,7 +874,8 @@ def main():
             runner.ctx.creds["dc_user"] = usr
         if pw is not None:
             runner.ctx.creds["dc_pass"] = pw
-        if (dom or usr or pw is not None) and not (args.domain or args.dc_user or args.dc_pass is not None):
+        if ((dom or usr or pw is not None) and not (args.domain or args.dc_user or args.dc_pass is not None)
+                and args.debug):   # now in the banner CREDS row
             print(f"[recall] creds for {target}: {runner.ctx.creds.get('domain')}/"
                   f"{runner.ctx.creds.get('dc_user')} (remembered)")
         ssh_u = args.ssh_user or mem.get("ssh_user")
@@ -925,6 +927,17 @@ def main():
         _brule("├", "┤")
         _bl(_modeline, ACC)
         _bl(f"{_dest}   ·   {_net}" + (f"   ·   site {site_id}" if site_id else ""), DIM)
+        # TARGET + CREDS folded in (these used to print as raw [cloud]/[recall] lines
+        # above the banner; --debug still emits those).
+        _brule("├", "┤")
+        if cloud and eff_map:
+            _bl("TARGET  SMB 445→%s · RPC 135→%s · SSH 22→%s"
+                % (smb, rpc, eff_map.get(22, 22)), DIM)
+        else:
+            _bl("TARGET  direct SMB 445 · RPC 135 · SSH %s" % ssh_p_port, DIM)
+        _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
+                                runner.ctx.creds.get("dc_user") or "")).strip("\\")
+        _bl("CREDS   %s · src %s" % (_cred_id or "(none set)", source or "default route"), DIM)
         _brule("╰", "╯")
 
         t0 = time.time()
