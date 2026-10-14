@@ -47,10 +47,43 @@ Overridable:
 """
 import os
 import shlex
+import shutil
 import socket
 import tempfile
 import threading
 import time
+
+
+def _paramiko_cred_test(target, port, user, pw, ctx):
+    """Credential test via paramiko (hydra fallback). Returns a hydra-style string so the
+    verdict regex reads it: a 'login: ... password: ***' line on accepted auth (password
+    REDACTED — never printed), '0 valid passwords found' on auth failure, or a
+    could-not-connect line (BRUTE-BLOCKED signal). Returns None if paramiko isn't installed."""
+    try:
+        import paramiko
+    except Exception:
+        return None
+    out = ["[paramiko] credential test (hydra not installed):"]
+    cli = paramiko.SSHClient()
+    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    sock = None
+    try:
+        if getattr(ctx, "source_ip", None):
+            sock = socket.create_connection((target, port), timeout=8,
+                                            source_address=(ctx.source_ip, 0))
+        cli.connect(target, port=port, username=user, password=pw, timeout=8,
+                    allow_agent=False, look_for_keys=False, sock=sock)
+        # matches success_regex "login:.*password:"; password REDACTED (don't leak to evidence)
+        out.append(f"[22][ssh] host: {target}   login: {user}   password: ***(valid)")
+        try:
+            cli.close()
+        except Exception:
+            pass
+    except paramiko.AuthenticationException:
+        out.append("0 valid passwords found (authentication failed after the burst)")
+    except Exception as e:
+        out.append(f"could not connect: {e.__class__.__name__}: {e}")
+    return "\n".join(out)
 
 META = {
     "id": "ssh_brute",
@@ -73,7 +106,8 @@ META = {
     "mitre": ['T1110.001'],
     "cwe": ['CWE-307'],
     "tactic": 'Credential Access',
-    "requires": ["hydra"],
+    "requires": [],     # hydra PREFERRED for the credential test; paramiko fallback if present
+                        # (the connection burst — the signature trigger — is pure-stdlib either way)
     "serial": True,     # rate-limit/brute test: run alone so it isn't skewed
     "run_last": True,   # the burst trips a brute-force signature that BLACKLISTS the
                         # tester IP — run after everything else so that blacklist
@@ -248,10 +282,14 @@ def run(target, ctx):
 
         # -t 4 (SSH-friendly parallelism); -f stops once the valid pair is accepted;
         # -I = ignore any restore file so repeated runs don't resume a prior session.
-        raw = ctx.run_cmd(
-            f"hydra -s {port} -I -t 4 -f -l {{ssh_user}} -P {shlex.quote(wordlist)} "
-            f"ssh://{{target}}", target)
-        out.append("\n[hydra] credential test:")
+        if shutil.which("hydra"):
+            raw = ctx.run_cmd(
+                f"hydra -s {port} -I -t 4 -f -l {{ssh_user}} -P {shlex.quote(wordlist)} "
+                f"ssh://{{target}}", target)
+            out.append("\n[hydra] credential test:")
+        else:
+            raw = _paramiko_cred_test(target, port, user, pw, ctx)
+            out.append("\n[credential test]:")
         out.append(raw)
 
         import re

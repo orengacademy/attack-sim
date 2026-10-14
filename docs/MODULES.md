@@ -32,7 +32,7 @@
 - **What it tests / why:** LDAP null/anonymous bind. Discloses AD naming context without any credentials — matches the manual test script's ldapsearch check exactly.
 - **Control it validates (how to PREVENT / BLOCK):** Anonymous LDAP bind hardening
 - **Fix (owner / remediation):** Server
-- **Needs to run:** tools: ldapsearch
+- **Needs to run:** nothing (just a reachable target)
 
 ### PsExec Lateral Movement  `psexec`  _[original]_
 
@@ -268,7 +268,7 @@
 - **What it tests / why:** DNS-over-HTTPS bypass (Family B). Does NOT attack the lab target — it tests whether the perimeter's DNS/egress filtering can be bypassed by tunnelling DNS over HTTPS (443) to a public DoH resolver.
 - **Control it validates (how to PREVENT / BLOCK):** DNS filtering / egress control (DNS-layer + DoH + SNI/IP)
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: curl; config.json: blocked_canary_domain
+- **Needs to run:** config.json: blocked_canary_domain
 
 ### FTP Anonymous Login  `ftp_anonymous`  _[original]_
 
@@ -276,7 +276,7 @@
 - **What it tests / why:** FTP anonymous login check. Matches the manual test script's curl test, with -v added so a real FTP "230 Login successful" is visible even when the directory listing itself is empty (empty stdout would otherwise look identical to a rejected login).
 - **Control it validates (how to PREVENT / BLOCK):** Anonymous access hardening
 - **Fix (owner / remediation):** Server
-- **Needs to run:** tools: curl
+- **Needs to run:** nothing (just a reachable target)
 
 ### ICMP Flood (DoS)  `icmp_flood`  _[original]_
 
@@ -292,7 +292,7 @@
 - **What it tests / why:** SNMP community string brute force. Walks wordlists/snmp_communities.txt (falls back to just 'public' if that file is missing), stopping at the first community that gets real MIB data back — 'public' is deliberately LAST in that wordlist: it's the one the old single-check version of this module always tried, so landing on anything else FIRST is the more interesting finding (a non-default string someone picked is still a guessable one), and 'public' working is the unsurprising baseline case.
 - **Control it validates (how to PREVENT / BLOCK):** Default-credential / community-string hygiene
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: snmpbulkwalk
+- **Needs to run:** nothing (just a reachable target)
 
 ### SSH Brute Force  `ssh_brute`  _[original]_
 
@@ -300,7 +300,7 @@
 - **What it tests / why:** SSH brute-force — tests the boundary's brute-force protection by generating a rapid burst of SSH **connection attempts** (not a single check), then verifying whether a valid credential still gets through.
 - **Control it validates (how to PREVENT / BLOCK):** Brute-force protection / rate-limit (SSH)
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: hydra; SSH creds
+- **Needs to run:** SSH creds
 
 ### External DNS Egress (UDP/53 to public resolver)  `dns_egress_external`  _[added]_
 
@@ -418,7 +418,7 @@
 - **What it tests / why:** CVE-2021-41773 — Apache path traversal (mod_cgi normalize-path bug). Direct HTTP check (curl): request /cgi-bin/.%2e/.. x7 to escape docroot and read a sensitive file. Tries BOTH a Linux target (/etc/passwd) and a Windows target (/windows/win.ini) — the vulnerable file differs by OS, and the lab's Apache container is Linux, so a win.ini-only check 404s against its own lab.
 - **Control it validates (how to PREVENT / BLOCK):** IPS signature / path normalization
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: curl
+- **Needs to run:** nothing (just a reachable target)
 
 ### Log4Shell (CVE-2021-44228)  `log4shell`  _[original]_
 
@@ -426,7 +426,7 @@
 - **What it tests / why:** CVE-2021-44228 — Log4Shell.
 - **Control it validates (how to PREVENT / BLOCK):** IPS signature (JNDI pattern) + log4j patch / formatMsgNoLookups
 - **Fix (owner / remediation):** SD-WAN
-- **Needs to run:** tools: curl; **--active** (live establishment); config.json: attacker_vps
+- **Needs to run:** **--active** (live establishment); config.json: attacker_vps
 
 ### Struts2 OGNL Injection (CVE-2017-5638)  `struts2_ognl`  _[added]_
 

