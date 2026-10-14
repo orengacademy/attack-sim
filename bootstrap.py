@@ -305,8 +305,11 @@ def grant_raw_caps():
               "`sudo -v`, or add a NOPASSWD rule).")
 
 
-def main():
-    with_active = "--with-active" in sys.argv[1:]
+def main(with_active=None):
+    # with_active: True/False from a caller (e.g. cli.py --bootstrap [--active]); None
+    # => read the --with-active CLI flag as before when run standalone.
+    if with_active is None:
+        with_active = "--with-active" in sys.argv[1:]
     c("=== Harness bootstrap ===", "1;32")
     # bootstrap is the Kali/Debian APT setup helper. On Windows / non-apt Linux,
     # install the tools with your own package manager — `python3 preflight.py`

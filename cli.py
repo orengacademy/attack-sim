@@ -644,6 +644,12 @@ def main():
                          "source-blacklist (SUSPECT/INCONCLUSIVE/NO-SERVICE while banned), once "
                          "the ban clears, so they earn a real verdict. N rounds; 0 = off; "
                          "default 1. Also HARNESS_AUTO_RETRY")
+    ap.add_argument("--bootstrap", action="store_true",
+                    help="first install/update the APT tools the modules PREFER "
+                         "(runs bootstrap.py, then continues with the run); pair with "
+                         "--active to also install active-establishment tooling. Needs "
+                         "apt + sudo/root. Optional — modules have Python fallbacks. For "
+                         "bootstrap-only, run: python3 bootstrap.py")
     ap.add_argument("--force", action="store_true",
                     help="run modules even if prerequisites are missing (default: skip)")
     ap.add_argument("--require-root", action="store_true",
@@ -725,6 +731,21 @@ def main():
               "--confirm-roe. Remove that file (or this is per-repo) to require it again."
               if p else "[!] could not write the ROE opt-in file", file=sys.stderr if not p else sys.stdout)
         return 0 if p else 2
+
+    if args.bootstrap:
+        import bootstrap as _bootstrap
+        print(_c("\n[bootstrap] installing/updating the modules' preferred tooling "
+                 "(--bootstrap)\u2026", ACC, args.no_color))
+        try:
+            _bootstrap.main(with_active=args.active)
+        except SystemExit as e:
+            if e.code:
+                print(_c(f"[bootstrap] finished with warnings (exit {e.code}) \u2014 some "
+                         "packages may be missing; modules will use their Python fallbacks. "
+                         "Continuing with the run.", AMBER, args.no_color), file=sys.stderr)
+        except Exception as e:
+            print(_c(f"[bootstrap] error: {e} \u2014 continuing (modules have Python "
+                     "fallbacks).", AMBER, args.no_color), file=sys.stderr)
 
     modules = loader.discover()
 
