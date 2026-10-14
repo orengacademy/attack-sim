@@ -83,10 +83,17 @@ def run(target, ctx):
         if any(code in first for code in (" 400", " 501", " 411")):
             out.append("ambiguous framing rejected — the proxy normalises CL/TE "
                        "(consistent parsing — good)")
-        elif not data or dt >= 7.5:
-            out.append("DESYNC-SUSPECT — the front-end waited for more body (ambiguous "
-                       "CL/TE not rejected); possible request-smuggling exposure. Verify "
-                       "a real desync manually before reporting. [REVIEW/FINDING]")
+        elif dt >= 7.5:
+            out.append("DESYNC-SUSPECT — the front-end HELD the connection waiting for more "
+                       "body (ambiguous CL/TE not rejected); possible request-smuggling "
+                       "exposure. Verify a real desync manually before reporting. [REVIEW/FINDING]")
+        elif not data:
+            # empty reply with NO wait = the request was dropped/closed promptly. That is
+            # just as consistent with a boundary BLOCKING the smuggling as with a desync,
+            # so it is NOT the finding (the old code scored this DESYNC-SUSPECT too).
+            out.append("[INCONCLUSIVE] empty reply with no front-end wait — the request was "
+                       "dropped/closed promptly, which a boundary blocking the smuggling also "
+                       "produces; can't distinguish a desync from a block here.")
         else:
             # A prompt, non-4xx answer (e.g. 200/302) is NOT itself a desync — the
             # server simply replied. Marking it DESYNC-SUSPECT made any responsive

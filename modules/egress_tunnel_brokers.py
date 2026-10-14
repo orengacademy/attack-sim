@@ -11,6 +11,7 @@ app-ID. MITRE T1572 (Protocol Tunnelling) / T1071.001.
 """
 import socket
 import ssl
+from modules import _util as U
 
 # (label, host) — the 443 endpoints these tunnel/remote-access services dial.
 BROKERS = [
@@ -41,22 +42,11 @@ META = {
 }
 
 
-def _tls_ok(host):
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    try:
-        with socket.create_connection((host, 443), timeout=TIMEOUT) as raw:
-            with ctx.wrap_socket(raw, server_hostname=host):
-                return True, "TLS established"
-    except ssl.SSLError as e:
-        return True, f"reached (TLS error {e.__class__.__name__})"  # egress still allowed
-    except (socket.timeout, TimeoutError):
-        return False, "timed out (blocked)"
-    except socket.gaierror:
-        return False, "DNS did not resolve (blocked/forced-resolver)"
-    except OSError as e:
-        return False, f"unreachable ({e.__class__.__name__})"
+def _tls_ok(host, ctx=None):
+    # Delegate to U.tls_reachable so the probe honours the --source egress bind
+    # (ctx.source_ip) — a raw socket.create_connection here ignored it and tested the
+    # wrong interface/VRF when --source was set.
+    return U.tls_reachable(host, 443, ctx, timeout=TIMEOUT)
 
 
 def run(target, ctx):
@@ -65,7 +55,7 @@ def run(target, ctx):
     out = ["# 443 tunnel-broker egress test (Family A — egress allow-listing)"]
     reachable = []
     for label, host in BROKERS:
-        ok, detail = _tls_ok(host)
+        ok, detail = _tls_ok(host, ctx)
         if ok:
             reachable.append(label)
             out.append(f"REACHABLE {label} ({host}) — {detail}")

@@ -23,7 +23,10 @@ META = {
     "port_customizable": True,
     # non-TLS tolerated on 443 = App-ID not enforcing = finding
     "success_regex": r"^L7-NOT-ENFORCED",
-    "blocked_regex": r"L7-ENFORCED|reset|refused|timed out|unreachable",
+    # dropped bare "refused"/"unreachable" — those are the module's own
+    # service-absent/closed-port lines (NO-SERVICE), not an L7 block; core's
+    # REFUSED rung + recon handle a closed port. False-BLOCKED otherwise.
+    "blocked_regex": r"L7-ENFORCED|reset|timed out",
 }
 
 _MARKER = b"MYGOVNET-EGRESS-PROBE/NON-TLS-L7-CHECK\r\n"

@@ -18,7 +18,11 @@ META = {
     # account exists, even when no ticket was granted) and a loose "MSSQL/",
     # scoring enumeration-only / blocked-roast runs as a false finding.
     "success_regex": r"\$krb5tgs\$",
-    "blocked_regex": r"timed out|Connection refused|unreachable|Errno|No entries",
+    # "No entries" means GetUserSPNs REACHED the DC and found no SPN accounts — not a
+    # segmentation block — so it's removed (would false-credit the control). Bare "Errno"
+    # removed (non-network [Errno 2]/[Errno 13] traceback -> false BLOCKED); network
+    # drops still covered by timed out / unreachable / No route to host.
+    "blocked_regex": r"timed out|Connection refused|unreachable|No route to host",
 }
 
 def run(target, ctx):

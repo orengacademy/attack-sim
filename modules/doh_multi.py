@@ -27,6 +27,11 @@ META = {
     "cwe": ["CWE-693"],
     "requires": ["curl"],
     "ports": [],
+    # Same egress-gateway device as doh_bypass (its multi-resolver + attacker-DoH
+    # sibling): trip the DoH/egress signature -> defer out of the parallel pool and
+    # track any ban it causes under the "egress" group, not the SD-WAN canary.
+    "trips_ips": True,
+    "defer_group": "egress",
     "success_regex": r"^RESOLVED ",
     "blocked_regex": r"all DoH resolvers blocked",
 }

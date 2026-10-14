@@ -42,6 +42,7 @@ META = {
 def run(target, ctx):
     out = [f"# App-ID protocol/port-mismatch test vs {target}"]
     allowed = []
+    silent = []         # established + sent, but no reply AND no reset (ambiguous)
     connected = False   # at least one TCP flow actually established
     reset = False       # at least one established flow was RESET (L7 enforcing)
     for port, payload, label in PAIRS:
@@ -65,9 +66,20 @@ def run(target, ctx):
             except socket.timeout:
                 data = b""
             resp = data.decode(errors="replace").strip().replace("\n", " ")[:80]
-            out.append(f"MISMATCH-ALLOWED {label} — flow established through the "
-                       f"SD-WAN; resp: {resp!r}")
-            allowed.append(label)
+            if data:
+                # a REPLY came back: the mismatched L7 flowed both ways through the
+                # boundary — a real App-ID bypass.
+                out.append(f"MISMATCH-ALLOWED {label} — mismatched L7 flowed both ways "
+                           f"through the SD-WAN (reply {resp!r}); App-ID not enforcing.")
+                allowed.append(label)
+            else:
+                # established + payload sent, but NO reply and NO reset: ambiguous — could
+                # be allowed-but-silent OR a silent L7 drop. Do NOT score it a finding (the
+                # old code did, so any open port that merely accepted the connection and
+                # stayed quiet became a false MISMATCH-ALLOWED).
+                silent.append(label)
+                out.append(f"{label}: flow established and payload sent, but no reply and no "
+                           f"reset within {TIMEOUT:.0f}s — indeterminate (not counted).")
         except (ConnectionResetError, BrokenPipeError) as e:
             # the App-ID / firewall RESET the mismatched flow — the control WORKING.
             # Without this, the reset propagated out of run() -> recorded as a module
@@ -83,11 +95,21 @@ def run(target, ctx):
     if allowed:
         out.append("[FINDING] SD-WAN is port-based (App-ID not enforcing L7) for: "
                    + ", ".join(allowed))
+    elif reset:
+        # we SAW the mismatched flow get reset — the control (App-ID/L7) did its job.
+        out.append("no mismatch allowed (App-ID or firewall enforcing L7) — mismatched flows reset")
+    elif silent:
+        # established + sent but nothing came back and nothing was reset — can't tell an
+        # allowed-but-silent flow from a silent L7 drop. Neither a finding nor a confident
+        # block: declare it indeterminate (core scores INCONCLUSIVE).
+        out.append("[INCONCLUSIVE] flow(s) established and mismatched payloads sent, but nothing "
+                   "replied and nothing was reset — can't distinguish an allowed-but-silent flow "
+                   "from a silent L7 drop. Re-test against a service on a NON-standard port (the "
+                   "module's stated caveat) for a definitive App-ID verdict.")
     elif connected:
-        # a flow WAS established but no mismatch got through (reset/no reply) — this
-        # is the control (App-ID/L7) actually doing its job.
-        out.append("no mismatch allowed (App-ID or firewall enforcing L7)"
-                   + (" — mismatched flows reset" if reset else ""))
+        # established but only a send/recv error (no reply, no clean reset) — treat as the
+        # control doing its job rather than a finding.
+        out.append("no mismatch allowed (App-ID or firewall enforcing L7)")
     else:
         # nothing connected at all: the ports are closed/filtered, so there is no
         # service to mismatch — this must NOT be credited to L7 enforcement (it

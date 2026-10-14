@@ -40,7 +40,8 @@ META = {
 
 _LOCAL_SOCKS = 11080
 _TUNNELS = {
-    "chisel": (["chisel", "client", "{vps}:443", "socks"], ["Connected", "tun:"]),
+    "chisel": (["chisel", "client", "{vps}:443", f"127.0.0.1:{_LOCAL_SOCKS}:socks"],
+               ["Connected", "tun:"]),
     "gost":   (["gost", f"-L=socks5://:{_LOCAL_SOCKS}", "-F=relay+tls://{vps}:443"],
                ["listening", "forward"]),
 }

@@ -66,10 +66,19 @@ def run(target, ctx):
             resp = tls.recv(256).decode(errors="replace")
         first = resp.splitlines()[0] if resp else "(no response)"
         out.append(f"POST {host}{path} — response: {first!r}")
-        if resp.startswith("HTTP/"):
+        # Parse the HTTP status: a DLP/forward-proxy that BLOCKS the exfil returns its
+        # OWN block page (403/407/502) — which also starts with "HTTP/" — so startswith
+        # alone scored EXFIL-OK on exactly the blocked case. Only a 2xx/3xx from the
+        # real endpoint = the canary was accepted (finding); 4xx/5xx = DLP/CASB blocked.
+        parts = first.split()
+        code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+        if 200 <= code < 400:
             out.append(f"EXFIL-OK — the marked canary was POSTed out over 443 and accepted "
                        f"({first}). [FINDING] DLP/CASB did not block the exfil; expect the "
                        "canary callback to confirm reach.")
+        elif code >= 400:
+            out.append(f"exfil blocked — the endpoint/proxy returned {code} (DLP/CASB block "
+                       f"page or policy denial: {first!r}).")
         else:
             out.append("exfil blocked — no HTTP response (DLP/proxy may have dropped it)")
     except ssl.SSLError as e:

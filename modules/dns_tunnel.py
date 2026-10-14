@@ -34,6 +34,10 @@ META = {
     "cwe": ["CWE-693"],
     "requires": [],
     "ports": [],
+    # egress-gateway device group (like doh_bypass/doh_multi): its --active tunnel leg
+    # can trip the DNS/egress signature, so defer it out of the parallel pool and track
+    # any ban under the "egress" canary rather than the SD-WAN one.
+    "defer_group": "egress",
     "success_regex": r"^DNSTUN-|^CHANNEL-OPEN ",
     "blocked_regex": r"DNS tunnel precondition blocked",
 }
@@ -61,9 +65,11 @@ def run(target, ctx):
     egressed, detail = U.dns_query(label, resolver, ctx, timeout=4)
     out.append(f"unique label {label} via resolver {resolver} — {detail}")
     if egressed:
-        out.append(f"CHANNEL-OPEN DNS — a query under your zone {zone} egressed; the "
-                   "recursive path to your authoritative NS is open (DNS-tunnel "
-                   "precondition met). [FINDING]")
+        out.append(f"CHANNEL-OPEN DNS — a query under your zone {zone} egressed to resolver "
+                   f"{resolver} and was answered: outbound DNS is permitted (DNS-tunnel "
+                   "precondition met). NOTE: a resolver answer (incl. NXDOMAIN) proves DNS "
+                   "EGRESS, not that your authoritative NS saw it — confirm on the NS log to "
+                   "prove full recursive reach. [FINDING]")
     else:
         out.append(f"DNS tunnel precondition blocked — query under {zone} did not egress")
         if not ctx.allow_active:
