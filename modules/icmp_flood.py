@@ -369,6 +369,7 @@ def run(target, ctx):
                    f"polices (baseline loss {_fmt(base_loss, 1)}%, rtt {_fmt(base_rtt, 1)}ms)")
         knee = None
         max_pps = max_mbps = 0.0
+        any_sent = False
         for pps in RAMP_PPS:
             loss, rtt, snt, raw = _hping_flood_at(target, pps, FLOOD_SIZE, STEP_SECONDS)
             # privilege/tooling failure => the flood never ran (NOT a control result).
@@ -387,13 +388,28 @@ def run(target, ctx):
             ambps = (snt * ((FLOOD_SIZE or 0) + 28) * 8 / STEP_SECONDS / 1e6) if snt else None
             max_pps = max(max_pps, apps or 0.0)
             max_mbps = max(max_mbps, ambps or 0.0)
+            if snt:
+                any_sent = True
             out.append("  step target ~%s pps -> achieved ~%s pps / ~%s Mbit/s . loss=%s%% rtt=%sms"
                        % (f"{pps:,}", _fmt(apps), _fmt(ambps), _fmt(loss, 1), _fmt(rtt, 1)))
-            if _is_knee(loss, rtt, base_loss, base_rtt):
+            # A credible rate-limit means packets were SENT and dropped in transit. Only
+            # treat a high-loss step as the policing knee if hping3 actually transmitted
+            # (snt > 0). High loss with ZERO transmitted means the flood never left this
+            # host (no working raw socket — common on WSL1, where setcap is a no-op) — NOT
+            # a control block.
+            if snt and _is_knee(loss, rtt, base_loss, base_rtt):
                 knee = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
                 break
 
-        if knee:
+        if not any_sent:
+            out.append(
+                "[INCONCLUSIVE] the flood could not be transmitted from this host — 0 packets "
+                "left the NIC across every rate step. hping3 has no working raw socket here: the "
+                "usual cause is WSL1 (kernel '...-Microsoft'), where raw sockets and file "
+                "capabilities don't work and `setcap cap_net_raw` is a no-op. This is NOT a "
+                "control result. Run the DoS modules from a NATIVE Linux host (bare metal / VM / "
+                "WSL2 / the cloud box itself), as root or with cap_net_raw.")
+        elif knee:
             out.append(
                 "BLOCKED-RATELIMIT: ICMP policing kicked in at ~%s pps / ~%s Mbit/s (target %s pps) "
                 "— loss %s%% vs %s%% baseline, rtt %sms vs %sms. This is the MEASURED anti-DoS "
