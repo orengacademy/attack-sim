@@ -433,41 +433,47 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         bits.append("DEBUG")
     print()
     print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  ·  ".join(bits), DIM, no_color))
-    print("  " + _c("━" * 74, ACC, no_color))
+    print("  " + _c("━" * 90, ACC, no_color))
 
-    # ---- verdict summary: one stacked proportional bar + a counts line ----
+    # ---- SCOREBOARD: one stacked proportional bar + count chips ----------
     present = [v for v in _VERDICT_ORDER if v in dist]
-    BARW = 56
+    BARW = 68
     segs, used = [], 0
     for i, v in enumerate(present):
-        col, _ic = _VERDICT_STYLE.get(v, ("", "•"))
+        col, _ic = _VERDICT_STYLE.get(v, ("", "\u2022"))
         w = (BARW - used) if i == len(present) - 1 else max(1, round(BARW * dist[v] / n))
         w = max(0, min(w, BARW - used))
         used += w
-        segs.append(_c("█" * w, col, no_color))
-    counts = []
-    for v in present:
-        col, icon = _VERDICT_STYLE.get(v, ("", "•"))
-        counts.append(_c(f"{icon} {dist[v]} {v}", col, no_color))
+        segs.append(_c("\u2588" * w, col, no_color))
     print("  " + "".join(segs))
-    print("  " + "   ".join(counts))
+    chips = []
+    for v in present:
+        col, icon = _VERDICT_STYLE.get(v, ("", "\u2022"))
+        chips.append(_c(f"{icon} {dist[v]} {v}", col, no_color))
+    print("  " + _c("   \u00b7   ", DIM, no_color).join(chips))
     print()
 
-    # ---- borderless results table (no grid: header + one rule + rows) ----
+    # ---- GROUPED status list: a verdict-coloured left gutter + chip + module +
+    #      ports + plain-English detail, sectioned by CATEGORY. No table grid; the
+    #      full MITRE/CWE/CVE matrix lives in report.txt / report.html. -----------
     debug = getattr(args, "debug", False)
     show_iters = args.iterations > 1
-    headers = ["VERDICT", "MODULE", "CATEGORY", "PORTS", "MITRE", "CWE",
-               ("ITERATIONS" if show_iters else "DETAIL")]
-    if debug:
-        headers.append("DUR")
-
     rows = sorted(by_mod.values(),
                   key=lambda x: (x["cat"],
                                  _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
                                  x["name"]))
-    body = []
+    name_w = min(42, max((len(d["name"]) for d in rows), default=10))
+    port_w = min(22, max((len((d.get("ports") or "")) for d in rows), default=4))
+    RULEW = 90
+    cur_cat = object()
     for d in rows:
-        col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
+        if d["cat"] != cur_cat:
+            cur_cat = d["cat"]
+            lab = " " + (cur_cat or "Uncategorised") + " "
+            print()
+            print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
+                  + _c("\u2500" * max(2, RULEW - len(lab) - 2) + "\u2574", DIM, no_color))
+        col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
         detail = _VERDICT_GLOSS.get(d["v"], "")
         if d["v"] == "BLOCKED":
             vtext = d["verdicts"].get("BLOCKED", "") or ""
@@ -475,46 +481,34 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
             if "REJECTION RESPONSE" in vtext:
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
-                detail = "rate-limited/shaped — single-source; may be host/edge limit (see verdict)"
+                detail = "rate-limited/shaped \u2014 single-source; may be host/edge limit (see verdict)"
             if "whitebox-anomaly" in vtext:
-                detail = "whitebox anomaly — service-down / edge / host filter, not a control (see verdict)"
-        if d["v"] == "NO-SERVICE":
+                detail = "whitebox anomaly \u2014 service-down / edge / host filter, not a control"
+        elif d["v"] == "NO-SERVICE":
             nvtext = d["verdicts"].get("NO-SERVICE", "") or ""
             if "attack vector" in nvtext or "key-only" in nvtext or "password auth" in nvtext.lower():
-                detail = "no vector — SSH password auth disabled (key-only)"
-        if d["v"] == "NOT-VULNERABLE":
+                detail = "no vector \u2014 SSH password auth disabled (key-only)"
+        elif d["v"] == "NOT-VULNERABLE":
             nvt = (d["verdicts"].get("NOT-VULNERABLE", "") or "").lower()
             if "key-only" in nvt or "password auth" in nvt:
-                detail = "secured — SSH key-only (brute-force N/A)"
+                detail = "secured \u2014 SSH key-only (brute-force N/A)"
             elif "community" in nvt or "snmp" in nvt:
-                detail = "secured — no default SNMP community (hygiene holds)"
+                detail = "secured \u2014 no default SNMP community (hygiene holds)"
             else:
-                detail = "not vulnerable — service reached, target hardened"
+                detail = "not vulnerable \u2014 service reached, target hardened"
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                   key=lambda it: it[0])
             detail = " | ".join(f"{it}:{vv} ({_VERDICT_GLOSS_SHORT.get(vv, '?')})"
                                 for it, vv in iters_sorted)
-        cells = [f"{icon} {d['v']}", d["name"], d["cat"], d.get("ports", ""),
-                 d.get("mitre", ""), d.get("cwe", ""), detail]
-        colors = [col, None, DIM, DIM, DIM, DIM, DIM]
-        if debug:
-            cells.append(f"{d.get('dur', 0.0):.1f}s")
-            colors.append(DIM)
-        body.append((cells, colors))
-
-    MAXW = 48
-    inner = [min(MAXW, max([len(h)] + [len(c[ci]) for c, _ in body]))
-             for ci, h in enumerate(headers)]
-
-    def _line(cells, colors):
-        parts = [_cell(c, inner[i], colors[i], no_color) for i, c in enumerate(cells)]
-        return ("  " + "  ".join(parts)).rstrip()
-
-    print(_line(headers, [DIM + BOLD] * len(headers)))
-    print("  " + _c("─" * (sum(inner) + 2 * (len(inner) - 1)), DIM, no_color))
-    for cells, colors in body:
-        print(_line(cells, colors))
+        gutter = _c("\u2590", col, no_color)                      # verdict-coloured spine
+        chip = _cell(f"{icon} {d['v']}", 16, col, no_color)
+        nm = _cell(d["name"], name_w, BOLD, no_color)
+        pt = _cell((d.get("ports") or "\u2014"), port_w, DIM, no_color)
+        dur = _c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""
+        print("  " + gutter + " " + chip + "  " + nm + "  " + pt + "  "
+              + _c(detail, DIM, no_color) + dur)
+    print()
 
     findings = dist.get("SUCCESS", 0)
     detected = dist.get("DETECTED", 0)
@@ -1008,50 +1002,36 @@ def main():
         _wb = str(mode).lower().startswith("w")
         _modeline = ("● WHITEBOX — allow-all baseline (attacks SHOULD pass)"
                      if _wb else "● BLACKBOX — through the SD-WAN (what the boundary stops)")
-        _BW = 72
+        # flat header (no heavy box) — the logo, a bold posture line, then a
+        # "MISSION" section whose dividers + kv style match the panels and results.
+        def _sec(label):
+            lab = " " + label + " "
+            print("  " + _c("╶─", ACC, args.no_color) + _c(lab, CYAN_B + BOLD, args.no_color)
+                  + _c("─" * max(2, 72 - len(lab) - 2) + "╴", DIM, args.no_color))
 
-        def _bl(txt, color):
-            body = f"  {txt}"
-            if len(body) > _BW:                   # keep the right border aligned
-                body = body[:_BW - 1] + "…"
-            print(_c("│", ACC, args.no_color) + _c(f"{body:<{_BW}}", color, args.no_color)
-                  + _c("│", ACC, args.no_color))
-
-        def _brule(left, right, color=ACC):
-            print(_c(left + "─" * _BW + right, color, args.no_color))
-
-        def _kvline(label, value, lcol=CYAN_B, vcol=DIM):
-            """A boxed label+value row that pads on PLAIN width (so embedded ANSI in the
-            coloured segments can't throw off the right border like _bl would)."""
-            plain = f"  {label}   {value}"
-            pad = " " * max(1, _BW - len(plain))
-            body = (_c(f"  {label}", lcol + BOLD, args.no_color) + "   "
-                    + _c(value, vcol, args.no_color) + pad)
-            print(_c("│", ACC, args.no_color) + body + _c("│", ACC, args.no_color))
+        def _kv(k, v, vcol=DIM):
+            print("     " + _c(f"{k:<11}", DIM, args.no_color) + " " + _c(str(v), vcol, args.no_color))
 
         _print_logo(args.no_color)
-        _brule("╭", "╮")
-        _bl(_modeline, (CYAN_B + BOLD) if _wb else (AMBER + BOLD))
-        _bl(f"{_dest}   ·   {_net}" + (f"   ·   site {site_id}" if site_id else ""), DIM)
-        # TARGET + CREDS folded in (these used to print as raw [cloud]/[recall] lines
-        # above the banner; --debug still emits those).
-        _brule("├", "┤")
+        print()
+        print("  " + _c(_modeline, (CYAN_B + BOLD) if _wb else (AMBER + BOLD), args.no_color))
+        _sec("MISSION")
+        _kv("target", f"{target}   ·   {_net}" + (f"   ·   site {site_id}" if site_id else ""), CYAN_B)
         if cloud and eff_map:
-            _kvline("TARGET", "SMB 445→%s · RPC 135→%s · SSH 22→%s"
-                    % (smb, rpc, eff_map.get(22, 22)))
+            _kv("transport", "SMB 445→%s · RPC 135→%s · SSH 22→%s"
+                % (smb, rpc, eff_map.get(22, 22)))
         else:
-            _kvline("TARGET", "direct SMB 445 · RPC 135 · SSH %s" % ssh_p_port)
-        _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
-                                runner.ctx.creds.get("dc_user") or "")).strip("\\")
+            _kv("transport", "direct SMB 445 · RPC 135 · SSH %s" % ssh_p_port)
         # real source/egress IP (where this run leaves from). Explicit --source wins;
-        # otherwise detect the egress IP (display only — does NOT force a bind). Exposed
-        # as ctx.display_source so the evidence + RESULTS header are self-describing too.
+        # otherwise detect the egress IP (display only, does NOT force a bind). Exposed as
+        # ctx.display_source so the evidence + RESULTS header are self-describing too.
         _egress = source or _egress_ip(target)
         runner.ctx.display_source = _egress or ""
         _src_disp = source if source else (f"{_egress} (auto)" if _egress else "unknown route")
-        _kvline("SOURCE", "%s  →  %s" % (_src_disp, target))
-        _kvline("CREDS ", _cred_id or "(none set)")
-        _brule("╰", "╯")
+        _kv("source", "%s  →  %s" % (_src_disp, target))
+        _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
+                                runner.ctx.creds.get("dc_user") or "")).strip("\\")
+        _kv("creds", _cred_id or "(none set)")
 
         t0 = time.time()
         try:
