@@ -1144,6 +1144,15 @@ def main():
         _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
                                 runner.ctx.creds.get("dc_user") or "")).strip("\\")
         _kv("creds", _cred_id or "(none set)")
+        # version-check result (the gate ran in main(); an OUTDATED copy already hard-
+        # stopped before here, so this shows up-to-date or could-not-verify).
+        _lat = getattr(core, "LATEST_SEEN", None)
+        if _lat is None:
+            _kv("version", "v%s · latest unverified (offline — ran anyway)" % core.VERSION, AMBER)
+        elif core.version_is_outdated(core.VERSION, _lat):
+            _kv("version", "v%s · OUTDATED \u2192 v%s (git pull --ff-only)" % (core.VERSION, _lat), AMBER)
+        else:
+            _kv("version", "v%s · latest \u2713 (verified against main)" % core.VERSION, GREEN_B)
 
         t0 = time.time()
         try:
