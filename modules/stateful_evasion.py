@@ -57,10 +57,6 @@ def _got_reply(out):
 
 
 def run(target, ctx):
-    if core.is_wsl1():
-        return (f"# stateful-evasion test vs {target}\n[PREREQ-MISSING] the crafted hping3 probes "
-                "need raw sockets, which do not work on WSL1 (setcap is a no-op). Run from a "
-                "NATIVE Linux host (VM / WSL2 / the target host). NOT a control result.")
     if not U.have("hping3"):
         return "# stateful-evasion test\n[ERROR] hping3 not found (see preflight)"
     port = ctx.get_port("stateful_evasion", 445)
