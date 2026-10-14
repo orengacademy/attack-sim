@@ -187,6 +187,18 @@ classifier bug so far was caught by reading them, not by trusting the verdict.
   the verdict.)
 - **BLOCKED** — filtered/dropped in transit (timeout / filtered port) → control
   likely worked (green).
+- **NOT-VULNERABLE** — the attack **reached** the service but the target is
+  **hardened against it** (teal): key-only SSH (no password vector), an SNMP agent
+  that replied yet accepted no default/guessed community, a patched exploit, strong
+  creds. A defender win attributable to **host configuration**, distinct from BLOCKED
+  (dropped in transit by a boundary) and NO-SERVICE (port closed). Not a finding, not a
+  control-in-path block. A module self-declares it with a `[NOT-VULNERABLE] <reason>`
+  line (`_NOTVULN_MARKER`), which wins over its own `blocked_regex` (SNMP emits "No
+  Response", which would otherwise read BLOCKED) and over the recon-inferred state, like
+  the other self-markers. ⚠ For SNMPv2c a *wrong community is normally met with silence*,
+  so "agent present but secured" is only distinguishable from "no agent / filtered" when
+  the agent actually replies (the stdlib GET's reply-no-value, or an SNMP error PDU);
+  pure silence still falls to NO-SERVICE/BLOCKED.
 - **NO-SERVICE** — port closed/refused (RST): service absent, **not** a control
   block (blue). Recon distinguishes closed-vs-filtered so a closed port isn't
   miscredited to the control. The refused→NO-SERVICE gate is suppressed when the

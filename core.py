@@ -988,11 +988,11 @@ class Evidence:
             if r.get("appliance_ip") is None:
                 v = r.get("baseline_result")
                 bucket = ("passed" if v == "SUCCESS" else "detected" if v == "DETECTED"
-                          else "blocked" if v == "BLOCKED" else "skipped" if v == "SKIPPED"
+                          else "blocked" if v in ("BLOCKED", "NOT-VULNERABLE") else "skipped" if v == "SKIPPED"
                           else "other")
             else:
                 v = r.get("appliance_result")
-                bucket = ("blocked" if v == "BLOCKED" else "detected" if v == "DETECTED"
+                bucket = ("blocked" if v in ("BLOCKED", "NOT-VULNERABLE") else "detected" if v == "DETECTED"
                           else "passed" if v == "SUCCESS" else "skipped" if v == "SKIPPED"
                           else "other")
             s[bucket] += 1
@@ -1036,7 +1036,7 @@ class Evidence:
                       "  " + "!" * 60, ""]
 
         # ---- modern per-module results: verdict distribution + a grouped table ----
-        _VORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE",
+        _VORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NOT-VULNERABLE", "NO-SERVICE",
                    "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
         permod = {}
         for r in self.records:
@@ -1120,7 +1120,7 @@ class Evidence:
                                         "passed": 0, "detected": 0, "blocked": 0, "other": 0})
                 e["attacks"].add(r.get("attack", r.get("attack_id", "?")))
                 e["passed" if oc == "SUCCESS" else "detected" if oc == "DETECTED"
-                  else "blocked" if oc == "BLOCKED" else "other"] += 1
+                  else "blocked" if oc in ("BLOCKED", "NOT-VULNERABLE") else "other"] += 1
             for c in (r.get("cwe") or []):
                 cwe.setdefault(c, set()).add(r.get("attack", "?"))
 
@@ -1236,10 +1236,10 @@ class Evidence:
         except Exception as e:
             self.log(f"[WARN] could not update INDEX.md: {e}")
 
-    _V_ORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE",
+    _V_ORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NOT-VULNERABLE", "NO-SERVICE",
                 "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
     _V_COLOR = {"SUCCESS": "#e5484d", "DETECTED": "#f5a524",
-                "BLOCKED": "#30a46c", "NO-SERVICE": "#4493f8", "AUTH-FAILED": "#e2a336",
+                "BLOCKED": "#30a46c", "NOT-VULNERABLE": "#1fb8a6", "NO-SERVICE": "#4493f8", "AUTH-FAILED": "#e2a336",
                 "NO-RESULT": "#e2a336", "INCONCLUSIVE": "#a371f7",
                 "SKIPPED": "#8b949e", "PREREQ-MISSING": "#8b949e"}
     # short gloss per verdict for the per-iteration ITERATIONS column (mirrors
@@ -1247,7 +1247,7 @@ class Evidence:
     # read the same way) — N copies of it (one per iteration) share one cell.
     _V_GLOSS_SHORT = {
         "SUCCESS": "finding", "DETECTED": "SOC alerted",
-        "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
+        "BLOCKED": "blocked", "NOT-VULNERABLE": "secured", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
         "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
         "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
     }
@@ -1472,6 +1472,12 @@ _INCONCLUSIVE_MARKER = re.compile(r"\[INCONCLUSIVE\].*$", re.MULTILINE)
 # the module authoritatively declares the vector absent, so it precedes the recon
 # states. Not a weakness in itself (often it IS the hardening).
 _NOSVC_MARKER = re.compile(r"\[NO-SERVICE\].*$", re.MULTILINE)
+# [NOT-VULNERABLE] = a module REACHED the service but the target is HARDENED against the
+# attack (key-only SSH -> no password vector; SNMP agent present but no default/guessed
+# community accepted; a patched exploit; strong creds). A defender win attributable to HOST
+# configuration, distinct from BLOCKED (dropped in transit by a boundary) and NO-SERVICE
+# (port closed). Not a finding, not a control-in-path block.
+_NOTVULN_MARKER = re.compile(r"\[NOT-VULNERABLE\].*$", re.MULTILINE)
 # Harness-INTERNAL failures: the module crashed (exception boundary), the
 # wall-clock watchdog abandoned a hang, it produced no output, or run_cmd could
 # not build/launch the command. These are TOOL faults, not the control blocking
@@ -1526,6 +1532,8 @@ def classify(meta, base_raw, app_raw):
     # blocked/no-service branches (never miscredited to the control).
     app_prereq = not app_ok and _PREREQ_MARKER.search(app_raw or "") is not None
     app_inconcl = not app_ok and _INCONCLUSIVE_MARKER.search(app_raw or "") is not None
+    app_notvuln = not app_ok and _NOTVULN_MARKER.search(app_raw or "") is not None
+    app_nosvc_self = not app_ok and _NOSVC_MARKER.search(app_raw or "") is not None
     app_blocked = not app_skipped and (_match(app_raw, blk) or "[TIMEOUT]" in app_raw)
     # A RST / "connection refused" through the appliance = the service is ABSENT,
     # not the control dropping the attack — mirror single-target NO-SERVICE. Only
@@ -1545,6 +1553,10 @@ def classify(meta, base_raw, app_raw):
         appliance_result = "PREREQ-MISSING"   # parity: runtime prerequisite missing
     elif app_inconcl:
         appliance_result = "INCONCLUSIVE"     # parity: module couldn't decide
+    elif app_notvuln:
+        appliance_result = "NOT-VULNERABLE"   # parity: service reached, target hardened
+    elif app_nosvc_self:
+        appliance_result = "NO-SERVICE"       # parity: self-declared vector absent (port open)
     elif app_skipped:
         appliance_result = "SKIPPED"           # parity: module did nothing (was NO-RESULT)
     elif app_refused:
@@ -3365,6 +3377,17 @@ class Runner:
                 verdict = ("no service for this attack vector — "
                            + (reason or "the targeted service/vector is not offered")
                            + "; NOT a control-under-test result")
+            # A module self-declaring the target is HARDENED against its attack though the
+            # service was REACHED (key-only SSH, SNMP with no default community, patched,
+            # strong creds). A defender win by HOST config -> NOT-VULNERABLE, never BLOCKED
+            # (nothing dropped it in transit) nor a finding.
+            elif _NOTVULN_MARKER.search(target_raw):
+                m = _NOTVULN_MARKER.search(target_raw)
+                reason = m.group(0).replace("[NOT-VULNERABLE]", "").strip()
+                b = "NOT-VULNERABLE"
+                verdict = ("not vulnerable — the attack reached the service but the target is "
+                           "hardened against it: " + (reason or "the exploit/credential/vector did "
+                           "not work") + ". A defender win (host hardening), NOT a transit block or a finding.")
             # A module self-declaring a missing LOCAL prerequisite at runtime (e.g.
             # kerberoast with a skewed clock and no faketime). Not a control result;
             # checked before the port/blocked branches so it can't be mis-scored as

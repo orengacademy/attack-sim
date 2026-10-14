@@ -50,6 +50,7 @@ STATUS_COLORS = {
     "SUCCESS":        ERRC,    # attack passed undetected -> FINDING (red)
     "DETECTED":       DETC,    # passed the boundary but the SOC alerted (orange)
     "BLOCKED":        OKC,     # control stopped it (filtered/dropped) -> good (green)
+    "NOT-VULNERABLE": "#1fb8a6",  # teal — service reached, target hardened (defender win)
     "NO-SERVICE":     BLUEC,   # port closed/refused — service absent, NOT a block
     "AUTH-FAILED":    WARNC,   # bad creds, not a control result
     "NO-RESULT":      WARNC,   # inconclusive — review
@@ -61,7 +62,7 @@ STATUS_COLORS = {
 # Distinct verdict glyphs (same shapes as the CLI) so the Result cell carries an
 # icon, not just a row colour — shown as "<icon> VERDICT".
 STATUS_ICONS = {
-    "SUCCESS": "●", "DETECTED": "◐", "BLOCKED": "■", "NO-SERVICE": "○",
+    "SUCCESS": "●", "DETECTED": "◐", "BLOCKED": "■", "NOT-VULNERABLE": "✔", "NO-SERVICE": "○",
     "AUTH-FAILED": "▲", "NO-RESULT": "?", "INCONCLUSIVE": "◌",
     "SKIPPED": "–", "PREREQ-MISSING": "–",
 }

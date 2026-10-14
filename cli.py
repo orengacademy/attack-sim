@@ -26,6 +26,7 @@ _VERDICT_STYLE = {
     "SUCCESS":        ("\033[31m", "●"),   # red    — got through undetected (finding)
     "DETECTED":       ("\033[38;5;208m", "◐"),  # orange — passed but SOC alerted
     "BLOCKED":        ("\033[32m", "■"),   # green  — control worked
+    "NOT-VULNERABLE": ("\033[92m", "✔"),   # teal/bright-green — service reached, target hardened
     "NO-SERVICE":     ("\033[34m", "○"),   # blue   — port closed, not a block
     "AUTH-FAILED":    ("\033[33m", "▲"),   # amber  — bad creds
     "NO-RESULT":      ("\033[33m", "?"),   # amber  — review
@@ -33,14 +34,14 @@ _VERDICT_STYLE = {
     "SKIPPED":        ("\033[90m", "–"),   # grey   — did nothing
     "PREREQ-MISSING": ("\033[90m", "–"),
 }
-_VERDICT_ORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NO-SERVICE",
+_VERDICT_ORDER = ["SUCCESS", "DETECTED", "BLOCKED", "NOT-VULNERABLE", "NO-SERVICE",
                   "AUTH-FAILED", "NO-RESULT", "INCONCLUSIVE", "SKIPPED", "PREREQ-MISSING"]
 # one-letter code per verdict for the compact per-iteration ITER column —
 # the aggregate VERDICT column only ever shows the single most-significant
 # iteration (_VERDICT_ORDER), which hid a later iteration landing in a
 # different bucket (e.g. icmp_flood's loss-delta sometimes falling in the
 # ambiguous band on one run and not another).
-_ITER_CODE = {"SUCCESS": "S", "DETECTED": "D", "BLOCKED": "B",
+_ITER_CODE = {"SUCCESS": "S", "DETECTED": "D", "BLOCKED": "B", "NOT-VULNERABLE": "V",
               "NO-SERVICE": "O", "AUTH-FAILED": "A", "NO-RESULT": "N",
               "INCONCLUSIVE": "I", "SKIPPED": "-", "PREREQ-MISSING": "-"}
 
@@ -48,6 +49,7 @@ _ANSI = {
     "SUCCESS": "\033[31m",   # red — got through undetected (finding)
     "DETECTED": "\033[38;5;208m",                   # orange — passed but SOC alerted
     "BLOCKED": "\033[32m",                          # green — control worked
+    "NOT-VULNERABLE": "\033[92m",                   # bright green — service reached, target hardened
     "NO-SERVICE": "\033[34m",                       # blue — port closed, not a block
     "AUTH-FAILED": "\033[33m", "NO-RESULT": "\033[33m",  # amber — review
     "INCONCLUSIVE": "\033[35m",                          # purple — IPS quarantine, not tested
@@ -344,6 +346,7 @@ _VERDICT_GLOSS = {
     "SUCCESS":        "got through — undetected (finding)",
     "DETECTED":       "got through but SOC alerted",
     "BLOCKED":        "control worked — attack stopped",
+    "NOT-VULNERABLE": "not vulnerable — service reached, target hardened (no finding)",
     "NO-SERVICE":     "port closed — service not present",
     "AUTH-FAILED":    "bad credentials — fix creds",
     "NO-RESULT":      "inconclusive — review raw log",
@@ -355,7 +358,7 @@ _VERDICT_GLOSS = {
 # N copies of it (one per iteration) have to fit in one table cell.
 _VERDICT_GLOSS_SHORT = {
     "SUCCESS": "finding", "DETECTED": "SOC alerted",
-    "BLOCKED": "blocked", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
+    "BLOCKED": "blocked", "NOT-VULNERABLE": "secured", "NO-SERVICE": "no service", "AUTH-FAILED": "bad creds",
     "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
     "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
 }
@@ -495,6 +498,14 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
             # not the generic "port closed" (the port is actually open here).
             if "attack vector" in nvtext or "key-only" in nvtext or "password auth" in nvtext.lower():
                 detail = "no vector — SSH password auth disabled (key-only); brute-force N/A, not a weakness"
+        if d["v"] == "NOT-VULNERABLE":
+            nvt = (d["verdicts"].get("NOT-VULNERABLE", "") or "").lower()
+            if "key-only" in nvt or "password auth" in nvt:
+                detail = "secured — SSH key-only (password brute-force not applicable)"
+            elif "community" in nvt or "snmp" in nvt:
+                detail = "secured — no default/guessed SNMP community accepted (hygiene holds)"
+            else:
+                detail = "not vulnerable — service reached, target hardened (no finding)"
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                    key=lambda it: it[0])
