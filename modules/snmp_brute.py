@@ -173,6 +173,7 @@ def run(target, ctx):
     out = [f"# SNMP community brute vs {target} — {len(communities)} communities "
            f"({engine}, 'public' tried last)"]
 
+    agent_responded = False      # the agent sent SOME reply (so it IS present, just secured)
     for community in communities:
         out.append(f"\n--- trying community '{community}' ---")
         if use_cli:
@@ -184,6 +185,25 @@ def run(target, ctx):
             out.append(f"\n[+] SUCCESS: community string '{community}' is valid "
                        f"({'default/well-known' if community == 'public' else 'non-default, still guessable'})")
             return "\n".join(out)
+        # A reply that carried NO value (stdlib GET) or an SNMP error PDU means the agent
+        # ANSWERED but rejected this community — so SNMP is present, just not exposed via it.
+        if re.search(r"reply carried no value|authorizationError", raw, re.I):
+            agent_responded = True
 
     out.append(f"\n[-] All {len(communities)} communities tried — none returned valid MIB data")
+    if agent_responded:
+        # The agent is demonstrably present (it replied) but accepted no default/guessed
+        # community -> NOT a finding and NOT a transit block: community-string hygiene holds.
+        out.append("\n[NOT-VULNERABLE] the SNMP agent RESPONDED but accepted no default/guessed "
+                   "community — SNMP is present yet not exposed via a default/guessable community "
+                   "(community-string hygiene holds). A defender win (host hardening), not a transit "
+                   "block and not a finding.")
+    else:
+        # Every attempt was SILENT. For SNMPv2c a wrong community is normally met with silence,
+        # so this is wire-indistinguishable from 'no agent' or 'a boundary filtered it' — leave
+        # the verdict to fall to NO-SERVICE (161 closed at recon) or BLOCKED (filtered/dropped).
+        out.append("\n(note: every community attempt was SILENT. For SNMPv2c a wrong community is "
+                   "normally met with no reply, so this can't be separated here from an absent agent "
+                   "or a boundary filter — the verdict falls to NO-SERVICE (port closed at recon) or "
+                   "BLOCKED (filtered). Use the stdlib GET path / a replying agent to earn NOT-VULNERABLE.)")
     return "\n".join(out)

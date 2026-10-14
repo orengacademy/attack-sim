@@ -62,6 +62,7 @@ _VGLOSS = {
     "SUCCESS": "got through, undetected — the finding",
     "DETECTED": "got through but a signature/SOC alert fired — detection worked, prevention did not",
     "BLOCKED": "stopped in transit (dropped/filtered/rejected) — the control held",
+    "NOT-VULNERABLE": "service reached but the target is hardened against the attack (key-only SSH, no default SNMP community, patched) — a defender win, not a finding",
     "NO-SERVICE": "port closed/refused — service absent, NOT a control block",
     "AUTH-FAILED": "credential error — fix creds, not a control result",
     "NO-RESULT": "no clear signal — review the raw log",

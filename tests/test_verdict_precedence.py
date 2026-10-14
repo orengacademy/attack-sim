@@ -112,6 +112,30 @@ class TestLadderPrecedence(unittest.TestCase):
         b, _ = _verdict("[NO-SERVICE] password auth disabled", recon="filtered")
         self.assertEqual(b, "NO-SERVICE")
 
+    # [NOT-VULNERABLE] self-marker: service reached but target hardened (key-only SSH,
+    # SNMP with no default community). Must beat a matching blocked_regex (SNMP emits
+    # "No Response" which the module's blocked_regex matches) and the recon state.
+    def test_notvulnerable_marker_on_open_port(self):
+        b, v = _verdict("[NOT-VULNERABLE] key-only SSH, no password vector", recon="open")
+        self.assertEqual(b, "NOT-VULNERABLE")
+        self.assertIn("hardened", v)
+
+    def test_notvulnerable_marker_beats_blocked_regex(self):
+        # snmp-shaped: output has "No Response" (matches blocked_regex) but the agent
+        # replied -> the self-marker must win so it isn't a false BLOCKED.
+        b, _ = _verdict("No Response (reply carried no value)\n[NOT-VULNERABLE] agent secured",
+                        blocked=r"No Response", recon="open")
+        self.assertEqual(b, "NOT-VULNERABLE")
+
+    def test_notvulnerable_marker_beats_filtered(self):
+        b, _ = _verdict("[NOT-VULNERABLE] patched / strong creds", recon="filtered")
+        self.assertEqual(b, "NOT-VULNERABLE")
+
+    def test_notvulnerable_not_a_finding_or_block(self):
+        # it is neither SUCCESS (finding) nor BLOCKED (transit) — its own bucket
+        b, _ = _verdict("[NOT-VULNERABLE] hardened", recon="open")
+        self.assertNotIn(b, ("SUCCESS", "BLOCKED"))
+
     def test_noservice_marker_no_whitebox_anomaly_tail(self):
         # a self-declared NO-SERVICE already states WHY -> no generic whitebox-anomaly tail
         r = core.Runner("127.0.0.1")

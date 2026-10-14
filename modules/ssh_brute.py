@@ -310,11 +310,11 @@ def run(target, ctx):
             # be attempted. Self-declare [NO-SERVICE] (the engine scores it NO-SERVICE, not a
             # mute NO-RESULT). This is NOT a weakness — key-only SSH is exactly the hardening
             # that defeats password brute-force.
-            out.append("\n[NO-SERVICE] SSH password authentication is DISABLED on the target "
+            out.append("\n[NOT-VULNERABLE] SSH password authentication is DISABLED on the target "
                        "(key-only) — the port answers but no password-auth vector is offered, so a "
                        "password brute-force cannot be attempted. Not a weakness: key-only SSH is the "
-                       "hardening that defeats this attack. (Test key-based auth / weak-key exposure "
-                       "separately if in scope.)")
+                       "hardening that defeats this attack (a defender win, not a transit block). "
+                       "(Test key-based auth / weak-key exposure separately if in scope.)")
         elif re.search(r"\b0 valid passwords? found\b", raw):
             # the valid cred WAS in the list but wasn't accepted -> the control
             # rate-limited / blocked / blacklisted the burst before it got there.
