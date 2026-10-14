@@ -364,6 +364,7 @@ def run(target, ctx):
         return "\n".join(out)
 
     # ---- leg 2: RAMP the rate and find the KNEE (measured policing threshold) --
+    hping_privfail = False
     if shutil.which("hping3"):
         out.append(f"## ramp (hping3): step the ICMP rate up — the knee = first rate the boundary "
                    f"polices (baseline loss {_fmt(base_loss, 1)}%, rtt {_fmt(base_rtt, 1)}ms)")
@@ -371,18 +372,17 @@ def run(target, ctx):
         max_pps = max_mbps = 0.0
         for pps in RAMP_PPS:
             loss, rtt, snt, raw = _hping_flood_at(target, pps, FLOOD_SIZE, STEP_SECONDS)
-            # privilege/tooling failure => the flood never ran (NOT a control result).
-            # Checked REGARDLESS of whether a loss% parsed: hping3 that can't open the
-            # raw socket (no root / no usable sudo / no cap_net_raw) still prints a
-            # "100% packet loss" stats line, which was being misread as rate-limiting
-            # -> a FALSE BLOCKED. A privilege marker anywhere means the flood didn't run.
+            # hping3's RAW socket can be unavailable (no cap_net_raw / no usable sudo, or a
+            # platform like WSL1 that doesn't support raw sockets even as root). Rather than
+            # give up (FLOOD-PRIV-ERROR), fall back to the Python DATAGRAM-ICMP flood below —
+            # the same socket type `ping` uses, which works wherever ping does (the baseline
+            # above proves it). Checked regardless of loss% (unprivileged hping3 still prints
+            # a "100% packet loss" line that would otherwise read as a false BLOCKED).
             if any(mk in raw.lower() for mk in _PRIV_ERR_MARKERS):
-                out.append(
-                    "FLOOD-PRIV-ERROR: hping3 could not run with the privileges it needs — the "
-                    "flood never ran. NOT evidence the control works. Fix ONE of: (a) sudo setcap "
-                    "cap_net_raw,cap_net_admin+eip $(which hping3); (b) a NOPASSWD sudoers rule for "
-                    "hping3; or (c) run as root.")
-                return "\n".join(out)
+                out.append("note: hping3 can't open a raw socket here (no cap_net_raw / WSL1) — "
+                           "falling back to the Python datagram-ICMP flood (the path `ping` uses).")
+                hping_privfail = True
+                break
             apps = (snt / STEP_SECONDS) if snt else None
             ambps = (snt * ((FLOOD_SIZE or 0) + 28) * 8 / STEP_SECONDS / 1e6) if snt else None
             max_pps = max(max_pps, apps or 0.0)
@@ -393,27 +393,29 @@ def run(target, ctx):
                 knee = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
                 break
 
-        if knee:
-            out.append(
-                "BLOCKED-RATELIMIT: ICMP policing kicked in at ~%s pps / ~%s Mbit/s (target %s pps) "
-                "— loss %s%% vs %s%% baseline, rtt %sms vs %sms. This is the MEASURED anti-DoS "
-                "threshold (Sangfor/Forcepoint defaults aren't published — the ramp measured it); "
-                "the control holds at/above this rate."
-                % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
-                   _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1)))
-        else:
-            out.append(
-                "PASS: NO ICMP policing observed across the ramp — the flood was delivered up to the "
-                "most this source could push (~%s pps / ~%s Mbit/s) at <=%d%% loss. The anti-DoS "
-                "threshold, if any, is ABOVE that, and a single host usually can't reach a carrier/"
-                "SD-WAN ceiling: raise HARNESS_ICMP_SIZE (bigger packets for a bits/sec policer), "
-                "extend HARNESS_ICMP_RAMP higher, use a fatter/closer link, or drive MULTIPLE "
-                "sources (fleet.py) to push past the threshold." % (_fmt(max_pps), _fmt(max_mbps), LOW_LOSS))
-        return "\n".join(out)
+        if not hping_privfail:
+            if knee:
+                out.append(
+                    "BLOCKED-RATELIMIT: ICMP policing kicked in at ~%s pps / ~%s Mbit/s (target %s pps) "
+                    "— loss %s%% vs %s%% baseline, rtt %sms vs %sms. This is the MEASURED anti-DoS "
+                    "threshold (Sangfor/Forcepoint defaults aren't published — the ramp measured it); "
+                    "the control holds at/above this rate."
+                    % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
+                       _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1)))
+            else:
+                out.append(
+                    "PASS: NO ICMP policing observed across the ramp — the flood was delivered up to the "
+                    "most this source could push (~%s pps / ~%s Mbit/s) at <=%d%% loss. The anti-DoS "
+                    "threshold, if any, is ABOVE that, and a single host usually can't reach a carrier/"
+                    "SD-WAN ceiling: raise HARNESS_ICMP_SIZE (bigger packets for a bits/sec policer), "
+                    "extend HARNESS_ICMP_RAMP higher, use a fatter/closer link, or drive MULTIPLE "
+                    "sources (fleet.py) to push past the threshold." % (_fmt(max_pps), _fmt(max_mbps), LOW_LOSS))
+            return "\n".join(out)
 
-    # ---- leg 2 (fallback): no hping3 -> single Python flood, best-effort -------
-    out.append("## high-rate flood (engine: python ICMP fallback — hping3 not installed; no rate "
-               "ramp, best-effort)")
+    # ---- leg 2 (fallback): no hping3 (or its raw socket failed) -> Python flood --
+    out.append("## high-rate flood (engine: python datagram-ICMP fallback — %s; no rate ramp, "
+               "best-effort)" % ("hping3 raw socket unavailable" if hping_privfail
+                                 else "hping3 not installed"))
     py_result = {}
     th = threading.Thread(target=_py_icmp_flood, args=(target, FLOOD_SECONDS, py_result), daemon=True)
     th.start()
