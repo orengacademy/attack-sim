@@ -52,13 +52,34 @@ def run(cmd, check=False):
     return subprocess.run(cmd, check=check)
 
 
+# Package -> a binary it provides. Lets us treat a package as satisfied when its
+# tool is on PATH even if dpkg doesn't report the exact package name — the common
+# case for TRANSITIONAL/renamed packages (Kali: dnsutils -> bind9-dnsutils; `dig`
+# is present but `dpkg -s dnsutils` fails, which was reported as a false FAILED).
+PKG_BINARY = {
+    "dnsutils": "dig", "snmp": "snmpbulkwalk", "ldap-utils": "ldapsearch",
+    "hping3": "hping3", "curl": "curl", "nmap": "nmap", "hydra": "hydra",
+    "openssh-client": "ssh", "faketime": "faketime", "libcap2-bin": "setcap",
+}
+
+
+def _satisfied(pkg):
+    """True if the package is installed, OR a binary it provides is on PATH (handles
+    transitional/renamed packages), OR its known alias is installed."""
+    if apt_installed(pkg):
+        return True
+    b = PKG_BINARY.get(pkg)
+    if b and shutil.which(b):
+        return True
+    alias = APT_ALIASES.get(pkg)
+    return bool(alias and apt_installed(alias))
+
+
 def _which_missing(pkgs):
-    """apt reports its own exit code, but that only tells us the *install
-    command* didn't error — not that the binaries are actually usable
-    afterwards (e.g. install succeeded but PATH/shell differs). Re-check with
-    the same apt_installed() probe used before install, so a failure here is
-    never silently swallowed."""
-    return [p for p in pkgs if not apt_installed(p)]
+    """Re-check after install that each package is actually satisfied (binary on PATH
+    or dpkg-installed), so a transitional-package rename or a PATH/shell difference
+    isn't silently swallowed — and isn't a FALSE failure either."""
+    return [p for p in pkgs if not _satisfied(p)]
 
 
 def sudo(cmd):
@@ -77,27 +98,27 @@ def apt_installed(pkg):
 # Some CORE packages are Kali names; on Debian/Ubuntu fall back to these.
 # impacket-scripts -> python3-impacket (which ships the impacket-* wrappers on
 # Debian). responder has no Debian package (Kali-only) -> None (reported, non-fatal).
-APT_ALIASES = {"impacket-scripts": "python3-impacket", "responder": None}
+APT_ALIASES = {"impacket-scripts": "python3-impacket", "responder": None,
+               "dnsutils": "bind9-dnsutils"}  # dnsutils is transitional on Kali/modern Debian
 
 
 def _apt_install_one(pkg):
     """Install one apt package; if apt can't locate it, try a known distro alias.
-    Returns True if the package or its alias ends up installed."""
-    if apt_installed(pkg):
+    Returns True if the package (or its provided binary / alias) ends up satisfied."""
+    if _satisfied(pkg):
         return True
-    if run(sudo(["apt-get", "install", "-y", pkg])).returncode == 0 and apt_installed(pkg):
+    if run(sudo(["apt-get", "install", "-y", pkg])).returncode == 0 and _satisfied(pkg):
         return True
     alias = APT_ALIASES.get(pkg)
     if alias:
         print(f"  {pkg} unavailable via apt — trying {alias}")
-        return run(sudo(["apt-get", "install", "-y", alias])).returncode == 0 and apt_installed(alias)
+        return run(sudo(["apt-get", "install", "-y", alias])).returncode == 0 and _satisfied(pkg)
     return False
 
 
 def install_core():
     c("Checking CORE APT packages...")
-    missing = [p for p in CORE_APT if not apt_installed(p)
-               and not (APT_ALIASES.get(p) and apt_installed(APT_ALIASES[p]))]
+    missing = [p for p in CORE_APT if not _satisfied(p)]
     if not missing:
         print("  all core APT packages already installed.")
         return []
