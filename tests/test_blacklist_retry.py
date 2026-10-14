@@ -66,7 +66,7 @@ class TestSaveResultReplace(unittest.TestCase):
 class TestDetectBanAndRecover(unittest.TestCase):
     def test_latches_on_canary_drop(self):
         r = _mk_runner()
-        r._canary_reachable = lambda: False           # canary unreachable = banned
+        r._canary_reachable = lambda *a: False           # canary unreachable = banned
         logs = []
         self.assertTrue(r._detect_ban(logs.append))
         self.assertTrue(r._blacklisted)
@@ -80,7 +80,7 @@ class TestDetectBanAndRecover(unittest.TestCase):
     def test_await_clears_latch_on_recovery(self):
         r = _mk_runner()
         r._blacklisted = True
-        r._canary_reachable = lambda: True            # recovered
+        r._canary_reachable = lambda *a: True            # recovered
         orig_sleep = core.time.sleep
         core.time.sleep = lambda *_a, **_k: None       # no real waiting
         try:
@@ -99,7 +99,7 @@ class TestDetectBanAndRecover(unittest.TestCase):
         r.ban_expiry = 300.0
         r.wait_unblock = 0.0
         r.cooldown = 0.0
-        r._canary_reachable = lambda: False            # never recovers -> full window
+        r._canary_reachable = lambda *a: False            # never recovers -> full window
         slept = {"total": 0.0}
         orig_sleep = core.time.sleep
 
@@ -123,7 +123,7 @@ class TestDetectBanAndRecover(unittest.TestCase):
         r.ban_expiry = 0.0
         r.wait_unblock = 0.0
         r.cooldown = 0.0
-        r._canary_reachable = lambda: False            # never recovers -> full window
+        r._canary_reachable = lambda *a: False            # never recovers -> full window
         slept = {"total": 0.0}
         orig_sleep = core.time.sleep
         core.time.sleep = lambda s: slept.__setitem__("total", slept["total"] + s)
@@ -139,14 +139,14 @@ class TestFlagGeneralizedToNoService(unittest.TestCase):
     def test_no_service_verdict_tagged_suspect_when_banned(self):
         r = _mk_runner()
         r._blacklisted = True
-        r._canary_reachable = lambda: False
+        r._canary_reachable = lambda *a: False
         v = r._flag_if_blacklisted("NO-SERVICE — port closed", lambda m: None)
         self.assertIn("[SUSPECT:", v)
 
     def test_not_tagged_when_canary_reachable(self):
         r = _mk_runner()
         r._blacklisted = False
-        r._canary_reachable = lambda: True
+        r._canary_reachable = lambda *a: True
         v = r._flag_if_blacklisted("NO-SERVICE — port closed", lambda m: None)
         self.assertNotIn("[SUSPECT:", v)
 
@@ -158,7 +158,7 @@ class TestRetryReRunsContaminated(unittest.TestCase):
         r = _mk_runner()
         r.auto_retry = 1
         r._blacklisted = True                          # banned at retry entry
-        r._canary_reachable = lambda: True             # ban has cleared -> recovers
+        r._canary_reachable = lambda *a: True             # ban has cleared -> recovers
         clean = _FakeMod("c", "PWNED got in", run_last=True)   # re-run => SUCCESS
 
         # pre-seed a CONTAMINATED result for c (as the serial loop would on quarantine)

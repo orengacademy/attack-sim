@@ -134,6 +134,22 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     engine sorts these to the end of the serial batch so a blacklist/rate-limit
     they trigger can't turn later attacks into **false BLOCKEDs**. (A persisted
     blacklist can still bleed into a *subsequent iteration*; one iteration is clean.)
+  - **`defer_group`** (default `"boundary"`): the **device/control** a deferred
+    module trips, so the contamination guard tracks a **separate canary + blacklist
+    latch PER device**. Most modules trip the SD-WAN boundary (`boundary`, the
+    default — the start-of-run canary on the target). `waf_evasion` /
+    `exposed_mgmt_api` trip the **agency WAF** on the published 443 app
+    (`defer_group: "agency_waf"`), and `doh_bypass` trips the **egress gateway**
+    (`defer_group: "egress"`). A ban on one device never flags or strands another
+    device's modules (e.g. a WAF ban on 443 no longer marks an SD-WAN verdict
+    SUSPECT, and vice versa). A non-default `defer_group` also defers the module out
+    of the parallel pool on its own (no `run_last`/`trips_ips` needed). A group can
+    name its canary with **`defer_canary_cfg`** (a `config.json` key giving the
+    device host/URL, e.g. `published_app_url`) + **`defer_canary_port`**; without a
+    reachable canary the group still stays isolated, only auto-detection of its own
+    ban is unavailable (e.g. `egress` has none). The global run ORDER is still one
+    `order`-sorted sequence (sticky blacklisters last); only ban *tracking* is
+    per-group.
 - **USS scope:** `test_type` (`attack_sim` | `pentest` | `va` | `dos`), `family`
   (`A`–`G`), `direction` (`a2b` default | `b2a` | `both`), `active` (advertises
   active-establishment capability).

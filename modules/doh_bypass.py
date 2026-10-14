@@ -47,6 +47,11 @@ META = {
     "tactic": 'Command and Control',
     "requires": ["curl"],
     "trips_ips": True,   # DoH/egress signature can trip the gateway → source blacklist; run last
+    # This trips the EGRESS gateway, not the SD-WAN inbound boundary — its own device
+    # group so a DoH/egress ban can't be read as (or strand) an inbound-boundary module,
+    # and vice versa. No canary: an egress ban isn't a single-host reachability check, so
+    # the group just stays isolated (a ban it trips is attributed to nothing else).
+    "defer_group": "egress",
     "ports": [],         # egress test — no target port
     # DOH-BYPASS = DoH resolved/egressed (finding). The raw DoH JSON's "Answer"/"data"
     # is kept as a fallback signal. DOH-BLOCKED = DoH egress filtered (control held).
