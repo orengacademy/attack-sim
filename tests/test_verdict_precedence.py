@@ -155,6 +155,19 @@ class TestLadderPrecedence(unittest.TestCase):
             self.assertEqual(b, "INCONCLUSIVE")
             self.assertIn("quarantine", v)
 
+    def test_threshold_inconclusive_not_upgraded_to_blocked(self):
+        # icmp_flood's DoS-volume-floor INCONCLUSIVE: the flood was DELIVERED at 0% loss but
+        # under the Mbit/s floor. It mentions "ICMP" (HARNESS_ICMP_MIN_MBPS) but is NOT a
+        # liveness/100%-loss case — with the host reachable it must STAY INCONCLUSIVE, never
+        # be upgraded to a false BLOCKED ("ICMP 100% lost" would contradict the 0% loss).
+        raw = ("python flood: sent 13907 ICMP echoes; during-flood loss=0.0%\n"
+               "[INCONCLUSIVE] the flood was DELIVERED (0.0% loss) but only reached ~11 Mbit/s "
+               "— BELOW the 50 Mbit/s DoS-volume floor (HARNESS_ICMP_MIN_MBPS).")
+        b, v = _verdict(raw, recon="filtered", reachable_at_recon=True, banned=False,
+                        success=r"^PASS", blocked=r"^BLOCKED-|No route to host")
+        self.assertEqual(b, "INCONCLUSIVE")
+        self.assertNotIn("100% lost", v)
+
     # rung 6: refused/closed => NO-SERVICE (service absent, NOT a control block).
     def test_refused_closed_is_no_service(self):
         b, _ = _verdict("Connection refused", recon="closed")
