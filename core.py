@@ -1717,21 +1717,6 @@ _NO_VERSION_PROBE = {"responder", "impacket-secretsdump",
 _VERSION_FLAGS = ("--version", "-V", "-version", "version")
 
 
-def is_wsl1():
-    """True on WSL1 (NOT WSL2). WSL1 has no real Linux kernel: raw sockets and file
-    capabilities don't work, so the raw-socket modules (ICMP/SYN flood, stateful_evasion)
-    can't put traffic on the wire even as root — and hping3 half-emulates, giving
-    NON-DETERMINISTIC junk (a false BLOCKED unprivileged, NO-RESULT as root). Those
-    modules short-circuit to PREREQ-MISSING here instead. WSL1 kernel release is
-    '<4.x>-<build>-Microsoft'; WSL2 is '...-microsoft-standard[-WSL2]' (excluded)."""
-    try:
-        import platform
-        r = (platform.release() or "").lower()
-    except Exception:
-        return False
-    return "microsoft" in r and "wsl2" not in r and "standard" not in r
-
-
 def is_privileged():
     """True if the process has root (POSIX) or Administrator (Windows) rights.
     Cross-platform: os.geteuid() doesn't exist on Windows."""
@@ -2640,17 +2625,12 @@ class Runner:
         if ps["needs_root_modules"]:
             log(f"Privilege: root-needing modules ({', '.join(ps['needs_root_modules'])}) — "
                 f"{ps['how']}.")
-            if is_wsl1():
-                log("[WARN] WSL1 detected — raw sockets / file capabilities do NOT work here "
-                    "(setcap is a no-op), so the raw-socket modules (ICMP/SYN flood, "
-                    "stateful_evasion) can't run even as root and will be recorded "
-                    "PREREQ-MISSING. Run them from a NATIVE Linux host (VM / WSL2 / the target "
-                    "host itself) for a real verdict.")
-            elif not (ps["root"] or ps["sudo_nopasswd"]):
+            if not (ps["root"] or ps["sudo_nopasswd"]):
                 log("[WARN] not root and no passwordless/cached sudo — the root-needing modules "
-                    "can't elevate and will read FLOOD-PRIV-ERROR / INCONCLUSIVE. Fix: run as root, "
-                    "`sudo -v` to cache a ticket, or `setcap cap_net_raw,cap_net_admin+eip "
-                    "$(which hping3)` (bootstrap.py does this).")
+                    "can't elevate and will read FLOOD-PRIV-ERROR. Fix: run as root, `sudo -v` to "
+                    "cache a ticket, or `setcap cap_net_raw,cap_net_admin+eip $(which hping3)` "
+                    "(bootstrap.py does this). On WSL, raw-socket floods are reliable only on WSL2 "
+                    "/ a native Linux host.")
         pf_by_id = {r["id"]: r for r in pf["modules"]}
         ready_ids = {r["id"] for r in pf["modules"] if r["ready"]}
         log(f"Preflight: {len(ready_ids)}/{len(modules)} modules ready.")
