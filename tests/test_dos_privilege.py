@@ -37,25 +37,57 @@ class _Ctx:
 
 
 class TestIcmpFloodPrivilege(unittest.TestCase):
-    def test_priv_failure_is_not_blocked(self):
+    def test_hping_privfail_falls_back_to_python(self):
+        # hping3's raw socket fails, but the Python datagram flood CAN send (like ping):
+        # the module must fall back and score the REAL result (here: delivered -> PASS),
+        # never a false BLOCKED and never FLOOD-PRIV-ERROR.
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
-        # unprivileged hping3: the raw-socket error AND a 100% packet-loss stats line
         m._hping_flood_at = lambda t, pps, sz, sec: (
-            100.0, None, 0,
-            "[open_sockraw] socket(): Operation not permitted\n"
-            "1 packets transmitted, 0 received, 100% packet loss")
+            None, None, None, "[open_sockraw] socket(): Operation not permitted")
+        m._py_icmp_flood = lambda target, seconds, result: result.update(
+            {"mode": "dgram(unprivileged)", "sent": 50000})
+
+        class _CP:
+            stdout = "15 packets transmitted, 15 received, 0% packet loss"
+        real_run = m.subprocess.run
+        m.subprocess.run = lambda *a, **k: _CP()
         real_which = m.shutil.which
         m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
         try:
             out = m.run("203.0.113.9", _Ctx())
         finally:
+            m.subprocess.run = real_run
+            m.shutil.which = real_which
+        self.assertIn("falling back to the Python", out)
+        self.assertNotIn("FLOOD-PRIV-ERROR", out)
+        self.assertTrue(core._match(out, m.META["success_regex"]),
+                        "a delivered fallback flood should PASS, not die FLOOD-PRIV-ERROR")
+
+    def test_priv_failure_when_both_engines_cant_send(self):
+        # hping3 raw socket fails AND the Python datagram socket can't open either ->
+        # FLOOD-PRIV-ERROR (-> NO-RESULT), never a false BLOCKED.
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+        m._hping_flood_at = lambda t, pps, sz, sec: (
+            None, None, None, "[open_sockraw] socket(): Operation not permitted")
+        m._py_icmp_flood = lambda target, seconds, result: result.update(
+            {"error": "PermissionError: [Errno 1] Operation not permitted"})
+
+        class _CP:
+            stdout = "15 packets transmitted, 15 received, 0% packet loss"
+        real_run = m.subprocess.run
+        m.subprocess.run = lambda *a, **k: _CP()
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.subprocess.run = real_run
             m.shutil.which = real_which
         self.assertIn("FLOOD-PRIV-ERROR", out)
-        self.assertFalse(core._match(out, m.META["blocked_regex"]),
-                         "a privilege failure must NOT match blocked_regex (false BLOCKED)")
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
         self.assertFalse(core._match(out, m.META["success_regex"]))
-
 
     def test_real_policing_still_blocks(self):
         # a genuine policed flood (high loss, NO privilege error) must still read BLOCKED
