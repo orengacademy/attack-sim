@@ -555,6 +555,10 @@ def main():
                          "default 1. Also HARNESS_AUTO_RETRY")
     ap.add_argument("--force", action="store_true",
                     help="run modules even if prerequisites are missing (default: skip)")
+    ap.add_argument("--require-root", action="store_true",
+                    help="refuse to run unless privileged (root, OR passwordless/cached sudo "
+                         "so the raw-socket modules can self-elevate). Opt-in: most modules "
+                         "do NOT need root, so this is off by default.")
     ap.add_argument("--port", help='per-attack port overrides, e.g. "log4shell=8983,ssh_brute=2222"')
     sel = ap.add_mutually_exclusive_group()
     sel.add_argument("--only", help="comma list of module ids")
@@ -709,6 +713,18 @@ def main():
     if not selected:
         print("[!] no modules selected", file=sys.stderr)
         return 2
+
+    # Opt-in privilege gate (--require-root): refuse unless we can actually elevate the
+    # raw-socket modules. NOT the default — most modules need no root. Accepts
+    # passwordless/cached sudo (the modules self-elevate via `sudo -n`), not just root.
+    if args.require_root:
+        ps = core.privilege_status(selected)
+        if not (ps["root"] or ps["sudo_nopasswd"]):
+            print("[!] --require-root set but not privileged: " + ps["how"] + ".\n"
+                  "    Fix: run as root, `sudo -v` to cache a ticket, or setcap hping3 "
+                  "(python3 bootstrap.py). Omit --require-root to run the non-root modules anyway.",
+                  file=sys.stderr)
+            return 2
 
     # Clean live rendering: the engine's own per-module log lines interleave
     # under concurrency; suppress those on the console (they stay in the
