@@ -27,6 +27,16 @@ META = {
     "tactic": "Initial Access",
     "cwe": ["CWE-20"],
     "requires": [],
+    "trips_ips": True,   # the XSS/encoded-variant probes trip the WAF's anomaly
+                         #   scoring and blacklist the SOURCE (same class as
+                         #   web_ips_sigs) — defer out of the parallel pool so a ban
+                         #   it causes can't contaminate concurrent modules, and so
+                         #   it isn't itself banned mid-run into a false BLOCKED.
+    "order": 6,          # web-payload tier, after the SD-WAN web IPS-sig attacks
+                         #   (apache 1 … web_ips_sigs 5). NOTE: this hits the AGENCY
+                         #   WAF on 443, a DIFFERENT device from the SD-WAN boundary —
+                         #   see the "split the web group" note; order here is a
+                         #   stopgap until the deferred tail is grouped per-device.
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^WAF-EVADED",

@@ -13,11 +13,16 @@ one OID at a time takes minutes even with nothing wrong on the wire;
 confirmed ~9-12x more throughput from switching to GETBULK against a lab
 DC (a few hundred thousand bytes of MIB data), on top of the existing
 -t3 -r1 fast-fail for a genuinely filtered/closed port. Packet loss on
-the path (e.g. right after icmp_flood, which runs just before this
-module and measurably degrades the link for a few seconds — see
-modules/icmp_flood.py) makes the one-OID-at-a-time version even worse:
-every dropped GETNEXT costs a full timeout+retry, and with hundreds of
-OIDs a couple of drops alone adds minutes. GETBULK needs far fewer
+the path makes the one-OID-at-a-time version even worse: every dropped
+GETNEXT costs a full timeout+retry, and with hundreds of OIDs a couple
+of drops alone adds minutes. (This module is serial + run_last — see
+META — so it runs ALONE at the end, AFTER the DoS floods like
+icmp_flood rather than overlapped with them; an earlier version lacked
+those flags and ran in the parallel pool, where its own community burst
+tripped an SNMP brute-force source-ban mid-walk and 'public' — tried
+last — timed out, scoring a FALSE BLOCKED on a target that is actually
+vulnerable. The GETBULK win still matters for a chatty target on any
+lossy link.) GETBULK needs far fewer
 round-trips for the same walk to begin with, so it's far less exposed
 to that same loss in the first place. -t3 -r1 also means a full ~15-word
 wordlist costs at most ~1-2 min before landing on (or exhausting) the
@@ -39,6 +44,15 @@ META = {
     "requires": ["snmpbulkwalk"],
     "ports": [("udp", 161)],
     "port_customizable": True,
+    "serial": True,      # brute: run ALONE so its own community burst isn't skewed
+    "run_last": True,    # the burst (public tried LAST) trips an SNMP community
+                         #   brute-force signature that blacklists the SOURCE; run
+                         #   last so the ban it causes can't contaminate the quiet
+                         #   modules — AND so 'public' (the one that works) isn't
+                         #   the attempt that lands after the source is already
+                         #   banned (the false-BLOCKED this module used to hit).
+    "order": 100,        # sticky source-blacklister tier, same as ssh_brute; after
+                         #   the inline IPS-signature attacks (apache/log4shell/doh/…)
     # match a real net-snmp VALUE line ("... = STRING: ...") rather than a bare
     # type word — "OID" alone also appears inside error text ("...at this OID").
     "success_regex": r"= (STRING|INTEGER|Counter32|Gauge32|Timeticks|Hex-STRING|IpAddress|OID|OPAQUE):",

@@ -63,6 +63,11 @@ META = {
     "serial": True,
     "run_last": True,            # trips the port-scan IPS / blacklists the source
     "trips_ips": True,
+    "order": 90,                 # sticky scanner tier: after the web IPS-sig attacks
+                                 #   (1-5), before the brute/DoS blacklisters (100/101).
+                                 #   Without an explicit order (==0) a full scan sorted to
+                                 #   the FRONT of the deferred tail and its port-scan ban
+                                 #   contaminated every IPS-sig test after it.
     # stealth mode deliberately runs for many minutes (time-spread batches), so
     # the module declares its own longer watchdog (engine honours hard_timeout_s).
     "hard_timeout_s": 3600,

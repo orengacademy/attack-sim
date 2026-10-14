@@ -28,6 +28,9 @@ META = {
     "tactic": 'Initial Access',
     "requires": ["curl"],
     "trips_ips": True,   # IPS "struts2 injection" signature blacklists the source — run last
+    "order": 4,          # IPS-sig tier, after apache(1)/log4shell(2)/doh(3). Without an
+                         #   explicit order (==0) it sorted ahead of them, so a struts2
+                         #   signature ban contaminated those earlier IPS-sig tests.
     "ports": [("tcp", 80)],
     "port_customizable": True,
     "success_regex": r"^\[STRUTS2-DELIVERED\]",
