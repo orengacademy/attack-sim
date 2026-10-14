@@ -526,7 +526,7 @@ def run(target, ctx):
     try:
         # measure delivery with SAMPLES fast pings DURING the flood and take the median,
         # so one jittery sample can't flip the verdict (fast -i so they fit the window).
-        flood_loss, _frtt, ftext = _sampled_loss_rtt(target)
+        flood_loss, flood_rtt, ftext = _sampled_loss_rtt(target)
         out.append(ftext)
     finally:
         th.join(FLOOD_SECONDS + 5)
@@ -545,8 +545,32 @@ def run(target, ctx):
     if flood_loss is None:
         out.append("[INCONCLUSIVE] could not parse the flood's delivery ratio — review raw log.")
     elif base_loss is not None and (flood_loss - base_loss) >= RATE_LIMIT_DELTA:
-        out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline — "
-                   "the boundary policed the high-rate ICMP (control held)." + _lowconf(base_loss))
+        # SELF-CONGESTION GUARD (datagram fallback only). The Python fallback floods from THIS
+        # host's own datagram path, so a flood that ALSO balloons the round-trip (>= RTT_INFLATION x
+        # baseline AND >= RTT_ABS_FLOOR ms) is queuing/dropping its OWN packets upstream — that loss
+        # is self-inflicted sender-side congestion, NOT remote policing. A real anti-DoS rate-limiter
+        # DROPS excess echoes WITHOUT inflating your RTT (the replies that come back come back fast).
+        # So only call BLOCKED when loss rose WITHOUT the congestion signature; loss+ballooned-RTT is
+        # a delivered flood under self-congestion (-> PASS w/ caveat). This stops the WSL1 run-to-run
+        # flip-flop (0% one run -> SUCCESS, 33% the next -> false BLOCKED) on a target with no SD-WAN.
+        _congested = (base_rtt and flood_rtt and base_rtt > 0
+                      and flood_rtt / base_rtt >= RTT_INFLATION and flood_rtt >= RTT_ABS_FLOOR)
+        if _congested:
+            out.append(
+                "PASS (self-congestion, not policing): the flood lost %.1f%% vs %.1f%% baseline, BUT "
+                "the round-trip also ballooned to ~%sms (%.0fx the %sms baseline) — the datagram "
+                "fallback saturated THIS host's own uplink and queued/dropped its OWN packets. That is "
+                "self-congestion, not a remote rate-limit (a rate-limiter drops WITHOUT inflating your "
+                "RTT). ICMP was delivered; no boundary policing was confirmed from here. For a "
+                "trustworthy rate-limit verdict, flood from a host with real raw sockets (hping3, not "
+                "WSL1) so the ramp can find the actual knee, or drive multiple sources (fleet.py)."
+                % (flood_loss, base_loss, _fmt(flood_rtt, 0),
+                   (flood_rtt / base_rtt if base_rtt else 0.0), _fmt(base_rtt, 0)) + _lowconf(base_loss))
+        else:
+            out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline, "
+                       "with the round-trip STAYING low (~%sms vs %sms baseline) — a remote rate-limiter "
+                       "dropped the excess ICMP without queuing it, so the boundary policed the high-rate "
+                       "flood (control held)." % (_fmt(flood_rtt, 0), _fmt(base_rtt, 0)) + _lowconf(base_loss))
     elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
         # Delivered, but the datagram fallback couldn't push a DoS-grade volume -> can't
         # conclude the control is absent. This is the common WSL1 / no-raw-socket case.
