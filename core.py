@@ -1317,12 +1317,13 @@ class Evidence:
                     for it in iters_sorted)
             else:
                 last_cell = e(d["verdicts"].get(d["v"], ""))
+            _cv = color(d["v"])
             rows.append(
-                f'<tr><td class=num>{i}</td>'
-                f'<td><span class=pill style="background:{color(d["v"])}">{e(d["v"])}</span></td>'
-                f'<td>{e(d["name"])}</td><td class=dim>{e(d["cat"])}</td>'
-                f'<td class=dim>{e(d["mitre"])}</td><td class=dim>{e(d["cwe"])}</td>'
-                f'<td class=dim>{("%.1fs" % d["dur"]) if d["dur"] is not None else ""}</td>'
+                f'<tr style="--rc:{_cv}"><td class=num>{i}</td>'
+                f'<td><span class=pill style="--pc:{_cv}">{e(d["v"])}</span></td>'
+                f'<td class=mod>{e(d["name"])}</td><td class=dim>{e(d["cat"])}</td>'
+                f'<td class="dim mono">{e(d["mitre"])}</td><td class="dim mono">{e(d["cwe"])}</td>'
+                f'<td class="dim mono">{("%.1fs" % d["dur"]) if d["dur"] is not None else ""}</td>'
                 f'<td class=verdict>{last_cell}</td></tr>')
         bars = []
         for v in self._V_ORDER:
@@ -1330,9 +1331,10 @@ class Evidence:
                 continue
             pct = 100.0 * dist[v] / n
             bars.append(
-                f'<div class=bar><span class=lbl style="color:{color(v)}">{e(v)}</span>'
+                f'<div class=bar><span class=dot style="background:{color(v)}"></span>'
+                f'<span class=lbl>{e(v)}</span>'
                 f'<span class=meter><span style="width:{pct:.0f}%;background:{color(v)}"></span></span>'
-                f'<span class=cnt>{dist[v]}/{n}</span></div>')
+                f'<span class=cnt>{dist[v]}<i>/{n}</i></span></div>')
         findings = dist.get("SUCCESS", 0)
         # Contamination banner (SUSPECT / INCONCLUSIVE) — see report.txt rationale.
         inc_mods = sorted({r.get("attack", "?") for r in recs
@@ -1353,37 +1355,94 @@ class Evidence:
                       'Re-run clean (whitelist the tester source on the appliance / wait out the '
                       'quarantine):<br>' + "<br>".join(parts) + '</div>')
         ver = e("v" + VERSION + ((" (" + m.get("engine_version", "") + ")") if m.get("engine_version") else ""))
-        f.write(f"""<!doctype html><html><head><meta charset=utf-8>
+        _blocked = dist.get("BLOCKED", 0); _secured = dist.get("NOT-VULNERABLE", 0)
+        _dur = m.get("total_duration_s")
+        _dur_s = (("%.0fs" % _dur) if isinstance(_dur, (int, float)) else "&mdash;")
+
+        def _tile(num, lab, col):
+            return (f'<div class=tile><div class=tnum style="color:{col}">{num}</div>'
+                    f'<div class=tlab>{e(lab)}</div></div>')
+        tiles = (_tile(findings, "findings", color("SUCCESS"))
+                 + _tile(_blocked, "blocked", color("BLOCKED"))
+                 + _tile(_secured, "not-vulnerable", color("NOT-VULNERABLE"))
+                 + _tile(n, "modules", "var(--acc)")
+                 + _tile(_dur_s, "duration", "var(--tx2)"))
+        meta_chips = "".join(
+            f'<span class=chip>{c}</span>' for c in [
+                (f'SITE {e(site)}' if site else ''),
+                f'target <b>{e(tgt)}</b>',
+                f'posture {e(m.get("mode", "blackbox"))}',
+                f'{e("cloud") if m.get("cloud") else "on-prem"}' if m.get("cloud") is not None else '',
+                f'run {e(m.get("run", ""))}',
+                f'harness {ver}',
+                e(str(m.get("finished", ""))),
+            ] if c)
+        f.write(f"""<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
 <title>Control Validation — {e(tgt)}</title><style>
-body{{font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:24px}}
-h1{{font-size:18px;margin:0 0 4px}} .meta{{color:#8b949e;font-size:13px;margin-bottom:16px}}
-table{{border-collapse:collapse;width:100%;margin-top:16px;font-size:13px}}
-th,td{{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d;vertical-align:top}}
-th{{color:#8b949e;font-weight:600;border-bottom:2px solid #30363d}}
-.num{{color:#6e7681;width:28px}} .dim{{color:#8b949e}} .verdict{{color:#8b949e;font-size:12px;max-width:380px}}
-.pill{{color:#fff;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}}
-.bar{{display:flex;align-items:center;gap:8px;margin:3px 0}} .lbl{{width:120px;font-weight:600}}
-.meter{{flex:0 0 220px;height:10px;background:#21262d;border-radius:5px;overflow:hidden}}
-.meter>span{{display:block;height:100%}} .cnt{{color:#8b949e}}
-.foot{{margin-top:14px;font-weight:600}} code{{color:#58a6ff}}
-.warn{{background:#2d2411;border:1px solid #9e6a03;border-left:4px solid #e3a008;
-color:#f0d58c;padding:10px 12px;border-radius:6px;margin:12px 0;font-size:13px}}
-</style></head><body>
-<h1>Control Validation Harness — Results</h1>
-<div class=meta>{('SITE ' + e(site) + ' &middot; ') if site else ''}target <code>{e(tgt)}</code>
-&middot; run {e(m.get('run',''))} &middot; harness {ver} &middot; posture {e(m.get('mode','blackbox'))}
-&middot; {n} module(s) &middot; {e(str(m.get('finished','')))}</div>
+:root{{--bg:#0a0e15;--panel:#0f1620;--panel2:#131c28;--line:#1e2a3a;--line2:#28384c;
+--tx:#d4deea;--tx2:#8595a8;--acc:#22d3ee;--acc2:#6366f1}}
+*{{box-sizing:border-box}}
+body{{font:14px/1.55 ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+background:radial-gradient(1200px 600px at 70% -10%,#10243a33,transparent),var(--bg);
+color:var(--tx);margin:0;padding:32px 20px;-webkit-font-smoothing:antialiased}}
+.wrap{{max-width:1120px;margin:0 auto}}
+.brand{{font:800 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.32em;
+background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;
+background-clip:text;color:transparent;margin-bottom:10px}}
+h1{{font-size:22px;font-weight:700;margin:0 0 12px;letter-spacing:-.01em}}
+.chips{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:22px}}
+.chip{{font-size:12px;color:var(--tx2);background:var(--panel);border:1px solid var(--line);
+border-radius:999px;padding:3px 11px}} .chip b{{color:var(--tx);font-weight:600}}
+.score{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin:0 0 22px}}
+.tile{{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+border-radius:14px;padding:16px 18px}}
+.tnum{{font:700 26px/1 ui-sans-serif,system-ui;letter-spacing:-.02em}}
+.tlab{{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--tx2);margin-top:7px}}
+.card{{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:18px}}
+.sect{{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--tx2);margin:0 0 12px}}
+.bar{{display:flex;align-items:center;gap:10px;margin:7px 0}}
+.dot{{width:9px;height:9px;border-radius:3px;flex:none}}
+.lbl{{width:124px;font-size:12.5px;font-weight:600;color:var(--tx)}}
+.meter{{flex:1;height:8px;background:#0a0f17;border:1px solid var(--line);border-radius:6px;overflow:hidden}}
+.meter>span{{display:block;height:100%;border-radius:6px}}
+.cnt{{width:56px;text-align:right;font:600 13px ui-monospace,monospace}} .cnt i{{color:var(--tx2);font-style:normal}}
+table{{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}}
+th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}}
+thead th{{position:sticky;top:0;background:var(--panel);color:var(--tx2);font-weight:600;
+font-size:11px;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--line2)}}
+tbody tr:hover{{background:#121b27}}
+td:first-child{{border-left:3px solid var(--rc,transparent)}}
+.num{{color:var(--tx2);width:30px;font:600 12px ui-monospace,monospace}}
+.mod{{font-weight:600}} .dim{{color:var(--tx2)}} .mono{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}
+.verdict{{color:var(--tx2);font-size:12px;max-width:440px}}
+.pill{{display:inline-block;color:#06121a;background:var(--pc,#888);padding:2px 10px;border-radius:999px;
+font-size:11px;font-weight:700;white-space:nowrap;letter-spacing:.02em}}
+.warn{{background:#2a1d0a;border:1px solid #7a5200;border-left:3px solid #e3a008;color:#f0d58c;
+padding:12px 14px;border-radius:12px;margin:0 0 18px;font-size:13px}}
+.foot{{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin-top:16px;font-weight:600}}
+.legend{{color:var(--tx2);font-size:12px;font-weight:400;margin-top:12px}}
+.legend b{{color:var(--tx);font-weight:600}} code{{color:var(--acc);font-family:ui-monospace,monospace}}
+@media(max-width:620px){{.verdict{{max-width:none}} .lbl{{width:92px}}}}
+</style></head><body><div class=wrap>
+<div class=brand>ATTACK &middot; SIM</div>
+<h1>Control Validation Report</h1>
+<div class=chips>{meta_chips}</div>
 {banner}
-{''.join(bars)}
+<div class=score>{tiles}</div>
+<div class=card><div class=sect>Verdict distribution</div>{''.join(bars)}</div>
+<div class=card style="padding:6px 6px 2px">
 <table><thead><tr><th>#</th><th>Verdict</th><th>Module</th><th>Category</th>
 <th>MITRE</th><th>CWE</th><th>Time</th><th>{"Iterations" if show_iters else "Detail"}</th></tr></thead>
-<tbody>{''.join(rows)}</tbody></table>
-<div class=foot>&rarr; {findings} finding(s) got through &middot; {dist.get('DETECTED',0)} detected
-&middot; {dist.get('BLOCKED',0)} blocked</div>
-<div class=meta style="margin-top:10px">Raw evidence, summary.json/csv and the ATT&amp;CK Navigator layer
-are in this run folder. Verdicts: red = got through (finding) &middot; orange = detected &middot;
-green = blocked &middot; blue = no-service.</div>
-</body></html>""")
+<tbody>{''.join(rows)}</tbody></table></div>
+<div class=foot><span style="color:{color('SUCCESS')}">&rarr; {findings} finding(s) got through</span>
+<span style="color:{color('DETECTED')}">{dist.get('DETECTED',0)} detected</span>
+<span style="color:{color('BLOCKED')}">{_blocked} blocked</span>
+<span style="color:{color('NOT-VULNERABLE')}">{_secured} not-vulnerable</span></div>
+<div class=legend>Raw per-module logs, <b>summary.json/csv/xlsx</b> and the <b>ATT&amp;CK Navigator layer</b>
+are in this run folder. Verdict key: <b>red</b> got through (finding) &middot; <b>orange</b> detected &middot;
+<b>green</b> blocked &middot; <b>teal</b> not-vulnerable (hardened) &middot; <b>blue</b> no-service.</div>
+</div></body></html>""")
 
 
 # ---------------------------------------------------------------------

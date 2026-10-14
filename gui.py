@@ -27,25 +27,25 @@ _EGRESS_PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 NOT_SELECTED_BY_DEFAULT = {"petitpotam", "kerberoast", "nopac"}
 
 # ---- palette (modern dark) ------------------------------------------------
-BG     = "#181a24"   # window
-PANEL  = "#20222f"   # cards / panels
-SURF   = "#2a2d3d"   # inputs
-SURF2  = "#343850"   # hover / borders
-FG     = "#e8e9f0"   # primary text
-MUTED  = "#8b90a6"   # secondary text
-ACCENT = "#7c6cf0"   # brand
-OKC    = "#3fb950"   # success
-BLUEC  = "#4aa3ff"   # blocked
-WARNC  = "#e3a008"   # prereq / auth-failed
-ERRC   = "#f85149"   # error / no-result
-INFOC  = "#39c5cf"   # headers / info
-NEWC   = "#c86bff"   # "NEW" badge
+BG     = "#0a0e15"   # window (brand near-black)
+PANEL  = "#0f1620"   # cards / panels
+SURF   = "#131c28"   # inputs
+SURF2  = "#28384c"   # hover / borders
+FG     = "#d4deea"   # primary text
+MUTED  = "#8595a8"   # secondary text
+ACCENT = "#6366f1"   # brand (indigo — pairs w/ white ink)
+OKC    = "#30a46c"   # blocked/success (green)
+BLUEC  = "#4493f8"   # no-service (blue)
+WARNC  = "#e2a336"   # prereq / auth-failed (amber)
+ERRC   = "#e5484d"   # finding / error (red)
+INFOC  = "#22d3ee"   # headers / info (brand cyan)
+NEWC   = "#a371f7"   # inconclusive / "NEW" badge (purple)
 
 MONO = ("TkFixedFont", 10)
 
 # Purple-team semantics: a result that means the attack GOT THROUGH the SD-WAN is
 # a FINDING -> red; a result that means the control STOPPED it is good -> green.
-DETC = "#db6d28"               # orange — passed but detected (partial win)
+DETC = "#f5a524"               # orange — passed but detected (partial win)
 STATUS_COLORS = {
     "SUCCESS":        ERRC,    # attack passed undetected -> FINDING (red)
     "DETECTED":       DETC,    # passed the boundary but the SOC alerted (orange)
