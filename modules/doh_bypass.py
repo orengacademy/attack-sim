@@ -45,7 +45,7 @@ META = {
     "mitre": ['T1572'],
     "cwe": ['CWE-693'],
     "tactic": 'Command and Control',
-    "requires": ["curl"],
+    "requires": [],          # curl PREFERRED; pure-stdlib urllib fallback otherwise
     "trips_ips": True,   # DoH/egress signature can trip the gateway → source blacklist; run last
     # This trips the EGRESS gateway, not the SD-WAN inbound boundary — its own device
     # group so a DoH/egress ban can't be read as (or strand) an inbound-boundary module,
@@ -115,34 +115,50 @@ def _compose_verdict(canary, doh_ips, doh_responded, direct_code, access_code):
 
 
 def run(target, ctx):
+    import shutil
+    from modules import _util as U
+    have_curl = shutil.which("curl") is not None
     # target is unused — this probes the source host's own egress path, not the
     # lab target — but kept in the signature for interface consistency.
     canary = (ctx.cfg("blocked_canary_domain") or _DEFAULT_CANARY).strip()
-    out = ["# DNS-over-HTTPS bypass — DNS/egress control test (blocked canary: %s)" % canary, ""]
+    hdr = "# DNS-over-HTTPS bypass — DNS/egress control test (blocked canary: %s)" % canary
+    if not have_curl:
+        hdr += "  [python urllib fallback — curl not installed]"
+    out = [hdr, ""]
 
     # ---- leg 2 first: DoH resolve the canary over HTTPS/443 --------------------
-    # -S (with -s) surfaces the real error on failure instead of a blank NO-RESULT;
-    # --retry rides out a one-off transient blip so the egress verdict is stable.
-    doh_raw = ctx.run_cmd(
-        'curl -s -S -m10 --retry 2 --retry-connrefused --retry-delay 1 '
-        '-H "accept: application/dns-json" '
-        '"https://%s/dns-query?name=%s&type=A"' % (_RESOLVER, canary), target)
+    doh_url = "https://%s/dns-query?name=%s&type=A" % (_RESOLVER, canary)
+    if have_curl:
+        # -S (with -s) surfaces the real error on failure; --retry rides out a blip.
+        doh_raw = ctx.run_cmd(
+            'curl -s -S -m10 --retry 2 --retry-connrefused --retry-delay 1 '
+            '-H "accept: application/dns-json" "%s"' % doh_url, target)
+    else:
+        code, body, err = U.http_fetch(doh_url, headers={"accept": "application/dns-json"},
+                                       ctx=ctx, timeout=10, want_body=True)
+        doh_raw = body if body else ("could not resolve (%s)" % (err or "no body"))
     out += ["## DoH query (name=%s over https://%s)" % (canary, _RESOLVER), doh_raw.strip(), ""]
     doh_ips = _parse_doh_ips(doh_raw)
     doh_responded = ('"Status"' in doh_raw) or ('"Answer"' in doh_raw) or bool(doh_ips)
 
     # ---- leg 1: baseline — direct-by-name via the SYSTEM resolver --------------
     # The controlled path. On a filtering network this is sinkholed/dropped (000).
-    # {{ }} survive ctx.run_cmd's .format(); %% -> % so curl gets %{http_code}.
-    direct_raw = ctx.run_cmd(
-        'curl -s -S -o %s -w "DIRECT-HTTP:%%{{http_code}}" -k --max-time 6 "https://%s/"'
-        % (os.devnull, canary), target)
+    if have_curl:
+        # {{ }} survive ctx.run_cmd's .format(); %% -> % so curl gets %{http_code}.
+        direct_raw = ctx.run_cmd(
+            'curl -s -S -o %s -w "DIRECT-HTTP:%%{{http_code}}" -k --max-time 6 "https://%s/"'
+            % (os.devnull, canary), target)
+    else:
+        code, _b, _e = U.http_fetch("https://%s/" % canary, ctx=ctx, timeout=6, want_body=False)
+        direct_raw = "DIRECT-HTTP:%03d" % code
     out += ["## baseline: direct-by-name (system resolver, the controlled path)", direct_raw.strip(), ""]
     direct_code = _parse_code(direct_raw, "DIRECT-HTTP")
 
     # ---- leg 3: access-confirm — connect to a DoH IP with the real SNI ---------
+    # curl's --resolve (pin the DoH-obtained IP) has no simple urllib equivalent, so the
+    # fallback skips this enrichment leg; the core verdict (DoH resolved = bypass) stands.
     access_code = "000"
-    if doh_ips:
+    if doh_ips and have_curl:
         access_raw = ctx.run_cmd(
             'curl -s -S -o %s -w "ACCESS-HTTP:%%{{http_code}}" -k --max-time 8 '
             '--resolve %s:443:%s "https://%s/"' % (os.devnull, canary, doh_ips[0], canary), target)

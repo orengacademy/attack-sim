@@ -177,6 +177,64 @@ def dns_query(qname, server, ctx=None, timeout=4, rrtype=1):
         s.close()
 
 
+def http_fetch(url, method="GET", headers=None, data=None, ctx=None, timeout=10,
+               follow=True, want_body=True):
+    """urllib-based HTTP(S) fetch — the pure-stdlib fallback for the curl-based modules.
+    Returns (status:int, body:str, err:str|None): status is the final HTTP code (or 0 on
+    a connection failure, with err set). Honours ctx.source_ip (egress bind), does NOT
+    verify TLS (parity with the modules' curl -k), sends the path AS-IS (no ../ collapsing),
+    and follows redirects when `follow`. Never raises."""
+    import urllib.request
+    import urllib.error
+    import http.client
+    src = (ctx.source_ip if (ctx and getattr(ctx, "source_ip", None)) else None)
+    sslctx = ssl.create_default_context()
+    sslctx.check_hostname = False
+    sslctx.verify_mode = ssl.CERT_NONE
+
+    class _BoundHTTP(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.create_connection((self.host, self.port), self.timeout,
+                                                  source_address=(src, 0) if src else None)
+
+    class _BoundHTTPS(http.client.HTTPSConnection):
+        def connect(self):
+            s = socket.create_connection((self.host, self.port), self.timeout,
+                                         source_address=(src, 0) if src else None)
+            self.sock = sslctx.wrap_socket(s, server_hostname=self.host)
+
+    class _HTTPh(urllib.request.HTTPHandler):
+        def http_open(self, r):
+            return self.do_open(_BoundHTTP, r)
+
+    class _HTTPSh(urllib.request.HTTPSHandler):
+        def https_open(self, r):
+            return self.do_open(_BoundHTTPS, r)
+
+    handlers = [_HTTPh(), _HTTPSh()]
+    if not follow:
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        handlers.append(_NoRedirect())
+    opener = urllib.request.build_opener(*handlers)
+    body_bytes = data if isinstance(data, (bytes, bytearray)) else (data.encode() if data else None)
+    req = urllib.request.Request(url, data=body_bytes, method=method, headers=headers or {})
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read(65536).decode("utf-8", "replace") if want_body else ""
+            return resp.getcode(), body, None
+    except urllib.error.HTTPError as e:   # a real HTTP status (4xx/5xx) — still "reached"
+        body = ""
+        try:
+            body = e.read(65536).decode("utf-8", "replace") if want_body else ""
+        except Exception:
+            pass
+        return e.code, body, None
+    except Exception as e:                # connection refused / reset / timeout / TLS / DNS
+        return 0, "", f"{e.__class__.__name__}: {e}"
+
+
 def skip(reason):
     """Standard '[SKIP]' line — surfaced by the classifier as the NO-RESULT hint
     (used when an active module has no infra configured / --active is off)."""
