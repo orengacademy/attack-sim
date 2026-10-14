@@ -489,6 +489,12 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
             # just the full verdict (otherwise "boundary policed" reads as a control win).
             if "whitebox-anomaly" in vtext:
                 detail = "WHITEBOX baseline anomaly — service-down / upstream-edge / host filter, not a control (see verdict)"
+        if d["v"] == "NO-SERVICE":
+            nvtext = d["verdicts"].get("NO-SERVICE", "") or ""
+            # self-declared "vector absent though port open" (e.g. key-only SSH): say WHY,
+            # not the generic "port closed" (the port is actually open here).
+            if "attack vector" in nvtext or "key-only" in nvtext or "password auth" in nvtext.lower():
+                detail = "no vector — SSH password auth disabled (key-only); brute-force N/A, not a weakness"
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                    key=lambda it: it[0])

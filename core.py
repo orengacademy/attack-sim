@@ -1464,6 +1464,14 @@ _PREREQ_MARKER = re.compile(r"\[PREREQ-MISSING\].*$", re.MULTILINE)
 # module is deliberately declaring the test indeterminate and telling the operator
 # what to verify, so the reason isn't lost behind a mute "review raw log".
 _INCONCLUSIVE_MARKER = re.compile(r"\[INCONCLUSIVE\].*$", re.MULTILINE)
+# [NO-SERVICE] = a module ran, the PORT is open, but the specific attack VECTOR it
+# targets is not offered by the service (so there is nothing to attack) — e.g. an
+# SSH daemon with password auth DISABLED (key-only): the port answers, but a
+# password brute-force cannot even be attempted. Distinct from NO-RESULT (a tool
+# fault) and from the recon-gated refused->NO-SERVICE (which needs a CLOSED port);
+# the module authoritatively declares the vector absent, so it precedes the recon
+# states. Not a weakness in itself (often it IS the hardening).
+_NOSVC_MARKER = re.compile(r"\[NO-SERVICE\].*$", re.MULTILINE)
 # Harness-INTERNAL failures: the module crashed (exception boundary), the
 # wall-clock watchdog abandoned a hang, it produced no output, or run_cmd could
 # not build/launch the command. These are TOOL faults, not the control blocking
@@ -3346,6 +3354,17 @@ class Runner:
                 b = "SKIPPED"
                 verdict = ("module did nothing (not applicable / not configured) — "
                            + (hint or "see raw log") + "; NOT a control result")
+            # A module self-declaring that its attack VECTOR is not offered though the
+            # port is open (e.g. key-only SSH -> no password auth to brute). Authoritative
+            # about its own run, so it precedes the recon-inferred states; scored NO-SERVICE
+            # (the vector's service is absent), NOT NO-RESULT (which reads as a tool fault).
+            elif _NOSVC_MARKER.search(target_raw):
+                m = _NOSVC_MARKER.search(target_raw)
+                reason = m.group(0).replace("[NO-SERVICE]", "").strip()
+                b = "NO-SERVICE"
+                verdict = ("no service for this attack vector — "
+                           + (reason or "the targeted service/vector is not offered")
+                           + "; NOT a control-under-test result")
             # A module self-declaring a missing LOCAL prerequisite at runtime (e.g.
             # kerberoast with a skewed clock and no faketime). Not a control result;
             # checked before the port/blocked branches so it can't be mis-scored as
@@ -3513,7 +3532,9 @@ class Runner:
             # NO-SERVICE here is anomalous and usually means the service is down or
             # an upstream (edge/host) filter dropped it — NOT the SD-WAN control
             # (there's nothing between source and target to credit in white-box).
-            if _wb and b in ("BLOCKED", "NO-SERVICE"):
+            if _wb and b in ("BLOCKED", "NO-SERVICE") and not _NOSVC_MARKER.search(target_raw):
+                # (a module self-declaring [NO-SERVICE] already states WHY the vector is absent —
+                #  don't tack on the generic "anomaly / service-down" guess there.)
                 verdict += ("  [whitebox-anomaly: the allow-all baseline should PASS — likely "
                             "service-down / upstream-edge / host filter, not a control result]")
             log(f"     target: [{b}]  -> {verdict}")
