@@ -118,6 +118,22 @@ def _c(s, color, no_color):
     return s if no_color or not sys.stdout.isatty() else f"{color}{s}{_RESET}"
 
 
+def _egress_ip(target):
+    """Best-effort LOCAL egress IP the OS would use to reach `target` — the address
+    the attack traffic actually leaves from. A UDP connect only selects the route
+    (no packets sent); returns '' on failure (IPv6/hostname/unroutable)."""
+    import socket as _s
+    try:
+        k = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        try:
+            k.connect((str(target), 80))
+            return k.getsockname()[0]
+        finally:
+            k.close()
+    except Exception:
+        return ""
+
+
 DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"; AMBER = "\033[33m"
 CYAN_B = "\033[96m"; BLUE = "\033[34m"; GREEN = "\033[32m"; GREEN_B = "\033[92m"
 MAGENTA = "\033[35m"; GREY = "\033[90m"
@@ -304,10 +320,18 @@ def _setup_panel(buf, args, run_info=None):
         if den:
             kv("expect-block", den.group(1), AMBER)
 
+    priv = first(r"^Privilege:\s*(.+)")
+    privwarn = first(r"^\[WARN\] not root.+")
     if run_info:
         n_mods, iters, workers = run_info
         sect("RUN")
         kv("battery", f"{n_mods} module(s) × {iters} iter · {workers} workers")
+        if priv:
+            # "root-needing modules (ICMP Flood (DoS)) — running as root/admin" -> tidy kv
+            pv = priv.group(1).replace("root-needing modules ", "root-needing: ")
+            kv("privilege", pv, ACC if "running as root" in pv else AMBER)
+        if privwarn:
+            kv("privilege", privwarn.group(0)[6:].strip(), AMBER)
 
     # fallback — show any buffered line we didn't fold into a section (dim), so a
     # wording change can't silently drop setup info.
@@ -464,7 +488,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
             # kernel ICMP rate-limit, NOT a control under test. Say so in the table, not
             # just the full verdict (otherwise "boundary policed" reads as a control win).
             if "whitebox-anomaly" in vtext:
-                detail = "policed, but WHITEBOX baseline — likely cloud-edge/host ICMP limit, not a control (see verdict)"
+                detail = "WHITEBOX baseline anomaly — service-down / upstream-edge / host filter, not a control (see verdict)"
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                    key=lambda it: it[0])
@@ -1005,7 +1029,14 @@ def main():
             _kvline("TARGET", "direct SMB 445 · RPC 135 · SSH %s" % ssh_p_port)
         _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
                                 runner.ctx.creds.get("dc_user") or "")).strip("\\")
-        _kvline("CREDS ", "%s · src %s" % (_cred_id or "(none set)", source or "default route"))
+        # real source/egress IP (where this run leaves from). Explicit --source wins;
+        # otherwise detect the egress IP (display only — does NOT force a bind). Exposed
+        # as ctx.display_source so the evidence + RESULTS header are self-describing too.
+        _egress = source or _egress_ip(target)
+        runner.ctx.display_source = _egress or ""
+        _src_disp = source if source else (f"{_egress} (auto)" if _egress else "unknown route")
+        _kvline("SOURCE", "%s  →  %s" % (_src_disp, target))
+        _kvline("CREDS ", _cred_id or "(none set)")
         _brule("╰", "╯")
 
         t0 = time.time()
