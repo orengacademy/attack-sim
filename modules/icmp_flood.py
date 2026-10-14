@@ -334,6 +334,16 @@ def _hping_flood_at(target, pps, size, seconds):
 
 
 def run(target, ctx):
+    import core
+    if core.is_wsl1():
+        # WSL1 has no working raw sockets — hping3 half-emulates and returns
+        # NON-DETERMINISTIC junk (false BLOCKED unprivileged, NO-RESULT as root). Refuse
+        # deterministically instead of flooding and scoring noise.
+        return (f"# ICMP flood vs {target}\n[PREREQ-MISSING] raw-socket ICMP flood cannot run "
+                "on WSL1 — its kernel has no working raw sockets or file capabilities (setcap is "
+                "a no-op), so a flood here produces meaningless, inconsistent results. Run this "
+                "module from a NATIVE Linux host (VM / WSL2 / the target host itself). NOT a "
+                "control result.")
     out = [f"# ICMP flood vs {target} — boundary anti-DoS test: RAMP the rate to find the "
            f"policing knee (baseline {BASELINE_COUNT}-ping; ramp {RAMP_PPS} pps"
            + (f" x {FLOOD_SIZE}B" if FLOOD_SIZE else "") + f" x {STEP_SECONDS}s/step)"]

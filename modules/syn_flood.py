@@ -121,6 +121,12 @@ def _hping_syn(target, port, count, interval_us, cap_seconds):
 
 
 def run(target, ctx):
+    import core
+    if core.is_wsl1():
+        return (f"# SYN flood vs {target}\n[PREREQ-MISSING] raw-socket SYN flood cannot run on "
+                "WSL1 — no working raw sockets / file capabilities (setcap is a no-op), so a flood "
+                "here produces meaningless, inconsistent results. Run from a NATIVE Linux host "
+                "(VM / WSL2 / the target host). NOT a control result.")
     port = ctx.get_port("syn_flood", SYN_PORT)   # overridable (HARNESS_PORT_SYN / GUI)
     out = [f"# SYN flood vs {target}:{port} — boundary rate-limit test "
            f"(baseline SYN probe vs {FLOOD_COUNT}-SYN high-rate flood + live connect check)"]
