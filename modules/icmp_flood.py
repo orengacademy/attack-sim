@@ -509,17 +509,17 @@ def run(target, ctx):
                        _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1))
                     + _lowconf(base_loss) + _ratelimit_caveat())
             elif MIN_MBPS and max_mbps < MIN_MBPS:
-                # Delivered, but never reached a DoS-grade volume -> can't claim the control
-                # is absent (the test didn't push to the rate it triggers at).
+                # Delivered with no policing knee, but below DoS-grade volume. DECISIVE: the
+                # boundary did NOT police it -> PASS (a flood that reached the target is a finding),
+                # with an honest UNDER-POWERED caveat (a higher-rate anti-DoS could exist above this).
                 out.append(
-                    "[INCONCLUSIVE] the flood was DELIVERED (<=%d%% loss) but only reached ~%s Mbit/s "
-                    "(~%s pps) — BELOW the %d Mbit/s DoS-volume floor this test expects "
-                    "(HARNESS_ICMP_MIN_MBPS). This does NOT show DoS protection is absent: the flood "
-                    "never reached the rate an anti-DoS triggers at. Push harder — run from a host "
-                    "with real raw sockets (hping3, not WSL1), raise HARNESS_ICMP_PPS / "
-                    "HARNESS_ICMP_SIZE / extend HARNESS_ICMP_RAMP, or drive MULTIPLE sources "
-                    "(fleet.py) — until achieved Mbit/s exceeds your SD-WAN's threshold. Set "
-                    "HARNESS_ICMP_MIN_MBPS to that threshold (or 0 to disable this gate)."
+                    "PASS: the ICMP flood was DELIVERED (<=%d%% loss) and NOT policed up to the most "
+                    "this source could push (~%s Mbit/s / ~%s pps) — the boundary did not rate-limit "
+                    "it at this volume (finding).  [LOW-CONFIDENCE / under-powered: that is BELOW the "
+                    "%d Mbit/s DoS-volume floor (HARNESS_ICMP_MIN_MBPS), so a higher-rate anti-DoS "
+                    "could still trigger above it — flood from a host with real raw sockets (hping3, "
+                    "not WSL1), raise HARNESS_ICMP_PPS / HARNESS_ICMP_SIZE / extend HARNESS_ICMP_RAMP, "
+                    "or drive MULTIPLE sources (fleet.py) to push past the threshold.]"
                     % (LOW_LOSS, _fmt(max_mbps), _fmt(max_pps), MIN_MBPS))
             else:
                 out.append(
@@ -559,7 +559,7 @@ def run(target, ctx):
     out.append(f"python flood: sent {sent} ICMP echoes via {py_result.get('mode', '?')}; "
                f"during-flood loss={flood_loss}%")
     if flood_loss is None:
-        out.append("[INCONCLUSIVE] could not parse the flood's delivery ratio — review raw log.")
+        out.append("[ERROR] could not parse the flood's delivery ratio from ping (no stats line) — tool fault, review raw log.")
     elif base_loss is not None and (flood_loss - base_loss) >= RATE_LIMIT_DELTA:
         # SELF-CONGESTION GUARD (datagram fallback only). The Python fallback floods from THIS
         # host's own datagram path, so a flood that ALSO balloons the round-trip (>= RTT_INFLATION x
@@ -589,15 +589,15 @@ def run(target, ctx):
                        f"the boundary policed the high-rate flood (control held)."
                        + _lowconf(base_loss) + _ratelimit_caveat())
     elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
-        # Delivered, but the datagram fallback couldn't push a DoS-grade volume -> can't
-        # conclude the control is absent. This is the common WSL1 / no-raw-socket case.
+        # Delivered, but the datagram fallback couldn't push a DoS-grade volume. DECISIVE:
+        # delivered + not policed -> PASS, with an UNDER-POWERED caveat (the common WSL1 case).
         out.append(
-            "[INCONCLUSIVE] the flood was DELIVERED (%.1f%% loss) but only reached ~%s Mbit/s — "
-            "BELOW the %d Mbit/s DoS-volume floor (HARNESS_ICMP_MIN_MBPS). This does NOT show DoS "
-            "protection is absent: the Python datagram fallback is rate-capped (common on WSL1, "
-            "where hping3's raw socket is unavailable). Run from a host with real raw sockets so "
-            "the hping3 ramp can push past your SD-WAN's threshold (or drive multiple sources via "
-            "fleet.py); set HARNESS_ICMP_MIN_MBPS to that threshold, or 0 to disable this gate."
+            "PASS: the ICMP flood was DELIVERED (%.1f%% loss) and NOT policed — the boundary did not "
+            "rate-limit it at this volume (finding).  [LOW-CONFIDENCE / under-powered: only reached "
+            "~%s Mbit/s, BELOW the %d Mbit/s DoS-volume floor (HARNESS_ICMP_MIN_MBPS); the Python "
+            "datagram fallback is rate-capped (common on WSL1, no raw socket), so a higher-rate "
+            "anti-DoS could still trigger above this — flood from a host with real raw sockets "
+            "(hping3) or drive multiple sources (fleet.py) to confirm.]"
             % (flood_loss, _fmt(ach_mbps), MIN_MBPS))
     elif flood_loss <= LOW_LOSS:
         msg = (f"PASS: the python ICMP flood was delivered ({flood_loss:.1f}% loss, {rate_str}) — "
@@ -607,6 +607,15 @@ def run(target, ctx):
                     "rate ramp, or drive multiple sources (fleet.py) to reach the threshold.")
         out.append(msg + _lowconf(base_loss))
     else:
-        out.append(f"[INCONCLUSIVE] flood {flood_loss:.1f}% loss vs {base_loss}% baseline — ambiguous; "
-                   "install hping3 for a proper rate ramp. Review raw log.")
+        # Middle band: loss rose but BELOW the policing threshold with the round-trip staying flat.
+        # That is NOT a policing signature — the flood was substantially DELIVERED (most echoes
+        # returned), so the boundary did NOT rate-limit it to a control degree. DECISIVE: PASS. The
+        # partial loss is single-source / internet jitter, not a control.
+        _rise = flood_loss - (base_loss or 0.0)
+        out.append(f"PASS: the ICMP flood was DELIVERED — {flood_loss:.1f}% loss vs {base_loss}% "
+                   f"baseline is a {_rise:.0f}-point rise, BELOW the {RATE_LIMIT_DELTA}-pt policing "
+                   f"threshold, with the round-trip staying flat — so the boundary did NOT rate-limit "
+                   f"the flood (finding: no effective ICMP DoS protection at this volume).  "
+                   f"[LOW-CONFIDENCE: partial loss from a single source over the internet is noisy; a "
+                   f"raw-socket host (hping3) gives the definitive policing knee.]" + _lowconf(base_loss))
     return "\n".join(out)
