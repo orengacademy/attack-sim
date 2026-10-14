@@ -65,6 +65,9 @@ VERSION = _read_version_file() or "1.9.4"
 # ---------------------------------------------------------------------
 VERSION_CHECK_URL = ("https://raw.githubusercontent.com/"
                      "orengacademy/attack-sim/main/VERSION")
+# the latest version string the gate last fetched (None = not checked / offline);
+# front-ends read it to SHOW the version-check result in their output.
+LATEST_SEEN = None
 
 
 def _parse_semver(s):
@@ -107,6 +110,7 @@ def enforce_latest_version(exit_on_outdated=True, log=None):
         return True
     strict = _truthy_env("HARNESS_REQUIRE_LATEST")
     latest = fetch_latest_version()
+    globals()["LATEST_SEEN"] = latest
     if latest is None:
         if strict:
             emit(f"[version] cannot verify the latest version and HARNESS_REQUIRE_LATEST "
