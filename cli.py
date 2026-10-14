@@ -398,6 +398,12 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
                 detail = "rate-limited/shaped (boundary policed the flood)"
+            # In WHITEBOX there's no boundary in path, so a BLOCKED is an anomaly — the
+            # policing is almost certainly the cloud-provider edge or the TARGET's own
+            # kernel ICMP rate-limit, NOT a control under test. Say so in the table, not
+            # just the full verdict (otherwise "boundary policed" reads as a control win).
+            if "whitebox-anomaly" in vtext:
+                detail = "policed, but WHITEBOX baseline — likely cloud-edge/host ICMP limit, not a control (see verdict)"
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
                                    key=lambda it: it[0])
