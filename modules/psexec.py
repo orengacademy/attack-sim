@@ -38,7 +38,10 @@ META = {
     "serial": True,  # in-process impacket + _portpatch swap process-global socket.connect / redirect stdout — must run ALONE (see dcsync.py)
     "ports": [("tcp", 445)],
     "success_regex": r"nt authority\\system|Creating service|Starting service|SVCManager|Opening SVCManager",
-    "blocked_regex": r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|Errno",
+    # Dropped the bare Errno (it matched non-network errors like [Errno 2]/[Errno 13]
+    # in an in-process traceback -> false BLOCKED); network drops are covered by the
+    # text below, and a refused/closed port is scored NO-SERVICE by the engine anyway.
+    "blocked_regex": r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|No route to host",
 }
 
 _PSEXEC_SCRIPT = "/usr/share/doc/python3-impacket/examples/psexec.py"

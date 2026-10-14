@@ -25,5 +25,11 @@ META = {
 
 def run(target, ctx):
     port = ctx.get_port("ldap_null_bind", 389)   # overridable per-attack (GUI/env)
+    # -o nettimeout / -l bound the connect+search so a FILTERED 389 fails fast with
+    # ldapsearch's own "Can't contact LDAP server" / "Timed out" line (which the
+    # blocked/refused regex + recon then classify) instead of hanging until the
+    # engine watchdog kills it with empty output (-> a mute NO-RESULT on a port the
+    # boundary is actually dropping).
     return ctx.run_cmd(
-        f'ldapsearch -x -H ldap://{{target}}:{port} -b "" -s base namingContexts', target)
+        f'ldapsearch -x -o nettimeout=8 -l 10 -H ldap://{{target}}:{port} '
+        f'-b "" -s base namingContexts', target)

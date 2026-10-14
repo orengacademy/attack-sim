@@ -33,7 +33,10 @@ def run(target, ctx):
         f'curl -s -v -m8 "ftp://anonymous:anonymous@{{target}}:{port}/"', target)
     import re
     # 230 = anonymous login ACCEPTED (the finding) — success_regex decides; leave as-is.
-    if re.search(r"\b230\b", raw):
+    # Match the real 230 login phrases (not a bare "230", which could appear incidentally
+    # in curl's verbose output — a byte count, port, etc. — and wrongly skip the
+    # mid-session-reset BLOCKED detection below).
+    if re.search(r"230 (Login successful|User logged in|Anonymous)", raw, re.I):
         return raw
     # Banner (220) received but the session was RESET / torn down before a 230 success
     # => the anonymous login was refused MID-EXCHANGE. On this lab that's the appliance's
