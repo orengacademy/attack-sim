@@ -259,6 +259,31 @@ def install_py_requirements():
              "--break-system-packages"] + missing)
 
 
+def grant_raw_caps():
+    """Give hping3 cap_net_raw+cap_net_admin so the ICMP/SYN-flood modules run WITHOUT
+    per-run sudo — the clean fix for 'needs root' (otherwise `sudo -n` fails on a box
+    with no NOPASSWD rule and the flood is misreported). Best-effort: needs setcap
+    (libcap2-bin) + sudo, and a filesystem that supports file caps. Where it can't
+    (e.g. WSL/overlay), the modules still fall back to `sudo -n` / root."""
+    c("Granting hping3 raw-socket capability (so DoS floods need no per-run sudo)...")
+    hp = shutil.which("hping3")
+    if not hp:
+        print("  hping3 not installed — skipping (install it first).")
+        return
+    if not shutil.which("setcap"):
+        run(sudo(["apt-get", "install", "-y", "libcap2-bin"]))   # provides setcap/getcap
+    if not shutil.which("setcap"):
+        print("  setcap unavailable (install libcap2-bin) — hping3 will use `sudo -n` / root instead.")
+        return
+    rc = run(sudo(["setcap", "cap_net_raw,cap_net_admin+eip", hp])).returncode
+    if rc == 0:
+        print(f"  ok: {hp} now has cap_net_raw — icmp_flood/syn_flood run unprivileged.")
+    else:
+        print(f"  [i] setcap failed (exit {rc}) — likely a filesystem without file-cap support "
+              "(WSL/overlay). hping3 will fall back to `sudo -n` / root (cache it with "
+              "`sudo -v`, or add a NOPASSWD rule).")
+
+
 def main():
     with_active = "--with-active" in sys.argv[1:]
     c("=== Harness bootstrap ===", "1;32")
@@ -277,6 +302,7 @@ def main():
     ensure_impacket_module()
     install_py_requirements()
     ensure_impacket_runtime()
+    grant_raw_caps()          # hping3 cap_net_raw so the flood modules need no per-run sudo
     if with_active:
         missing += install_active()
     else:
@@ -295,9 +321,11 @@ def main():
 
     c("\nDone. Run the harness as your NORMAL user (do NOT use sudo python3 gui.py —", "1;32")
     print("  that makes sudo prompt for 'python3'). The root-needing modules")
-    print("  (ICMP/SYN flood, PetitPotam, stateful_evasion) self-elevate via `sudo -n`.")
-    print("  Enable that without prompts via ONE of:")
+    print("  (ICMP/SYN flood, PetitPotam, stateful_evasion) need raw sockets.")
+    print("  hping3 was setcap'd above, so icmp_flood/syn_flood run WITHOUT sudo. If that")
+    print("  step reported a failure (e.g. WSL/overlay FS), enable elevation via ONE of:")
     print("   - setcap (hping3 floods): sudo setcap cap_net_raw,cap_net_admin+eip $(which hping3)")
+    print("   - cache sudo (~15 min):   sudo -v   (then the modules' `sudo -n` succeeds)")
     print("   - NOPASSWD sudoers:       <user> ALL=(root) NOPASSWD: $(command -v hping3), $(command -v responder)")
     c("\nCredentials: set HARNESS_DC_PASS (and HARNESS_DOMAIN/HARNESS_DC_USER),", "1;32")
     print("  or copy credentials.env.example -> credentials.env and fill it in.")
