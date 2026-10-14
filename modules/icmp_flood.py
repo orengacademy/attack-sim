@@ -80,6 +80,13 @@ FLOOD_SIZE = _int_env("HARNESS_ICMP_SIZE", 1400, lo=0)                 # ICMP pa
 FLOOD_INTERVAL_US = max(1, 1_000_000 // FLOOD_PPS)                     # hping3 -i uX derived from pps
 LOW_LOSS = 20              # <= this %: that rate is "getting through"
 RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
+# THRESHOLD-AWARE verdict: a DELIVERED flood only proves "no policing" if it actually
+# pushed a DoS-grade VOLUME. If the flood got through but the achieved rate stayed BELOW
+# this many Mbit/s, we can't conclude the anti-DoS control is absent (the test simply
+# never reached the rate it triggers at) -> INCONCLUSIVE, not a false SUCCESS/finding.
+# Default 50 Mbit/s = a conservative "real DoS volume" floor; set it to the SD-WAN's
+# documented threshold (e.g. 84) for a tight fit, or 0 to disable the gate.
+MIN_MBPS = _int_env("HARNESS_ICMP_MIN_MBPS", 50, lo=0)
 # RTT shaping is a SECONDARY signal and noisy: on a fast/local link, flooding a
 # target bumps its avg RTT from queueing on ITS OWN NIC/CPU — not the boundary.
 # A sub-ms baseline makes that look like a huge multiple, so require BOTH a large
@@ -95,7 +102,7 @@ RTT_ABS_FLOOR = 150.0      # ... flood avg RTT >= this many ms absolute => shapi
 # — hence the near-MTU FLOOD_SIZE so a bandwidth policer is exercised too), so we
 # MEASURE the knee rather than guess a number. Each step also reports achieved
 # Mbit/s. Override the whole ramp with HARNESS_ICMP_RAMP="200,1000,5000,...".
-RAMP_PPS = _list_env("HARNESS_ICMP_RAMP", [200, 1000, 5000, 20000, 60000])
+RAMP_PPS = _list_env("HARNESS_ICMP_RAMP", [1000, 5000, 20000, 60000, 120000, 250000])
 STEP_SECONDS = _int_env("HARNESS_ICMP_STEP_SECONDS", 4)   # seconds per ramp step
 
 META = {
@@ -402,6 +409,19 @@ def run(target, ctx):
                     "the control holds at/above this rate."
                     % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
                        _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1)))
+            elif MIN_MBPS and max_mbps < MIN_MBPS:
+                # Delivered, but never reached a DoS-grade volume -> can't claim the control
+                # is absent (the test didn't push to the rate it triggers at).
+                out.append(
+                    "[INCONCLUSIVE] the flood was DELIVERED (<=%d%% loss) but only reached ~%s Mbit/s "
+                    "(~%s pps) — BELOW the %d Mbit/s DoS-volume floor this test expects "
+                    "(HARNESS_ICMP_MIN_MBPS). This does NOT show DoS protection is absent: the flood "
+                    "never reached the rate an anti-DoS triggers at. Push harder — run from a host "
+                    "with real raw sockets (hping3, not WSL1), raise HARNESS_ICMP_PPS / "
+                    "HARNESS_ICMP_SIZE / extend HARNESS_ICMP_RAMP, or drive MULTIPLE sources "
+                    "(fleet.py) — until achieved Mbit/s exceeds your SD-WAN's threshold. Set "
+                    "HARNESS_ICMP_MIN_MBPS to that threshold (or 0 to disable this gate)."
+                    % (LOW_LOSS, _fmt(max_mbps), _fmt(max_pps), MIN_MBPS))
             else:
                 out.append(
                     "PASS: NO ICMP policing observed across the ramp — the flood was delivered up to the "
@@ -435,6 +455,7 @@ def run(target, ctx):
         return "\n".join(out)
     sent = py_result.get("sent")
     rate_str, source_limited = _rate_report(sent, FLOOD_SECONDS, FLOOD_SIZE, FLOOD_PPS)
+    ach_mbps = (sent * ((FLOOD_SIZE or 0) + 28) * 8 / FLOOD_SECONDS / 1e6) if sent else 0.0
     out.append(f"python flood: sent {sent} ICMP echoes via {py_result.get('mode', '?')}; "
                f"during-flood loss={flood_loss}%")
     if flood_loss is None:
@@ -442,6 +463,17 @@ def run(target, ctx):
     elif base_loss is not None and (flood_loss - base_loss) >= RATE_LIMIT_DELTA:
         out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline — "
                    "the boundary policed the high-rate ICMP (control held).")
+    elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
+        # Delivered, but the datagram fallback couldn't push a DoS-grade volume -> can't
+        # conclude the control is absent. This is the common WSL1 / no-raw-socket case.
+        out.append(
+            "[INCONCLUSIVE] the flood was DELIVERED (%.1f%% loss) but only reached ~%s Mbit/s — "
+            "BELOW the %d Mbit/s DoS-volume floor (HARNESS_ICMP_MIN_MBPS). This does NOT show DoS "
+            "protection is absent: the Python datagram fallback is rate-capped (common on WSL1, "
+            "where hping3's raw socket is unavailable). Run from a host with real raw sockets so "
+            "the hping3 ramp can push past your SD-WAN's threshold (or drive multiple sources via "
+            "fleet.py); set HARNESS_ICMP_MIN_MBPS to that threshold, or 0 to disable this gate."
+            % (flood_loss, _fmt(ach_mbps), MIN_MBPS))
     elif flood_loss <= LOW_LOSS:
         msg = (f"PASS: the python ICMP flood was delivered ({flood_loss:.1f}% loss, {rate_str}) — "
                "not policed at this volume.")

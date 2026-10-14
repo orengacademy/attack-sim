@@ -45,8 +45,9 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
         m._hping_flood_at = lambda t, pps, sz, sec: (
             None, None, None, "[open_sockraw] socket(): Operation not permitted")
+        # deliver enough volume to clear the MIN_MBPS DoS-volume floor (~152 Mbit/s)
         m._py_icmp_flood = lambda target, seconds, result: result.update(
-            {"mode": "dgram(unprivileged)", "sent": 50000})
+            {"mode": "dgram(unprivileged)", "sent": 200000})
 
         class _CP:
             stdout = "15 packets transmitted, 15 received, 0% packet loss"
@@ -62,7 +63,32 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertIn("falling back to the Python", out)
         self.assertNotIn("FLOOD-PRIV-ERROR", out)
         self.assertTrue(core._match(out, m.META["success_regex"]),
-                        "a delivered fallback flood should PASS, not die FLOOD-PRIV-ERROR")
+                        "a delivered high-volume fallback flood should PASS")
+
+    def test_delivered_but_under_threshold_is_inconclusive(self):
+        # Flood delivered (0% loss) but the achieved rate is BELOW the DoS-volume floor
+        # -> INCONCLUSIVE, never a false SUCCESS (the "non-aggressive" false-finding).
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+        m._hping_flood_at = lambda t, pps, sz, sec: (
+            None, None, None, "[open_sockraw] socket(): Operation not permitted")
+        # ~38 Mbit/s — below the default 50 Mbit/s floor
+        m._py_icmp_flood = lambda target, seconds, result: result.update(
+            {"mode": "dgram(unprivileged)", "sent": 50000})
+
+        class _CP:
+            stdout = "15 packets transmitted, 15 received, 0% packet loss"
+        real_run, real_which = m.subprocess.run, m.shutil.which
+        m.subprocess.run = lambda *a, **k: _CP()
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.subprocess.run, m.shutil.which = real_run, real_which
+        self.assertIn("INCONCLUSIVE", out)
+        self.assertFalse(core._match(out, m.META["success_regex"]),
+                         "an under-volume delivered flood must NOT score SUCCESS")
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
 
     def test_priv_failure_when_both_engines_cant_send(self):
         # hping3 raw socket fails AND the Python datagram socket can't open either ->
