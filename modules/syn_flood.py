@@ -173,7 +173,10 @@ def run(target, ctx):
         fout, _ = flood.communicate()
     out.append((fout or "").strip())
 
-    if fout and any(m in fout.lower() for m in _PRIV_ERR) and _parse_loss(fout) is None:
+    # Privilege failure regardless of whether a loss% parsed: unprivileged hping3
+    # still prints "100% packet loss", which would otherwise be misread as the
+    # boundary policing the flood (a FALSE BLOCKED). A priv marker = the flood never ran.
+    if fout and any(m in fout.lower() for m in _PRIV_ERR):
         out.append("FLOOD-PRIV-ERROR: hping3 could not run with the privileges it "
                    "needs — the flood never ran. NOT evidence the control works. Fix "
                    "ONE of: setcap cap_net_raw,cap_net_admin+eip $(which hping3); a "

@@ -371,8 +371,12 @@ def run(target, ctx):
         max_pps = max_mbps = 0.0
         for pps in RAMP_PPS:
             loss, rtt, snt, raw = _hping_flood_at(target, pps, FLOOD_SIZE, STEP_SECONDS)
-            # privilege/tooling failure => the flood never ran (NOT a control result)
-            if loss is None and any(mk in raw.lower() for mk in _PRIV_ERR_MARKERS):
+            # privilege/tooling failure => the flood never ran (NOT a control result).
+            # Checked REGARDLESS of whether a loss% parsed: hping3 that can't open the
+            # raw socket (no root / no usable sudo / no cap_net_raw) still prints a
+            # "100% packet loss" stats line, which was being misread as rate-limiting
+            # -> a FALSE BLOCKED. A privilege marker anywhere means the flood didn't run.
+            if any(mk in raw.lower() for mk in _PRIV_ERR_MARKERS):
                 out.append(
                     "FLOOD-PRIV-ERROR: hping3 could not run with the privileges it needs — the "
                     "flood never ran. NOT evidence the control works. Fix ONE of: (a) sudo setcap "
