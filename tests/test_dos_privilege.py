@@ -138,9 +138,10 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         out = self._run_syn(0.0, 10.0, 0.0, 10.0)
         self.assertTrue(core._match(out, m.META["success_regex"]))
 
-    def test_delivered_but_under_threshold_is_inconclusive(self):
-        # Flood delivered (0% loss) but the achieved rate is BELOW the DoS-volume floor
-        # -> INCONCLUSIVE, never a false SUCCESS (the "non-aggressive" false-finding).
+    def test_delivered_but_under_threshold_is_pass_with_caveat(self):
+        # Flood delivered (0% loss) BELOW the DoS-volume floor. DECISIVE (v1.9.65): PASS
+        # (the flood reached the target = finding) WITH an under-powered / low-confidence
+        # caveat — never a mute INCONCLUSIVE, and never a naive clean SUCCESS.
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
         m._hping_flood_at = lambda t, pps, sz, sec: (
@@ -158,10 +159,11 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.subprocess.run, m.shutil.which = real_run, real_which
-        self.assertIn("INCONCLUSIVE", out)
-        self.assertFalse(core._match(out, m.META["success_regex"]),
-                         "an under-volume delivered flood must NOT score SUCCESS")
-        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        self.assertNotIn("[INCONCLUSIVE]", out)
+        self.assertTrue(core._match(out, m.META["success_regex"]),
+                        "decisive: a delivered flood scores PASS (SUCCESS)")
+        self.assertIn("under-powered", out,
+                      "under-volume PASS must carry the low-confidence/under-powered caveat")
 
     def test_priv_failure_when_both_engines_cant_send(self):
         # hping3 raw socket fails AND the Python datagram socket can't open either ->
