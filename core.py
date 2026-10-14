@@ -1648,6 +1648,17 @@ INSTALL_HINTS = {
     "snmpwalk": {"apt": "snmp", "dnf": "net-snmp-utils", "yum": "net-snmp-utils",
                  "pacman": "net-snmp", "zypper": "net-snmp", "apk": "net-snmp-tools",
                  "brew": "net-snmp", "choco": "net-snmp"},
+    # snmp_brute uses snmpbulkwalk (GETBULK), shipped in the SAME package as snmpwalk —
+    # mapped separately so preflight names the package instead of "install manually".
+    "snmpbulkwalk": {"apt": "snmp", "dnf": "net-snmp-utils", "yum": "net-snmp-utils",
+                     "pacman": "net-snmp", "zypper": "net-snmp", "apk": "net-snmp-tools",
+                     "brew": "net-snmp", "choco": "net-snmp"},
+    "dig": {"apt": "dnsutils", "dnf": "bind-utils", "yum": "bind-utils",
+            "pacman": "bind", "zypper": "bind-utils", "apk": "bind-tools",
+            "brew": "bind", "choco": "bind-toolsonly"},
+    "nmap": {"apt": "nmap", "dnf": "nmap", "yum": "nmap", "pacman": "nmap",
+             "zypper": "nmap", "apk": "nmap", "brew": "nmap", "choco": "nmap",
+             "winget": "Insecure.Nmap"},
     "hydra": {"apt": "hydra", "dnf": "hydra", "yum": "hydra", "pacman": "hydra",
               "zypper": "hydra", "brew": "hydra"},
     "ldapsearch": {"apt": "ldap-utils", "dnf": "openldap-clients",

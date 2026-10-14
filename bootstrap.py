@@ -20,6 +20,7 @@ import sys
 CORE_APT = [
     "python3-tk", "curl", "snmp", "hydra", "impacket-scripts",
     "ldap-utils", "hping3", "responder",
+    "nmap",              # nmap_policy_scan — port-policy violation scan (was missing)
     "dnsutils",          # dig — covert_channel / DNS checks
     "openssh-client",    # ssh — ssh_over_443 (--active) and general use
     "faketime",          # kerberoast — auto-correct DC clock skew (KRB_AP_ERR_SKEW), no root
