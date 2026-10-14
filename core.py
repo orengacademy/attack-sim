@@ -2617,6 +2617,26 @@ class Runner:
         log(f"Platform: {plat}  |  Python {pi['python']}  |  "
             f"privilege: {'root/admin' if pf['privileged'] else 'unprivileged'}  |  "
             f"pkg mgr: {pf['package_manager'] or 'n/a'}")
+        # Privilege clarity for the raw-socket modules (icmp_flood/syn_flood/
+        # stateful_evasion/petitpotam): say up front whether they can actually elevate,
+        # so an unprivileged run isn't surprised by a FLOOD-PRIV-ERROR / INCONCLUSIVE
+        # later. NOTE: on WSL1 raw sockets don't work even as root — flagged separately.
+        ps = privilege_status(modules)
+        if ps["needs_root_modules"]:
+            wsl1 = ("microsoft" in (pi.get("release") or "").lower()
+                    and "wsl2" not in (pi.get("release") or "").lower())
+            log(f"Privilege: root-needing modules ({', '.join(ps['needs_root_modules'])}) — "
+                f"{ps['how']}.")
+            if wsl1:
+                log("[WARN] WSL1 detected — raw sockets / file capabilities do NOT work here "
+                    "(setcap is a no-op), so the DoS flood modules can't put traffic on the wire "
+                    "even as root; they will read INCONCLUSIVE. Run them from a NATIVE Linux host "
+                    "(VM / WSL2 / the target host itself) for a real verdict.")
+            elif not (ps["root"] or ps["sudo_nopasswd"]):
+                log("[WARN] not root and no passwordless/cached sudo — the root-needing modules "
+                    "can't elevate and will read FLOOD-PRIV-ERROR / INCONCLUSIVE. Fix: run as root, "
+                    "`sudo -v` to cache a ticket, or `setcap cap_net_raw,cap_net_admin+eip "
+                    "$(which hping3)` (bootstrap.py does this).")
         pf_by_id = {r["id"]: r for r in pf["modules"]}
         ready_ids = {r["id"] for r in pf["modules"] if r["ready"]}
         log(f"Preflight: {len(ready_ids)}/{len(modules)} modules ready.")
