@@ -49,7 +49,13 @@ def _post_chunk(host, port, path, body, ctx):
         with c.wrap_socket(raw, server_hostname=host) as tls:
             tls.sendall(req.encode())
             resp = tls.recv(64).decode(errors="replace")
-        return resp.startswith("HTTP/")
+        # A chunk is "accepted" only on a 2xx/3xx. A DLP/proxy block page (403/407/502)
+        # also starts with "HTTP/", so startswith scored a blocked chunk as accepted —
+        # 6/6 block pages became a false LOWSLOW-OK. Parse the status.
+        first = resp.splitlines()[0] if resp else ""
+        parts = first.split()
+        code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+        return 200 <= code < 400
     except Exception:
         return False
 

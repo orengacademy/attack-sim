@@ -47,8 +47,8 @@ META = {
     "ports": [("tcp", 445), ("tcp", 135)],
     "success_regex": r"nt authority\\system|\\administrator\s*$",
     "blocked_regex": (
-        r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|Errno|"
-        r"Can't find a valid stringBinding"
+        r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|"
+        r"No route to host|Can't find a valid stringBinding"  # dropped bare "Errno" (non-network traceback -> false BLOCKED)
     ),
 }
 

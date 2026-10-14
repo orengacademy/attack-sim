@@ -32,6 +32,11 @@ META = {
     "cwe": ["CWE-693"],
     "requires": [],
     "ports": [],
+    # In --active this sustains a ~60s beacon to the egress/C2 gateway, which can trip
+    # an egress source-ban. Put it in the "egress" device group (like doh_bypass) so it
+    # defers out of the parallel pool and a ban it trips is tracked apart — it can't turn
+    # the other egress modules' verdicts into false BLOCKEDs.
+    "defer_group": "egress",
     "success_regex": r"^BEACON-RAN",
     "blocked_regex": r"beacon blocked",
 }
@@ -52,13 +57,22 @@ def _callback(host, port, path, ctx):
            "(Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nConnection: close\r\n\r\n")
     try:
         raw = U.connect(host, port, ctx, timeout=6)
-        c = ssl.create_default_context()
-        c.check_hostname = False
-        c.verify_mode = ssl.CERT_NONE
-        with c.wrap_socket(raw, server_hostname=host) as tls:
-            tls.sendall(req.encode())
-            tls.recv(32)
-        return True
+        try:
+            c = ssl.create_default_context()
+            c.check_hostname = False
+            c.verify_mode = ssl.CERT_NONE
+            with c.wrap_socket(raw, server_hostname=host) as tls:
+                tls.sendall(req.encode())
+                tls.recv(32)
+            return True
+        finally:
+            # if wrap_socket raised, the `with` never closed `raw` — close it here so a
+            # 60s beacon of failed callbacks can't leak one FD per attempt (close is
+            # idempotent, so the success path double-closing is harmless).
+            try:
+                raw.close()
+            except OSError:
+                pass
     except Exception:
         return False
 

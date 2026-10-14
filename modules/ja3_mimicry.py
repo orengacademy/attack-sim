@@ -74,9 +74,13 @@ def run(target, ctx):
                    "one was blocked: the boundary is filtering on TLS fingerprint and can "
                    "be evaded by mimicry (utls). [FINDING] behavioural NDR needed.")
     elif b_ok:
-        out.append("MIMIC-OK — TLS to the destination completes (both hellos); if this "
-                   "path should be inspected, fingerprint-based tool detection would not "
-                   "stop a mimicked implant here. Verify against NDR.")
+        # BOTH hellos completed -> no TLS-fingerprint discrimination is in path, so no
+        # evasion was demonstrated. The old code scored this MIMIC-OK (a false finding on
+        # any reachable 443). It's indeterminate, not a finding.
+        out.append("[INCONCLUSIVE] both the tool-like and browser-like ClientHellos completed — "
+                   "no TLS-fingerprint discrimination is in path on this destination, so mimicry "
+                   "evasion cannot be demonstrated here (NOT a finding). Point at a destination "
+                   "behind fingerprint-based inspection, or verify against NDR.")
     else:
         out.append("both handshakes blocked — TLS to this destination is stopped "
                    "(inspection/egress control holding)")

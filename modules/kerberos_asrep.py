@@ -28,8 +28,14 @@ META = {
     "requires_files": [USERS],
     "ports": [("tcp", 88)],
     "success_regex": r"\$krb5asrep\$",
-    "blocked_regex": r"timed out|Connection refused|unreachable|Errno|"
-                     r"KDC_ERR_S_PRINCIPAL_UNKNOWN|No entries",
+    # Only NETWORK-layer drops are a segmentation block. KDC_ERR_S_PRINCIPAL_UNKNOWN
+    # and "No entries" mean the KDC ANSWERED (port 88 reachable, not segmented) — the
+    # user just doesn't exist / isn't roastable — so scoring them BLOCKED wrongly
+    # credits the control; they're removed (a reachable-but-nothing-roastable run falls
+    # to NO-RESULT, which is honest). Bare "Errno" removed too (a non-network traceback
+    # [Errno 2]/[Errno 13] would false-BLOCK); network errnos carry "timed out" /
+    # "unreachable" / "No route to host".
+    "blocked_regex": r"timed out|Connection refused|unreachable|No route to host",
 }
 
 

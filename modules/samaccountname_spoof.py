@@ -50,7 +50,8 @@ META = {
     "success_regex": r"SPOOF-CONFIRMED: sAMAccountName ==",
     "blocked_regex": (
         r"MachineAccountQuota exceeded|constraintViolation|insufficientAccessRights|"
-        r"entryAlreadyExists|STATUS_ACCESS_DENIED|timed out|Connection refused|unreachable|Errno"
+        r"entryAlreadyExists|STATUS_ACCESS_DENIED|timed out|Connection refused|unreachable|"
+        r"No route to host"  # dropped bare "Errno" (non-network [Errno 2]/[Errno 13] -> false BLOCKED)
     ),
 }
 

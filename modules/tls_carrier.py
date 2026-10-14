@@ -22,7 +22,9 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^TLS-OK",
-    "blocked_regex": r"timed out|refused|no-tls|unreachable|Connection reset|reset by peer|Broken pipe",
+    # dropped bare "refused"/"unreachable" (the module's own closed-port /
+    # DNS-failure lines = NO-SERVICE, not a TLS-carrier block; false-BLOCKED otherwise).
+    "blocked_regex": r"timed out|no-tls|Connection reset|reset by peer|Broken pipe",
 }
 
 

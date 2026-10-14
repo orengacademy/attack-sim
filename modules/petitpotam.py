@@ -66,6 +66,10 @@ META = {
     "requires": ["responder", "python3"],
     "needs_root": True,            # Responder binds privileged ports + raw poisoning
     "os_supported": ["Linux"],     # Responder + eth0 raw poisoning are Linux-only
+    "serial": True,  # for a NAT'd target it runs PetitPotam's CoerceAuth IN-PROCESS
+                     #   with the _portpatch global socket.connect swap + redirect_stdout
+                     #   (see _run_in_process) — must run ALONE, like dcsync/psexec/nopac,
+                     #   or concurrent workers corrupt each other's socket redirect / stdout.
     "requires_files": [PETITPOTAM],  # vendored PoC under modules/_vendor/
     "ports": [("tcp", 445)],       # MS-EFSRPC coercion over SMB
     # a captured hash is the real finding; PetitPotam's own "Attack worked!"
