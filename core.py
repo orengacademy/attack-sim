@@ -3381,7 +3381,12 @@ class Runner:
                 # ban) — which the engine DETECTS via the canary, so that's the one case
                 # that stays INCONCLUSIVE. The posture label (whitebox/blackbox) plays no
                 # part — black and white produce the same verdict.
-                _live = re.search(r"liveness|reachab|quarantin|host is up|ICMP", reason, re.I)
+                # A LIVENESS indeterminate (ICMP 100% lost, host-up unconfirmable) — match
+                # its phrasing, NOT a bare "ICMP": icmp_flood's threshold-INCONCLUSIVE (flood
+                # DELIVERED at 0% loss but under the DoS-volume floor) also mentions "ICMP"
+                # (HARNESS_ICMP_MIN_MBPS) and must NOT be upgraded to a false BLOCKED.
+                _live = re.search(r"liveness|reachab|quarantin|host is up|host-liveness|100% lost",
+                                  reason, re.I)
                 if _live and self._blacklisted:
                     # Source is in IPS quarantine: the 100% loss is the BAN, not the ICMP
                     # control — can't be tested. Stays INCONCLUSIVE (contaminated; the
