@@ -26,6 +26,7 @@ Only entries in CUSTOM_PORT_TARGETS get rewritten — any other target_ip
 passes straight through untouched, so ordinary directly-reachable lab
 targets are unaffected. Add an entry here when a new NAT'd target shows up.
 """
+import os
 import socket
 
 # The CANONICAL cloud NAT map (SMB 445->4445, RPC 135->1135, SSH 22->2222). The
@@ -80,7 +81,11 @@ def _rewrite(target_ip, address):
     host, port = address
     if host == target_ip and port in port_map:
         new_port = port_map[port]
-        print(f"    [patch] redirecting {host}:{port} -> {host}:{new_port}")
+        # Debug-only: this used to interleave the clean per-module live list. The NAT
+        # mapping is already shown once up front (the "cloud" transport line); keep the
+        # per-connection redirect trace behind HARNESS_DEBUG.
+        if os.environ.get("HARNESS_DEBUG"):
+            print(f"    [patch] redirecting {host}:{port} -> {host}:{new_port}")
         return (host, new_port)
     return address
 
