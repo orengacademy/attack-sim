@@ -56,6 +56,25 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
                          "a privilege failure must NOT match blocked_regex (false BLOCKED)")
         self.assertFalse(core._match(out, m.META["success_regex"]))
 
+    def test_zero_sent_is_inconclusive_not_blocked(self):
+        # hping3 reports high loss but transmitted ZERO packets (no working raw socket,
+        # e.g. WSL1) and NO priv marker -> must be INCONCLUSIVE, never BLOCKED/PASS.
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+        m._hping_flood_at = lambda t, pps, sz, sec: (
+            100.0, None, 0, "0 packets transmitted, 0 received, 100% packet loss")
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertIn("INCONCLUSIVE", out)
+        self.assertFalse(core._match(out, m.META["blocked_regex"]),
+                         "zero-sent must NOT be BLOCKED")
+        self.assertFalse(core._match(out, m.META["success_regex"]),
+                         "zero-sent must NOT be PASS/SUCCESS")
+
     def test_real_policing_still_blocks(self):
         # a genuine policed flood (high loss, NO privilege error) must still read BLOCKED
         m = _load_module("icmp_flood")
