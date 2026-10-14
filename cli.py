@@ -462,15 +462,35 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                   key=lambda x: (x["cat"],
                                  _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
                                  x["name"]))
-    name_w = min(42, max((len(d["name"]) for d in rows), default=10))
-    port_w = min(22, max((len((d.get("ports") or "")) for d in rows), default=4))
+    num_w = max(2, len(str(len(rows))))
+    name_w = min(40, max((len(d["name"]) for d in rows), default=10))
+    port_w = min(18, max((len((d.get("ports") or "")) for d in rows), default=4))
+    mitre_w = min(22, max((len((d.get("mitre") or "")) for d in rows), default=5))
+    cwe_w = min(9, max((len((d.get("cwe") or "")) for d in rows), default=3))
     RULEW = 90
+
+    def _hhmmss(ts):
+        c = _clock(ts) or ""
+        return c[-8:] if len(c) >= 8 else c
+
+    # column header (dim) so the re-added #/MITRE/CWE/TIME columns are legible
+    hdr = ("  " + _c(f"{'#':>{num_w}}", DIM, no_color) + "   "
+           + _cell("VERDICT", 16, DIM + BOLD, no_color) + "  "
+           + _cell("MODULE", name_w, DIM + BOLD, no_color) + "  "
+           + _cell("PORTS", port_w, DIM + BOLD, no_color) + "  "
+           + _cell("MITRE", mitre_w, DIM + BOLD, no_color) + "  "
+           + _cell("CWE", cwe_w, DIM + BOLD, no_color) + "  "
+           + _cell("TIME", 8, DIM + BOLD, no_color) + "  "
+           + _c("DETAIL", DIM + BOLD, no_color))
+    print(hdr)
+
+    idx = 0
     cur_cat = object()
     for d in rows:
+        idx += 1
         if d["cat"] != cur_cat:
             cur_cat = d["cat"]
             lab = " " + (cur_cat or "Uncategorised") + " "
-            print()
             print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
                   + _c("\u2500" * max(2, RULEW - len(lab) - 2) + "\u2574", DIM, no_color))
         col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
@@ -501,13 +521,19 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                                   key=lambda it: it[0])
             detail = " | ".join(f"{it}:{vv} ({_VERDICT_GLOSS_SHORT.get(vv, '?')})"
                                 for it, vv in iters_sorted)
-        gutter = _c("\u2590", col, no_color)                      # verdict-coloured spine
-        chip = _cell(f"{icon} {d['v']}", 16, col, no_color)
-        nm = _cell(d["name"], name_w, BOLD, no_color)
-        pt = _cell((d.get("ports") or "\u2014"), port_w, DIM, no_color)
-        dur = _c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""
-        print("  " + gutter + " " + chip + "  " + nm + "  " + pt + "  "
-              + _c(detail, DIM, no_color) + dur)
+        if len(detail) > 60:
+            detail = detail[:59] + "\u2026"
+        num = _c(f"{idx:>{num_w}}", DIM, no_color)
+        gutter = _c("\u2590", col, no_color)
+        print("  " + num + " " + gutter + " "
+              + _cell(f"{icon} {d['v']}", 16, col, no_color) + "  "
+              + _cell(d["name"], name_w, BOLD, no_color) + "  "
+              + _cell((d.get("ports") or "\u2014"), port_w, DIM, no_color) + "  "
+              + _cell((d.get("mitre") or "\u2014"), mitre_w, DIM, no_color) + "  "
+              + _cell((d.get("cwe") or "\u2014"), cwe_w, DIM, no_color) + "  "
+              + _cell(_hhmmss(d.get("ts")), 8, DIM, no_color) + "  "
+              + _c(detail, DIM, no_color)
+              + (_c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""))
     print()
 
     findings = dist.get("SUCCESS", 0)
@@ -866,6 +892,21 @@ def main():
                     print()
                     return   # the plain "=== Iteration: 1 ===" rule is folded into the panel
                 _setup["buf"].append(st)
+                return
+            # tidy the two run-start lines into the RUN panel's kv style (the long
+            # deferred name-list is dropped here — those modules appear in the live list).
+            import re as _re3
+            _md = _re3.match(r"deferred last \(ban-safe\):\s*(\d+)", st)
+            if _md:
+                print("     " + _c(f"{'deferred':<11}", DIM, args.no_color) + " "
+                      + _c(f"{_md.group(1)} module(s) run LAST (ban-safe — contamination guard)",
+                           DIM, args.no_color))
+                return
+            _mr = _re3.match(r"running (\d+) module\(s\) with (\d+) workers", st)
+            if _mr:
+                print("     " + _c(f"{'parallel':<11}", DIM, args.no_color) + " "
+                      + _c(f"{_mr.group(1)} module(s) · {_mr.group(2)} workers", DIM, args.no_color))
+                print()
                 return
             print(_colorize(s, args.no_color))
 
