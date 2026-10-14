@@ -26,7 +26,7 @@ _VERDICT_STYLE = {
     "SUCCESS":        ("\033[31m", "●"),   # red    — got through undetected (finding)
     "DETECTED":       ("\033[38;5;208m", "◐"),  # orange — passed but SOC alerted
     "BLOCKED":        ("\033[32m", "■"),   # green  — control worked
-    "NOT-VULNERABLE": ("\033[92m", "✔"),   # teal/bright-green — service reached, target hardened
+    "NOT-VULNERABLE": ("\033[92m", "◆"),   # bright-green diamond (single-width, aligns with ●■○) — service reached, target hardened
     "NO-SERVICE":     ("\033[34m", "○"),   # blue   — port closed, not a block
     "AUTH-FAILED":    ("\033[33m", "▲"),   # amber  — bad creds
     "NO-RESULT":      ("\033[33m", "?"),   # amber  — review

@@ -62,7 +62,7 @@ STATUS_COLORS = {
 # Distinct verdict glyphs (same shapes as the CLI) so the Result cell carries an
 # icon, not just a row colour — shown as "<icon> VERDICT".
 STATUS_ICONS = {
-    "SUCCESS": "●", "DETECTED": "◐", "BLOCKED": "■", "NOT-VULNERABLE": "✔", "NO-SERVICE": "○",
+    "SUCCESS": "●", "DETECTED": "◐", "BLOCKED": "■", "NOT-VULNERABLE": "◆", "NO-SERVICE": "○",
     "AUTH-FAILED": "▲", "NO-RESULT": "?", "INCONCLUSIVE": "◌",
     "SKIPPED": "–", "PREREQ-MISSING": "–",
 }
