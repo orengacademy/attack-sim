@@ -584,9 +584,9 @@ def run(target, ctx):
                    (flood_rtt / base_rtt if base_rtt else 0.0), _fmt(base_rtt, 0)) + _lowconf(base_loss))
         else:
             out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline, "
-                       "with the round-trip STAYING low (~%sms vs %sms baseline) — a remote rate-limiter "
-                       "dropped the excess ICMP without queuing it, so the boundary policed the high-rate "
-                       "flood (control held)." % (_fmt(flood_rtt, 0), _fmt(base_rtt, 0))
+                       f"with the round-trip STAYING low (~{_fmt(flood_rtt, 0)}ms vs {_fmt(base_rtt, 0)}ms "
+                       f"baseline) — a remote rate-limiter dropped the excess ICMP without queuing it, so "
+                       f"the boundary policed the high-rate flood (control held)."
                        + _lowconf(base_loss) + _ratelimit_caveat())
     elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
         # Delivered, but the datagram fallback couldn't push a DoS-grade volume -> can't

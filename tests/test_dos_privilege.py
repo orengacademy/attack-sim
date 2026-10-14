@@ -65,6 +65,41 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertTrue(core._match(out, m.META["success_regex"]),
                         "a delivered high-volume fallback flood should PASS")
 
+    def test_blocked_ratelimit_verdict_renders(self):
+        # REGRESSION (v1.9.61): the flat-RTT BLOCKED-RATELIMIT verdict once mixed an
+        # f-string with %-formatting and crashed at runtime (ValueError: unsupported
+        # format character 'v'). Force loss delta >= threshold with RTT NOT inflated and
+        # assert the verdict RENDERS and reads BLOCKED (no crash).
+        m = _load_module("icmp_flood")
+        m._baseline = lambda t: (0.0, 15.0, "15 packets transmitted, 15 received, 0% packet loss")
+        m._sampled_loss_rtt = lambda t, samples=None: (40.0, 16.0, "flood samples")
+        m._py_icmp_flood = lambda t, s, result: result.update({"mode": "raw(root)", "sent": 200000})
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: None            # no hping3 -> Python fallback path
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertIn("BLOCKED-RATELIMIT", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]))
+
+    def test_selfcongestion_pass_verdict_renders(self):
+        # the companion branch: loss up AND RTT ballooned (>= RTT_INFLATION x baseline and
+        # >= RTT_ABS_FLOOR) -> self-congestion -> PASS. Must also render cleanly.
+        m = _load_module("icmp_flood")
+        m._baseline = lambda t: (0.0, 15.0, "15 packets transmitted, 15 received, 0% packet loss")
+        big_rtt = 15.0 * m.RTT_INFLATION + m.RTT_ABS_FLOOR
+        m._sampled_loss_rtt = lambda t, samples=None: (40.0, big_rtt, "flood samples")
+        m._py_icmp_flood = lambda t, s, result: result.update({"mode": "raw(root)", "sent": 200000})
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: None
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertIn("self-congestion", out)
+        self.assertTrue(core._match(out, m.META["success_regex"]))
+
     def test_delivered_but_under_threshold_is_inconclusive(self):
         # Flood delivered (0% loss) but the achieved rate is BELOW the DoS-volume floor
         # -> INCONCLUSIVE, never a false SUCCESS (the "non-aggressive" false-finding).
