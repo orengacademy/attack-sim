@@ -417,54 +417,47 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         dist[d["v"]] = dist.get(d["v"], 0) + 1
     n = len(by_mod)
 
-    # ---- header strip --------------------------------------------------
-    import datetime as _dt
+    # ---- clean results header: a title line + rule, not a heavy box ----
     site = (getattr(ev, "meta", {}) or {}).get("site_id") or getattr(args, "site_id", None)
-    W = 78
-
-    def _hline(text):
-        if len(text) > W:                    # keep the right border aligned
-            text = text[:W - 1] + "…"
-        print(_c("┃", ACC, no_color) + _c(f"{text:<{W}}", BOLD, no_color)
-              + _c("┃", ACC, no_color))
-    print()
-    print(_c("┏" + "━" * W + "┓", ACC, no_color))
-    _hline(f"  CONTROL VALIDATION — RESULTS   ·   v{core.VERSION}"
-           + (f"   ·   SITE {site}" if site else ""))
     _meta = getattr(ev, "meta", {}) or {}
     _mode = _meta.get("mode") or (args.mode or "blackbox")
-    # source -> destination and transport (cloud/on-prem), recorded per run so the
-    # header is self-describing (from where, to what, over which network path).
     _src = _meta.get("source_ip") or ""
     _cloud = _meta.get("cloud")
     _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
-    _dest = f"{_src}  →  {target}" if _src else target
-    _hline(f"  {_dest}   ·   {_mode}" + (f"   ·   {_net}" if _net else ""))
-    _hline(f"  {n} module(s) × {args.iterations} iter   ·   {elapsed:.0f}s   ·   "
-           f"{_dt.datetime.now():%Y-%m-%d %H:%M:%S}"
-           + ("   ·   DEBUG" if getattr(args, "debug", False) else ""))
-    print(_c("┗" + "━" * W + "┛", ACC, no_color))
+    _dest = f"{_src} → {target}" if _src else str(target)
+    bits = [_dest, _mode] + ([_net] if _net else []) \
+        + [f"{n} modules × {args.iterations} iter", f"{elapsed:.0f}s"]
+    if site:
+        bits.append(f"site {site}")
+    if getattr(args, "debug", False):
+        bits.append("DEBUG")
+    print()
+    print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  ·  ".join(bits), DIM, no_color))
+    print("  " + _c("━" * 74, ACC, no_color))
 
-    # ---- distribution strip -------------------------------------------
-    mx = max(dist.values()) if dist else 1
-    for v in _VERDICT_ORDER:
-        if v not in dist:
-            continue
+    # ---- verdict summary: one stacked proportional bar + a counts line ----
+    present = [v for v in _VERDICT_ORDER if v in dist]
+    BARW = 56
+    segs, used = [], 0
+    for i, v in enumerate(present):
+        col, _ic = _VERDICT_STYLE.get(v, ("", "•"))
+        w = (BARW - used) if i == len(present) - 1 else max(1, round(BARW * dist[v] / n))
+        w = max(0, min(w, BARW - used))
+        used += w
+        segs.append(_c("█" * w, col, no_color))
+    counts = []
+    for v in present:
         col, icon = _VERDICT_STYLE.get(v, ("", "•"))
-        blocks = int(round(18 * dist[v] / mx)) or 1
-        meter = _c("█" * blocks, col, no_color) + _c("░" * (18 - blocks), DIM, no_color)
-        print(f"  {_c(icon, col, no_color)} {_c(v, col, no_color):<22} {meter} "
-              f"{dist[v]}/{n}")
+        counts.append(_c(f"{icon} {dist[v]} {v}", col, no_color))
+    print("  " + "".join(segs))
+    print("  " + "   ".join(counts))
+    print()
 
-    # ---- the table ----------------------------------------------------
-    # Columns AUTO-SIZE to their longest value (header or any cell), so module
-    # names are never truncated/wrapped and the CATEGORY is shown on EVERY row;
-    # a per-column cap keeps one long value from blowing the table out (only then
-    # does a cell get an …). With >1 iteration, ITERATIONS replaces DETAIL.
+    # ---- borderless results table (no grid: header + one rule + rows) ----
     debug = getattr(args, "debug", False)
     show_iters = args.iterations > 1
-    headers = ["#", "VERDICT", "MODULE", "CATEGORY", "PORTS", "MITRE", "CWE",
-               ("ITERATIONS" if show_iters else "DETAIL"), "TIME"]
+    headers = ["VERDICT", "MODULE", "CATEGORY", "PORTS", "MITRE", "CWE",
+               ("ITERATIONS" if show_iters else "DETAIL")]
     if debug:
         headers.append("DUR")
 
@@ -472,75 +465,56 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                   key=lambda x: (x["cat"],
                                  _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
                                  x["name"]))
-    body = []   # [(cells, colors)]
-    i = 0
+    body = []
     for d in rows:
-        i += 1
         col, icon = _VERDICT_STYLE.get(d["v"], ("", "•"))
         detail = _VERDICT_GLOSS.get(d["v"], "")
-        # sharpen the BLOCKED detail so it says WHERE/WHY the block came from.
         if d["v"] == "BLOCKED":
             vtext = d["verdicts"].get("BLOCKED", "") or ""
             otext = d["outputs"].get("BLOCKED", "") or ""
             if "REJECTION RESPONSE" in vtext:
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
-                detail = "rate-limited/shaped — single-source; may be host/edge rate-limit, confirm device (see verdict)"
-            # In WHITEBOX there's no boundary in path, so a BLOCKED is an anomaly — the
-            # policing is almost certainly the cloud-provider edge or the TARGET's own
-            # kernel ICMP rate-limit, NOT a control under test. Say so in the table, not
-            # just the full verdict (otherwise "boundary policed" reads as a control win).
+                detail = "rate-limited/shaped — single-source; may be host/edge limit (see verdict)"
             if "whitebox-anomaly" in vtext:
-                detail = "WHITEBOX baseline anomaly — service-down / upstream-edge / host filter, not a control (see verdict)"
+                detail = "whitebox anomaly — service-down / edge / host filter, not a control (see verdict)"
         if d["v"] == "NO-SERVICE":
             nvtext = d["verdicts"].get("NO-SERVICE", "") or ""
-            # self-declared "vector absent though port open" (e.g. key-only SSH): say WHY,
-            # not the generic "port closed" (the port is actually open here).
             if "attack vector" in nvtext or "key-only" in nvtext or "password auth" in nvtext.lower():
-                detail = "no vector — SSH password auth disabled (key-only); brute-force N/A, not a weakness"
+                detail = "no vector — SSH password auth disabled (key-only)"
         if d["v"] == "NOT-VULNERABLE":
             nvt = (d["verdicts"].get("NOT-VULNERABLE", "") or "").lower()
             if "key-only" in nvt or "password auth" in nvt:
-                detail = "secured — SSH key-only (password brute-force not applicable)"
+                detail = "secured — SSH key-only (brute-force N/A)"
             elif "community" in nvt or "snmp" in nvt:
-                detail = "secured — no default/guessed SNMP community accepted (hygiene holds)"
+                detail = "secured — no default SNMP community (hygiene holds)"
             else:
-                detail = "not vulnerable — service reached, target hardened (no finding)"
+                detail = "not vulnerable — service reached, target hardened"
         if show_iters:
             iters_sorted = sorted((it for it in d["iters"] if it[0] is not None),
-                                   key=lambda it: it[0])
-            detail = " | ".join(f"{n}:{v} ({_VERDICT_GLOSS_SHORT.get(v, '?')})"
-                                for n, v in iters_sorted)
-        cells = [str(i), f"{icon} {d['v']}", d["name"], d["cat"], d.get("ports", ""),
-                 d.get("mitre", ""), d.get("cwe", ""), detail, _clock(d.get("ts"))]
-        colors = [DIM, col, None, ACC, DIM, DIM, DIM, DIM, DIM]
+                                  key=lambda it: it[0])
+            detail = " | ".join(f"{it}:{vv} ({_VERDICT_GLOSS_SHORT.get(vv, '?')})"
+                                for it, vv in iters_sorted)
+        cells = [f"{icon} {d['v']}", d["name"], d["cat"], d.get("ports", ""),
+                 d.get("mitre", ""), d.get("cwe", ""), detail]
+        colors = [col, None, DIM, DIM, DIM, DIM, DIM]
         if debug:
             cells.append(f"{d.get('dur', 0.0):.1f}s")
             colors.append(DIM)
         body.append((cells, colors))
 
-    # width per column = max(header, longest cell), capped at MAXW (generous, so
-    # full module names / categories fit; only a pathological value truncates).
-    MAXW = 54
+    MAXW = 48
     inner = [min(MAXW, max([len(h)] + [len(c[ci]) for c, _ in body]))
              for ci, h in enumerate(headers)]
 
-    def rule(left, mid, right):
-        return _c(left + mid.join("─" * (w + 2) for w in inner) + right, DIM, no_color)
-
-    def row(cells, colors=None):
-        colors = colors or [None] * len(cells)
+    def _line(cells, colors):
         parts = [_cell(c, inner[i], colors[i], no_color) for i, c in enumerate(cells)]
-        sep = _c("│", DIM, no_color)
-        return sep + " " + (" " + sep + " ").join(parts) + " " + sep
+        return ("  " + "  ".join(parts)).rstrip()
 
-    print()
-    print(rule("┌", "┬", "┐"))
-    print(row(headers, [BOLD] * len(headers)))
-    print(rule("├", "┼", "┤"))
+    print(_line(headers, [DIM + BOLD] * len(headers)))
+    print("  " + _c("─" * (sum(inner) + 2 * (len(inner) - 1)), DIM, no_color))
     for cells, colors in body:
-        print(row(cells, colors))
-    print(rule("└", "┴", "┘"))
+        print(_line(cells, colors))
 
     findings = dist.get("SUCCESS", 0)
     detected = dist.get("DETECTED", 0)
@@ -918,7 +892,9 @@ def main():
             bar = _c("█" * fill, ACC, args.no_color) + _c("░" * (bw - fill), DIM, args.no_color)
             counter = _c(f"{nn:>3}/{tot}", DIM, args.no_color)
             clock = _c(time.strftime("%H:%M:%S"), DIM, args.no_color)
-            verd = _c(f"{icon} {b:<12}", col, args.no_color)
+            # pad the PLAIN label (widest verdict is NOT-VULNERABLE = 14) so the module
+            # name column stays aligned regardless of verdict length, THEN colour it.
+            verd = _c(f"{icon} {b:<14}", col, args.no_color)
             print(f"  {counter} ▕{bar}▏{_c(f'{pct:>3}%', BOLD, args.no_color)} {clock}  {verd} {name}")
 
         runner = core.Runner(target, args.appliance or None, on_log=_on_log,
