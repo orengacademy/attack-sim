@@ -78,6 +78,11 @@ FLOOD_SECONDS = _int_env("HARNESS_ICMP_SECONDS", 15)                   # wall-cl
 FLOOD_COUNT = _int_env("HARNESS_ICMP_COUNT", FLOOD_PPS * FLOOD_SECONDS)  # total packets
 FLOOD_SIZE = _int_env("HARNESS_ICMP_SIZE", 1400, lo=0)                 # ICMP payload bytes. Default 1400 (near-MTU) = a BANDWIDTH flood: this lab's SD-WAN (and many anti-DoS engines) threshold on BITS/sec, not pps, so a header-only flood only ALERTS while a fat-packet one gets DROPPED. Set 0 for a pure packet-rate test.
 FLOOD_INTERVAL_US = max(1, 1_000_000 // FLOOD_PPS)                     # hping3 -i uX derived from pps
+# Parallel senders for the pure-Python fallback (used when hping3's raw socket is
+# unavailable, e.g. WSL1). A single Python send loop tops out ~1k pps; blasting one
+# precomputed FLOOD_SIZE packet from N threads (sendto releases the GIL) pushes enough
+# volume to actually exercise a bits/sec anti-DoS. Override with HARNESS_ICMP_FLOOD_WORKERS.
+FLOOD_WORKERS = _int_env("HARNESS_ICMP_FLOOD_WORKERS", 16, lo=1)
 LOW_LOSS = 20              # <= this %: that rate is "getting through"
 RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
 # THRESHOLD-AWARE verdict: a DELIVERED flood only proves "no policing" if it actually
@@ -257,13 +262,6 @@ def _checksum(data):
     return (~s) & 0xFFFF
 
 
-def _echo_packet(seq):
-    pid = os.getpid() & 0xFFFF
-    payload = b"mygovnet-bas-icmp"
-    header = struct.pack("!BBHHH", 8, 0, 0, pid, seq & 0xFFFF)  # type 8 = echo
-    chk = _checksum(header + payload)
-    header = struct.pack("!BBHHH", 8, 0, chk, pid, seq & 0xFFFF)
-    return header + payload
 
 
 def _open_icmp_socket():
@@ -278,33 +276,74 @@ def _open_icmp_socket():
     return s, "raw(root)"
 
 
+def _flood_packet():
+    """One ICMP echo padded to FLOOD_SIZE payload bytes — so the Python fallback sends
+    the SAME bandwidth-grade packet hping3 would (the old 17-byte payload meant the real
+    wire rate was ~30x below what the Mbit/s report assumed). FLOOD_SIZE=0 => header-only
+    (pure pps test). For SOCK_DGRAM the kernel rewrites id/checksum; the fixed packet is
+    fine either way, so we build it ONCE and blast it (no per-packet Python cost)."""
+    pid = os.getpid() & 0xFFFF
+    base = b"mygovnet-bas-icmp"
+    if FLOOD_SIZE and FLOOD_SIZE > 0:
+        payload = (base * (FLOOD_SIZE // len(base) + 1))[:FLOOD_SIZE]
+    else:
+        payload = b""
+    header = struct.pack("!BBHHH", 8, 0, 0, pid, 1)
+    chk = _checksum(header + payload)
+    return struct.pack("!BBHHH", 8, 0, chk, pid, 1) + payload
+
+
 def _py_icmp_flood(target, seconds, result):
-    """Flood ICMP echo to target for `seconds`; records sent count / error in
-    the `result` dict. Runs in a background thread."""
+    """Flood ICMP echo to target for `seconds` using FLOOD_WORKERS parallel senders,
+    each blasting one precomputed FLOOD_SIZE packet. Records total sent / mode / error
+    in `result`. Runs in a background thread; fully crash-safe."""
     try:
-        sock, mode = _open_icmp_socket()
+        probe, mode = _open_icmp_socket()
+        probe.close()
     except (PermissionError, OSError) as e:
         result["error"] = f"{e.__class__.__name__}: {e}"
         return
     result["mode"] = mode
-    sock.setblocking(False)
+    pkt = _flood_packet()
+    dest = (target, 0)
     deadline = time.time() + seconds
-    seq = sent = 0
-    try:
-        dest = (target, 0)
-        while time.time() < deadline:
+    counts, errs = [], []
+    lock = threading.Lock()
+
+    def _worker():
+        try:
+            s, _ = _open_icmp_socket()
+        except OSError as e:
+            with lock:
+                errs.append(f"{e.__class__.__name__}: {e}")
+            return
+        c = 0
+        try:
+            while time.time() < deadline:
+                try:
+                    s.sendto(pkt, dest)
+                    c += 1
+                except OSError as e:
+                    with lock:
+                        errs.append(f"{e.__class__.__name__}: {e}")
+                    break
+        finally:
             try:
-                sock.sendto(_echo_packet(seq), dest)
-                sent += 1
-                seq += 1
-            except BlockingIOError:
-                continue
-            except OSError as e:
-                result["error"] = f"{e.__class__.__name__}: {e}"
-                break
-    finally:
-        sock.close()
+                s.close()
+            except OSError:
+                pass
+            with lock:
+                counts.append(c)
+
+    ths = [threading.Thread(target=_worker, daemon=True) for _ in range(FLOOD_WORKERS)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(seconds + 5)
+    sent = sum(counts)
     result["sent"] = sent
+    if sent == 0 and errs:
+        result["error"] = errs[0]
 
 
 def _baseline(target):
