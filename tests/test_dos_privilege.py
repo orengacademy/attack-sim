@@ -135,3 +135,14 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFloodPacketSize(unittest.TestCase):
+    def test_flood_packet_is_full_size(self):
+        # the Python fallback must send FLOOD_SIZE-byte packets (not the old 17-byte
+        # payload) so the achieved-Mbit/s report is real, not ~30x overstated.
+        m = _load_module("icmp_flood")
+        pkt = m._flood_packet()
+        # 8-byte ICMP header + FLOOD_SIZE payload
+        self.assertEqual(len(pkt), 8 + m.FLOOD_SIZE)
+        self.assertGreater(m.FLOOD_SIZE, 1000, "default flood payload should be bandwidth-grade")
