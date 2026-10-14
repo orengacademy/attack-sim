@@ -87,7 +87,7 @@ def _select(modules, args):
         if missing:
             print(f"[!] unknown module id(s): {', '.join(sorted(missing))}", file=sys.stderr)
         return sel
-    # base set. DEFAULT = the original 11-module baseline (same as the GUI's
+    # base set. DEFAULT = the original 10-module baseline (same as the GUI's
     # default tick) — a bare `cli.py --target X` runs a sensible, fast,
     # self-contained set rather than all of them. Use --all for everything.
     if getattr(args, "all", False):
@@ -559,7 +559,7 @@ def main():
     sel = ap.add_mutually_exclusive_group()
     sel.add_argument("--only", help="comma list of module ids")
     sel.add_argument("--original", action="store_true",
-                     help="only the initial 11-module baseline set (THIS IS THE DEFAULT)")
+                     help="only the initial 10-module baseline set (THIS IS THE DEFAULT)")
     sel.add_argument("--added", action="store_true", help="only the newly-added modules")
     sel.add_argument("--all", action="store_true", help="run ALL discovered modules (not just the baseline)")
     ap.add_argument("--test-type", choices=["attack_sim", "pentest", "va", "dos"],

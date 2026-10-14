@@ -49,8 +49,18 @@ META = {
     "requires_py": ["impacket"],    # the real dependency (CLI name varies)
     "serial": True,  # in-process impacket + _portpatch swap process-global socket.connect / redirect stdout — must run ALONE or threads pollute each other's output (NO-RESULT) and un-patch mid-connection
     "ports": [("tcp", 445), ("tcp", 135)],
-    "success_regex": r"aad3b435|:::|krbtgt:|Kerberos keys grabbed",
-    "blocked_regex": r"timed out|Connection refused|unreachable|Errno|STATUS_",
+    # ":[32 hex]:::" is the real NTLM hash-dump line shape (name:rid:lm:nt:::) — the
+    # bare ":::" it replaced could match an incidental triple-colon anywhere in tool
+    # output. aad3b435 (empty-LM prefix) + krbtgt: keep the strong positive signals.
+    "success_regex": r"aad3b435|:[0-9a-f]{32}:::|krbtgt:|Kerberos keys grabbed",
+    # Blocks: a protocol-level DENY after we authenticated (segmentation on RPC
+    # replication) or a network-layer drop. Narrowed from the old bare STATUS_ (which
+    # also matched STATUS_SUCCESS and auth-failure codes) and bare Errno (which matched
+    # non-network errors like [Errno 2]/[Errno 13] in a traceback -> false BLOCKED);
+    # auth NTSTATUS codes are AUTHFAIL (scored earlier), and the network conditions are
+    # covered by the text below.
+    "blocked_regex": (r"timed out|Connection refused|unreachable|No route to host|"
+                      r"STATUS_ACCESS_DENIED|rpc_s_access_denied"),
 }
 
 

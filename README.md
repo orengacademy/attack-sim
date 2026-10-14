@@ -86,7 +86,7 @@ python3 gui.py
 python3 cli.py --list                                  # all modules + scope tags
 python3 cli.py --confirm-roe                            # bare run: DEFAULTS to 127.0.0.1 + the original set
 python3 cli.py --target 127.0.0.1 --mode whitebox --original --confirm-roe   # baseline self-test
-python3 cli.py --target <ip> --all --confirm-roe              # run ALL modules (default is the original 11)
+python3 cli.py --target <ip> --all --confirm-roe              # run ALL modules (default is the original 10)
 python3 cli.py --target <ip> --attack-sim --confirm-roe       # the USS boundary scope
 python3 cli.py --target <DC-ip> --domain lab.local --dc-user Administrator \
   --dc-pass '<pw>' --only dcsync,kerberoast,psexec --confirm-roe   # AD vs a DC (creds remembered)
@@ -404,7 +404,7 @@ python3 cli.py --target 10.0.0.5 --port log4shell=8983,ssh_brute=2222 --confirm-
 
 `--confirm-roe` is required (the CLI's rules-of-engagement gate). `--target`
 defaults to `127.0.0.1`. Selection: `--only <ids>` / `--original` / `--added` /
-`--all` — **default is the original 11-module set** (same as the GUI). Output is
+`--all` — **default is the original 10-module set** (same as the GUI). Output is
 colour-coded (red = passed, green = blocked, blue = no-service): a clean numbered
 live line per module, then a modern end-of-run **table** (verdict strip +
 verdict/module/category/detail columns) and the evidence path. The full
