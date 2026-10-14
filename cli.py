@@ -417,45 +417,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         dist[d["v"]] = dist.get(d["v"], 0) + 1
     n = len(by_mod)
 
-    # ---- clean results header: a title line + rule, not a heavy box ----
-    site = (getattr(ev, "meta", {}) or {}).get("site_id") or getattr(args, "site_id", None)
-    _meta = getattr(ev, "meta", {}) or {}
-    _mode = _meta.get("mode") or (args.mode or "blackbox")
-    _src = _meta.get("source_ip") or ""
-    _cloud = _meta.get("cloud")
-    _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
-    _dest = f"{_src} → {target}" if _src else str(target)
-    bits = [_dest, _mode] + ([_net] if _net else []) \
-        + [f"{n} modules × {args.iterations} iter", f"{elapsed:.0f}s"]
-    if site:
-        bits.append(f"site {site}")
-    if getattr(args, "debug", False):
-        bits.append("DEBUG")
-    print()
-    print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  ·  ".join(bits), DIM, no_color))
-    print("  " + _c("━" * 90, ACC, no_color))
-
-    # ---- SCOREBOARD: one stacked proportional bar + count chips ----------
-    present = [v for v in _VERDICT_ORDER if v in dist]
-    BARW = 68
-    segs, used = [], 0
-    for i, v in enumerate(present):
-        col, _ic = _VERDICT_STYLE.get(v, ("", "\u2022"))
-        w = (BARW - used) if i == len(present) - 1 else max(1, round(BARW * dist[v] / n))
-        w = max(0, min(w, BARW - used))
-        used += w
-        segs.append(_c("\u2588" * w, col, no_color))
-    print("  " + "".join(segs))
-    chips = []
-    for v in present:
-        col, icon = _VERDICT_STYLE.get(v, ("", "\u2022"))
-        chips.append(_c(f"{icon} {dist[v]} {v}", col, no_color))
-    print("  " + _c("   \u00b7   ", DIM, no_color).join(chips))
-    print()
-
-    # ---- GROUPED status list: a verdict-coloured left gutter + chip + module +
-    #      ports + plain-English detail, sectioned by CATEGORY. No table grid; the
-    #      full MITRE/CWE/CVE matrix lives in report.txt / report.html. -----------
+    # ---- results: compute layout first (widths + details) so every rule spans
+    #      the FULL content width -------------------------------------------------
     debug = getattr(args, "debug", False)
     show_iters = args.iterations > 1
     rows = sorted(by_mod.values(),
@@ -464,36 +427,15 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                                  x["name"]))
     num_w = max(2, len(str(len(rows))))
     name_w = min(40, max((len(d["name"]) for d in rows), default=10))
-    port_w = min(18, max((len((d.get("ports") or "")) for d in rows), default=4))
+    port_w = min(18, max((len((d.get("ports") or "")) for d in rows), default=5))
     mitre_w = min(22, max((len((d.get("mitre") or "")) for d in rows), default=5))
     cwe_w = min(9, max((len((d.get("cwe") or "")) for d in rows), default=3))
-    RULEW = 90
 
     def _hhmmss(ts):
         c = _clock(ts) or ""
         return c[-8:] if len(c) >= 8 else c
 
-    # column header (dim) so the re-added #/MITRE/CWE/TIME columns are legible
-    hdr = ("  " + _c(f"{'#':>{num_w}}", DIM, no_color) + "   "
-           + _cell("VERDICT", 16, DIM + BOLD, no_color) + "  "
-           + _cell("MODULE", name_w, DIM + BOLD, no_color) + "  "
-           + _cell("PORTS", port_w, DIM + BOLD, no_color) + "  "
-           + _cell("MITRE", mitre_w, DIM + BOLD, no_color) + "  "
-           + _cell("CWE", cwe_w, DIM + BOLD, no_color) + "  "
-           + _cell("TIME", 8, DIM + BOLD, no_color) + "  "
-           + _c("DETAIL", DIM + BOLD, no_color))
-    print(hdr)
-
-    idx = 0
-    cur_cat = object()
-    for d in rows:
-        idx += 1
-        if d["cat"] != cur_cat:
-            cur_cat = d["cat"]
-            lab = " " + (cur_cat or "Uncategorised") + " "
-            print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
-                  + _c("\u2500" * max(2, RULEW - len(lab) - 2) + "\u2574", DIM, no_color))
-        col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
+    def _detail_of(d):
         detail = _VERDICT_GLOSS.get(d["v"], "")
         if d["v"] == "BLOCKED":
             vtext = d["verdicts"].get("BLOCKED", "") or ""
@@ -523,6 +465,72 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                                 for it, vv in iters_sorted)
         if len(detail) > 60:
             detail = detail[:59] + "\u2026"
+        return detail
+
+    for d in rows:
+        d["_detail"] = _detail_of(d)
+    detail_w = max(len("DETAIL"), min(60, max((len(d["_detail"]) for d in rows), default=6)))
+    # full printed row width: leading 2 + # + ' \u2590 ' (3) + chip16 + each 2-space gap + detail
+    content_w = 2 + num_w + 3 + 16 + 2 + name_w + 2 + port_w + 2 + mitre_w + 2 + cwe_w + 2 + 8 + 2 + detail_w
+
+    # ---- header: title + a full-width rule --------------------------------------
+    site = (getattr(ev, "meta", {}) or {}).get("site_id") or getattr(args, "site_id", None)
+    _meta = getattr(ev, "meta", {}) or {}
+    _mode = _meta.get("mode") or (args.mode or "blackbox")
+    _src = _meta.get("source_ip") or ""
+    _cloud = _meta.get("cloud")
+    _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
+    _dest = f"{_src} \u2192 {target}" if _src else str(target)
+    bits = [_dest, _mode] + ([_net] if _net else []) \
+        + [f"{n} modules \u00d7 {args.iterations} iter", f"{elapsed:.0f}s"]
+    if site:
+        bits.append(f"site {site}")
+    if debug:
+        bits.append("DEBUG")
+    print()
+    print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  \u00b7  ".join(bits), DIM, no_color))
+    print("  " + _c("\u2501" * (content_w - 2), ACC, no_color))
+
+    # ---- SCOREBOARD: one stacked proportional bar + count chips -----------------
+    present = [v for v in _VERDICT_ORDER if v in dist]
+    BARW = content_w - 2
+    segs, used = [], 0
+    for i, v in enumerate(present):
+        col, _ic = _VERDICT_STYLE.get(v, ("", "\u2022"))
+        w = (BARW - used) if i == len(present) - 1 else max(1, round(BARW * dist[v] / n))
+        w = max(0, min(w, BARW - used))
+        used += w
+        segs.append(_c("\u2588" * w, col, no_color))
+    print("  " + "".join(segs))
+    chips = []
+    for v in present:
+        col, icon = _VERDICT_STYLE.get(v, ("", "\u2022"))
+        chips.append(_c(f"{icon} {dist[v]} {v}", col, no_color))
+    print("  " + _c("   \u00b7   ", DIM, no_color).join(chips))
+    print()
+
+    # ---- GROUPED status list (coloured header; sections span full width) --------
+    HC = CYAN_B + BOLD
+    print("  " + _c(f"{'#':>{num_w}}", HC, no_color) + "   "
+          + _cell("VERDICT", 16, HC, no_color) + "  "
+          + _cell("MODULE", name_w, HC, no_color) + "  "
+          + _cell("PORTS", port_w, HC, no_color) + "  "
+          + _cell("MITRE", mitre_w, HC, no_color) + "  "
+          + _cell("CWE", cwe_w, HC, no_color) + "  "
+          + _cell("TIME", 8, HC, no_color) + "  "
+          + _c("DETAIL", HC, no_color))
+
+    idx = 0
+    cur_cat = object()
+    for d in rows:
+        idx += 1
+        if d["cat"] != cur_cat:
+            cur_cat = d["cat"]
+            lab = " " + (cur_cat or "Uncategorised") + " "
+            fill = max(2, content_w - 5 - len(lab))      # span the FULL content width
+            print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
+                  + _c("\u2500" * fill + "\u2574", DIM, no_color))
+        col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
         num = _c(f"{idx:>{num_w}}", DIM, no_color)
         gutter = _c("\u2590", col, no_color)
         print("  " + num + " " + gutter + " "
@@ -532,7 +540,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
               + _cell((d.get("mitre") or "\u2014"), mitre_w, DIM, no_color) + "  "
               + _cell((d.get("cwe") or "\u2014"), cwe_w, DIM, no_color) + "  "
               + _cell(_hhmmss(d.get("ts")), 8, DIM, no_color) + "  "
-              + _c(detail, DIM, no_color)
+              + _c(d["_detail"], DIM, no_color)
               + (_c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""))
     print()
 
