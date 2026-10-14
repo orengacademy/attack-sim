@@ -75,6 +75,23 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertFalse(core._match(out, m.META["success_regex"]),
                          "zero-sent must NOT be PASS/SUCCESS")
 
+    def test_wsl1_is_prereq_missing_deterministic(self):
+        # On WSL1 the flood must short-circuit to a single deterministic PREREQ-MISSING
+        # verdict (not a BLOCKED/NO-RESULT coin-flip), without attempting hping3.
+        m = _load_module("icmp_flood")
+        import core
+        orig = core.is_wsl1
+        core.is_wsl1 = lambda: True
+        # if the short-circuit fails, this stub would make a real result impossible to fake:
+        m._hping_flood_at = lambda *a: (_ for _ in ()).throw(AssertionError("flood ran on WSL1!"))
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            core.is_wsl1 = orig
+        self.assertIn("PREREQ-MISSING", out)
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        self.assertFalse(core._match(out, m.META["success_regex"]))
+
     def test_real_policing_still_blocks(self):
         # a genuine policed flood (high loss, NO privilege error) must still read BLOCKED
         m = _load_module("icmp_flood")
