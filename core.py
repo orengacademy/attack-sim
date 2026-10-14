@@ -2540,7 +2540,8 @@ class Runner:
         # Self-describing run provenance (so summary.json/INDEX need no outside
         # context to diff runs): what was hit, from where, with which engine build.
         ev.meta["target_ip"] = self.target_ip
-        ev.meta["source_ip"] = getattr(self.ctx, "source_ip", "") or ""
+        ev.meta["source_ip"] = (getattr(self.ctx, "source_ip", "") or
+                                 getattr(self.ctx, "display_source", "") or "")
         # Transport provenance: is this target reached via NAT'd alternate ports
         # (cloud) or direct 445/135 (on-prem)? Recorded so evidence can show
         # cloud-vs-on-prem per run without re-deriving it (front-end-agnostic:
