@@ -15,6 +15,7 @@ BLOCKED (control worked), BLUE = NO-SERVICE (port closed, not a block).
 """
 import argparse
 import os
+import shutil
 import sys
 import time
 
@@ -118,6 +119,15 @@ def _select(modules, args):
 
 def _c(s, color, no_color):
     return s if no_color or not sys.stdout.isatty() else f"{color}{s}{_RESET}"
+
+
+def _term_width(default=100):
+    """Best-effort terminal width (columns); falls back to `default` when undetectable
+    (piped/no tty)."""
+    try:
+        return shutil.get_terminal_size((default, 24)).columns or default
+    except Exception:
+        return default
 
 
 def _egress_ip(target):
@@ -249,7 +259,11 @@ def _setup_panel(buf, args, run_info=None):
     def kv(k, v, vcol=None):
         if not v:
             return
-        print("     " + _c(f"{k:<11}", DIM, nc) + " " + (_c(str(v), vcol, nc) if vcol else str(v)))
+        v = str(v)
+        vmax = max(24, _term_width() - 18)          # keep the line within the terminal
+        if len(v) > vmax:
+            v = v[:vmax - 1] + "\u2026"
+        print("     " + _c(f"{k:<11}", DIM, nc) + " " + (_c(v, vcol, nc) if vcol else v))
 
     plat = first(r"^Platform:\s*(.+)")
     pre = first(r"^Preflight:\s*(.+?)\.?$")
@@ -385,7 +399,7 @@ def _clock(ts):
         return str(ts)[:19].replace("T", " ")
 
 
-def _print_summary(ev, args, no_color, elapsed, target=None):
+def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
     """Modern end-of-run summary from the evidence records: a verdict-distribution
     strip plus one aligned, colour-coded TABLE of every module's result."""
     target = target or args.target
@@ -417,25 +431,19 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         dist[d["v"]] = dist.get(d["v"], 0) + 1
     n = len(by_mod)
 
-    # ---- results: compute layout first (widths + details) so every rule spans
-    #      the FULL content width -------------------------------------------------
+    # ---- results layout: rows + per-row detail (shared by both modes) ----------
     debug = getattr(args, "debug", False)
     show_iters = args.iterations > 1
     rows = sorted(by_mod.values(),
                   key=lambda x: (x["cat"],
                                  _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
                                  x["name"]))
-    num_w = max(2, len(str(len(rows))))
-    name_w = min(40, max((len(d["name"]) for d in rows), default=10))
-    port_w = min(18, max((len((d.get("ports") or "")) for d in rows), default=5))
-    mitre_w = min(22, max((len((d.get("mitre") or "")) for d in rows), default=5))
-    cwe_w = min(9, max((len((d.get("cwe") or "")) for d in rows), default=3))
 
     def _hhmmss(ts):
         c = _clock(ts) or ""
         return c[-8:] if len(c) >= 8 else c
 
-    def _detail_of(d):
+    def _detail_of(d, cap=60):
         detail = _VERDICT_GLOSS.get(d["v"], "")
         if d["v"] == "BLOCKED":
             vtext = d["verdicts"].get("BLOCKED", "") or ""
@@ -463,17 +471,10 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
                                   key=lambda it: it[0])
             detail = " | ".join(f"{it}:{vv} ({_VERDICT_GLOSS_SHORT.get(vv, '?')})"
                                 for it, vv in iters_sorted)
-        if len(detail) > 60:
-            detail = detail[:59] + "\u2026"
+        if len(detail) > cap:
+            detail = detail[:cap - 1] + "\u2026"
         return detail
 
-    for d in rows:
-        d["_detail"] = _detail_of(d)
-    detail_w = max(len("DETAIL"), min(60, max((len(d["_detail"]) for d in rows), default=6)))
-    # full printed row width: leading 2 + # + ' \u2590 ' (3) + chip16 + each 2-space gap + detail
-    content_w = 2 + num_w + 3 + 16 + 2 + name_w + 2 + port_w + 2 + mitre_w + 2 + cwe_w + 2 + 8 + 2 + detail_w
-
-    # ---- header: title + a full-width rule --------------------------------------
     site = (getattr(ev, "meta", {}) or {}).get("site_id") or getattr(args, "site_id", None)
     _meta = getattr(ev, "meta", {}) or {}
     _mode = _meta.get("mode") or (args.mode or "blackbox")
@@ -487,62 +488,96 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
         bits.append(f"site {site}")
     if debug:
         bits.append("DEBUG")
-    print()
-    print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  \u00b7  ".join(bits), DIM, no_color))
-    print("  " + _c("\u2501" * (content_w - 2), ACC, no_color))
-
-    # ---- SCOREBOARD: one stacked proportional bar + count chips -----------------
+    term_w = _term_width()
     present = [v for v in _VERDICT_ORDER if v in dist]
-    BARW = content_w - 2
-    segs, used = [], 0
-    for i, v in enumerate(present):
-        col, _ic = _VERDICT_STYLE.get(v, ("", "\u2022"))
-        w = (BARW - used) if i == len(present) - 1 else max(1, round(BARW * dist[v] / n))
-        w = max(0, min(w, BARW - used))
-        used += w
-        segs.append(_c("\u2588" * w, col, no_color))
-    print("  " + "".join(segs))
-    chips = []
-    for v in present:
-        col, icon = _VERDICT_STYLE.get(v, ("", "\u2022"))
-        chips.append(_c(f"{icon} {dist[v]} {v}", col, no_color))
-    print("  " + _c("   \u00b7   ", DIM, no_color).join(chips))
-    print()
 
-    # ---- GROUPED status list (coloured header; sections span full width) --------
-    HC = CYAN_B + BOLD
-    print("  " + _c(f"{'#':>{num_w}}", HC, no_color) + "   "
-          + _cell("VERDICT", 16, HC, no_color) + "  "
-          + _cell("MODULE", name_w, HC, no_color) + "  "
-          + _cell("PORTS", port_w, HC, no_color) + "  "
-          + _cell("MITRE", mitre_w, HC, no_color) + "  "
-          + _cell("CWE", cwe_w, HC, no_color) + "  "
-          + _cell("TIME", 8, HC, no_color) + "  "
-          + _c("DETAIL", HC, no_color))
-
-    idx = 0
-    cur_cat = object()
-    for d in rows:
-        idx += 1
-        if d["cat"] != cur_cat:
-            cur_cat = d["cat"]
-            lab = " " + (cur_cat or "Uncategorised") + " "
-            fill = max(2, content_w - 5 - len(lab))      # span the FULL content width
-            print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
-                  + _c("\u2500" * fill + "\u2574", DIM, no_color))
-        col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
-        num = _c(f"{idx:>{num_w}}", DIM, no_color)
-        gutter = _c("\u2590", col, no_color)
-        print("  " + num + " " + gutter + " "
-              + _cell(f"{icon} {d['v']}", 16, col, no_color) + "  "
-              + _cell(d["name"], name_w, BOLD, no_color) + "  "
-              + _cell((d.get("ports") or "\u2014"), port_w, DIM, no_color) + "  "
-              + _cell((d.get("mitre") or "\u2014"), mitre_w, DIM, no_color) + "  "
-              + _cell((d.get("cwe") or "\u2014"), cwe_w, DIM, no_color) + "  "
-              + _cell(_hhmmss(d.get("ts")), 8, DIM, no_color) + "  "
-              + _c(d["_detail"], DIM, no_color)
-              + (_c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""))
-    print()
+    if compact:
+        # ---- COMPACT (narrow terminals): 2-line cards, grouped; never overflows ----
+        inner_w = max(30, min(term_w, 100)) - 2
+        rulew = min(inner_w, 72)
+        dcap = inner_w - 4
+        name_cap = inner_w - 20
+        cbits = [str(target), _mode] + ([_net] if _net else []) + [f"{n} mods", f"{elapsed:.0f}s"]
+        if site:
+            cbits.append(f"site {site}")
+        meta = " \u00b7 ".join(cbits)
+        avail = inner_w - len("RESULTS  ")
+        if len(meta) > avail:
+            meta = meta[:avail - 1] + "\u2026"
+        print()
+        print("  " + _c("RESULTS", BOLD, no_color) + _c("  " + meta, DIM, no_color))
+        print("  " + _c("\u2501" * rulew, ACC, no_color))
+        print("  " + "   ".join(
+            _c(f"{_VERDICT_STYLE.get(v, ('', '\u2022'))[1]} {dist[v]} {v}",
+               _VERDICT_STYLE.get(v, ("", ""))[0], no_color) for v in present))
+        print()
+        cur_cat = object()
+        for d in rows:
+            if d["cat"] != cur_cat:
+                cur_cat = d["cat"]
+                lab = " " + (cur_cat or "Uncategorised") + " "
+                print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
+                      + _c("\u2500" * max(2, rulew - len(lab) - 3) + "\u2574", DIM, no_color))
+            col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
+            nm = d["name"] if len(d["name"]) <= name_cap else d["name"][:name_cap - 1] + "\u2026"
+            print("  " + _c("\u2590", col, no_color) + " "
+                  + _c(f"{icon} {d['v']}", col, no_color) + "  " + _c(nm, BOLD, no_color))
+            print("    " + _c(_detail_of(d, cap=dcap), DIM, no_color))
+        print()
+    else:
+        # ---- WIDE (default): the full column table; rules span the content width ----
+        num_w = max(2, len(str(len(rows))))
+        name_w = min(40, max((len(d["name"]) for d in rows), default=10))
+        port_w = min(18, max((len((d.get("ports") or "")) for d in rows), default=5))
+        mitre_w = min(22, max((len((d.get("mitre") or "")) for d in rows), default=5))
+        cwe_w = min(9, max((len((d.get("cwe") or "")) for d in rows), default=3))
+        for d in rows:
+            d["_detail"] = _detail_of(d, cap=60)
+        detail_w = max(len("DETAIL"), min(60, max((len(d["_detail"]) for d in rows), default=6)))
+        content_w = 2 + num_w + 3 + 16 + 2 + name_w + 2 + port_w + 2 + mitre_w + 2 + cwe_w + 2 + 8 + 2 + detail_w
+        print()
+        print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  \u00b7  ".join(bits), DIM, no_color))
+        print("  " + _c("\u2501" * (content_w - 2), ACC, no_color))
+        BARW = content_w - 2
+        segs, used = [], 0
+        for i, v in enumerate(present):
+            col, _ic = _VERDICT_STYLE.get(v, ("", "\u2022"))
+            w = (BARW - used) if i == len(present) - 1 else max(1, round(BARW * dist[v] / n))
+            w = max(0, min(w, BARW - used))
+            used += w
+            segs.append(_c("\u2588" * w, col, no_color))
+        print("  " + "".join(segs))
+        print("  " + _c("   \u00b7   ", DIM, no_color).join(
+            _c(f"{_VERDICT_STYLE.get(v, ('', '\u2022'))[1]} {dist[v]} {v}",
+               _VERDICT_STYLE.get(v, ("", ""))[0], no_color) for v in present))
+        print()
+        HC = CYAN_B + BOLD
+        print("  " + _c(f"{'#':>{num_w}}", HC, no_color) + "   "
+              + _cell("VERDICT", 16, HC, no_color) + "  " + _cell("MODULE", name_w, HC, no_color) + "  "
+              + _cell("PORTS", port_w, HC, no_color) + "  " + _cell("MITRE", mitre_w, HC, no_color) + "  "
+              + _cell("CWE", cwe_w, HC, no_color) + "  " + _cell("TIME", 8, HC, no_color) + "  "
+              + _c("DETAIL", HC, no_color))
+        idx = 0
+        cur_cat = object()
+        for d in rows:
+            idx += 1
+            if d["cat"] != cur_cat:
+                cur_cat = d["cat"]
+                lab = " " + (cur_cat or "Uncategorised") + " "
+                fill = max(2, content_w - 5 - len(lab))
+                print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
+                      + _c("\u2500" * fill + "\u2574", DIM, no_color))
+            col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
+            print("  " + _c(f"{idx:>{num_w}}", DIM, no_color) + " " + _c("\u2590", col, no_color) + " "
+                  + _cell(f"{icon} {d['v']}", 16, col, no_color) + "  "
+                  + _cell(d["name"], name_w, BOLD, no_color) + "  "
+                  + _cell((d.get("ports") or "\u2014"), port_w, DIM, no_color) + "  "
+                  + _cell((d.get("mitre") or "\u2014"), mitre_w, DIM, no_color) + "  "
+                  + _cell((d.get("cwe") or "\u2014"), cwe_w, DIM, no_color) + "  "
+                  + _cell(_hhmmss(d.get("ts")), 8, DIM, no_color) + "  "
+                  + _c(d["_detail"], DIM, no_color)
+                  + (_c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""))
+        print()
 
     findings = dist.get("SUCCESS", 0)
     detected = dist.get("DETECTED", 0)
@@ -556,26 +591,38 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
     # INCONCLUSIVE (never tested; source in IPS quarantine) are NOT control wins.
     # Call them out so a poisoned run isn't mistaken for a clean one.
     recs = getattr(ev, "records", []) or []
-    inc_mods = sorted({r.get("attack", "?") for r in recs
-                       if r.get("baseline_result") == "INCONCLUSIVE"})
-    # a quarantine-stranded INCONCLUSIVE now also carries a SUSPECT tag (v1.9.18) —
-    # list it under INCONCLUSIVE only, never also under the BLOCKED-suspect line.
+
+    def _is_contam(r):
+        # poisoned by a source-IP ban / IPS quarantine: engine-flagged contaminated, or a
+        # SUSPECT/quarantine tag in the verdict. A BY-DESIGN / measurement INCONCLUSIVE (a
+        # UDP probe, an unobservable callback, a noisy ICMP flood) is NOT this.
+        return bool(r.get("contaminated")) or ("SUSPECT" in (r.get("verdict") or ""))
+
+    inc_recs = [r for r in recs if r.get("baseline_result") == "INCONCLUSIVE"]
+    inc_contam = sorted({r.get("attack", "?") for r in inc_recs if _is_contam(r)})
+    inc_clean = sorted({r.get("attack", "?") for r in inc_recs if not _is_contam(r)})
     susp_mods = sorted({r.get("attack", "?") for r in recs
                         if "SUSPECT" in (r.get("verdict") or "")
                         and r.get("baseline_result") != "INCONCLUSIVE"})
-    if inc_mods or susp_mods:
-        warn = "\033[35m" if not no_color else ""
-        rst = _RESET if not no_color else ""
-        print(f"{warn}  ⚠ CONTAMINATED — re-run clean (whitelist the tester source / wait "
-              f"out the IPS quarantine):{rst}")
-        if inc_mods:
-            print(f"{warn}      INCONCLUSIVE (not tested): {', '.join(inc_mods)}{rst}")
+    root = getattr(ev, "root", "")
+    mag = "\033[35m" if not no_color else ""
+    rst = _RESET if not no_color else ""
+    # (1) genuine CONTAMINATION (a source ban): the only case the whitelist/quarantine
+    #     advice + --suspect re-run applies to.
+    if inc_contam or susp_mods:
+        print(f"{mag}  ⚠ CONTAMINATED by a source-IP ban — re-run clean (whitelist the "
+              f"tester source / wait out the IPS quarantine):{rst}")
+        if inc_contam:
+            print(f"{mag}      INCONCLUSIVE (stranded by the ban, not tested): {', '.join(inc_contam)}{rst}")
         if susp_mods:
-            print(f"{warn}      SUSPECT (BLOCKED may be the ban): {', '.join(susp_mods)}{rst}")
-        root = getattr(ev, "root", "")
+            print(f"{mag}      SUSPECT (BLOCKED may be the ban): {', '.join(susp_mods)}{rst}")
         if root:
-            print(f"{warn}      → python3 cli.py --suspect {root}{rst}")
-
+            print(f"{mag}      → python3 cli.py --suspect {root}{rst}")
+    # (2) by-design / measurement INCONCLUSIVE: NOT contamination — a softer note so a
+    #     noisy ICMP flood is not mislabelled a ban (no whitelist / --suspect framing).
+    if inc_clean:
+        print(f"{mag}  ◌ INCONCLUSIVE (could not decide — not a control result; review the "
+              f"raw log): {', '.join(inc_clean)}{rst}")
 
 def _parse_ports(spec):
     out = {}
@@ -735,6 +782,13 @@ def main():
                          "run needs --confirm-roe again, then exit")
     ap.add_argument("--evidence-dir", default="evidence")
     ap.add_argument("--no-color", action="store_true")
+    ap.add_argument("--compact", action="store_true",
+                    help="condensed output for NARROW terminals (2-line cards, no wide "
+                         "table). Auto-enabled when the terminal is narrower than the "
+                         "full table; --wide forces the full table.")
+    ap.add_argument("--wide", action="store_true",
+                    help="force the full wide results table even on a narrow terminal "
+                         "(overrides the auto-compact).")
     ap.add_argument("--full-report", action="store_true",
                     help="also print the full ATT&CK/CWE/CVE report.txt to the console "
                          "(it is always written to the evidence dir regardless)")
@@ -874,6 +928,9 @@ def main():
         _total = len(run_set) * _iters
         _prog = {"n": 0}
         _setup = {"buf": [], "done": False}   # collect the setup log -> one tidy panel
+        # compact mode for narrow terminals (2-line cards, short live lines); auto when the
+        # terminal is narrower than ~120 cols, forced by --compact, disabled by --wide.
+        _compact = bool(args.compact) or (not args.wide and _term_width() < 120)
 
         def _on_log(m):
             s = str(m)
@@ -930,6 +987,12 @@ def main():
             col, icon = _VERDICT_STYLE.get(b, ("", "•"))
             # realtime progress: a bar that grows as modules complete, + % + clock
             pct = int(100 * nn / tot) if tot else 100
+            if _compact:
+                # short line (no bar/clock) so it fits a narrow terminal; name last (wraps)
+                print("  " + _c(f"{nn:>2}/{tot}", DIM, args.no_color) + " "
+                      + _c(f"{pct:>3}%", BOLD, args.no_color) + "  "
+                      + _c(f"{icon} {b:<14}", col, args.no_color) + " " + name)
+                return
             bw = 12
             fill = max(0, min(bw, int(round(bw * nn / tot)))) if tot else bw
             bar = _c("█" * fill, ACC, args.no_color) + _c("░" * (bw - fill), DIM, args.no_color)
@@ -1094,7 +1157,7 @@ def main():
             print("\n[!] interrupted", file=sys.stderr)
             return None, 130
         try:
-            _print_summary(ev, args, args.no_color, time.time() - t0, target=target)
+            _print_summary(ev, args, args.no_color, time.time() - t0, target=target, compact=_compact)
         except Exception as e:
             print(f"[!] summary error (non-fatal): {e}", file=sys.stderr)
         report_path = os.path.join(root, "report.txt")
@@ -1104,10 +1167,14 @@ def main():
                     print("\n" + f.read())
             except Exception:
                 pass
+        elif _compact:
+            # narrow: one short line, no hint tail (keeps it under the terminal width)
+            print(_c(f"\n  report: {report_path}", DIM, args.no_color))
+            print(_c(f"  evidence: {root}", ACC, args.no_color))
         else:
             print(_c(f"\n  Full ATT&CK/CWE/CVE report:  {report_path}"
                      "   (add --full-report to print it here)", DIM, args.no_color))
-        print(_c(f"  Evidence:                    {root}", ACC, args.no_color))
+            print(_c(f"  Evidence:                    {root}", ACC, args.no_color))
         return root, 0
 
     # One scan, one or more targets (comma-separated): e.g. the on-prem DC (B) and
