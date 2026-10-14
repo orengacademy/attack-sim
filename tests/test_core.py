@@ -565,7 +565,7 @@ class TestQuarantineSkipsRemainingAsInconclusive(unittest.TestCase):
         r._bl_lock = threading.Lock()
         r._stop = False
         r._mode = "blackbox"
-        r._await_unblacklist = lambda log, where: False   # ban never clears
+        r._await_unblacklist = lambda log, where, *a: False   # ban never clears
         mods = [self._mod("a"), self._mod("b")]
         ev = core.Evidence(base=tempfile.mkdtemp())
         r._iterate(mods, 1, ev, skip_unready=False,
@@ -843,7 +843,7 @@ class TestWaitUnblockFlag(unittest.TestCase):
         r._canary = ("tcp", 9); r._blacklisted = True
         r._bl_lock = threading.Lock(); r._stop = False
         r.cooldown = 0.0; r.wait_unblock = 12.0           # would be 30 without the flag
-        r._canary_reachable = lambda: False               # never recovers
+        r._canary_reachable = lambda *a: False               # never recovers
         slept, orig = [], _t.sleep
         _t.sleep = lambda s: slept.append(s)
         try:

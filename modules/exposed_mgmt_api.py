@@ -31,6 +31,15 @@ META = {
     "tactic": "Initial Access",
     "cwe": ["CWE-200"],
     "requires": [],
+    # Same AGENCY WAF device as waf_evasion (published 443 app), tracked on its own
+    # contamination canary — separate from the SD-WAN boundary — so a ban on either
+    # device never taints the other's verdicts. defer_group also defers it out of the
+    # parallel pool (its path-scanning GETs can trip the WAF). order 7 = after
+    # waf_evasion (6), within the agency group.
+    "defer_group": "agency_waf",
+    "defer_canary_cfg": "published_app_url",
+    "defer_canary_port": 443,
+    "order": 7,
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^MGMT-SURFACE-EXPOSED",

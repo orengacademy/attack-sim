@@ -32,11 +32,14 @@ META = {
                          #   web_ips_sigs) — defer out of the parallel pool so a ban
                          #   it causes can't contaminate concurrent modules, and so
                          #   it isn't itself banned mid-run into a false BLOCKED.
-    "order": 6,          # web-payload tier, after the SD-WAN web IPS-sig attacks
-                         #   (apache 1 … web_ips_sigs 5). NOTE: this hits the AGENCY
-                         #   WAF on 443, a DIFFERENT device from the SD-WAN boundary —
-                         #   see the "split the web group" note; order here is a
-                         #   stopgap until the deferred tail is grouped per-device.
+    "order": 6,          # web-payload tier, after the SD-WAN web IPS-sig attacks.
+    # This hits the AGENCY WAF on the published 443 app — a DIFFERENT device from the
+    # SD-WAN boundary. defer_group puts it (+ exposed_mgmt_api) on their own
+    # contamination canary: a WAF ban here is tracked against the agency host and never
+    # flags an SD-WAN verdict (and vice versa). Canary = the published app's 443.
+    "defer_group": "agency_waf",
+    "defer_canary_cfg": "published_app_url",
+    "defer_canary_port": 443,
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^WAF-EVADED",

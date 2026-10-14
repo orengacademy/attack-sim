@@ -1396,6 +1396,44 @@ def _match(raw, pat):
         return False
 
 
+# ---- deferred-tail DEVICE GROUPING ---------------------------------------------
+# A module whose side effect persists (a brute/DoS/IPS-signature attack) can get the
+# tester SOURCE banned by the control it trips. The engine defers these to the end so
+# that ban can't contaminate the quiet modules. But different modules trip DIFFERENT
+# devices: the SD-WAN boundary (the default), the AGENCY WAF on a published 443 app
+# (waf_evasion / exposed_mgmt_api), or the egress gateway (doh_bypass). A ban on one
+# device must not be read as a ban on another — so each module declares a `defer_group`
+# and the contamination guard tracks a SEPARATE canary + blacklist latch per group.
+# No `defer_group` => the "boundary" group = the historical single-canary behaviour.
+_DEFAULT_GROUP = "boundary"
+
+
+def _defer_group_of(meta):
+    return meta.get("defer_group") or _DEFAULT_GROUP
+
+
+def _is_deferred(meta):
+    """A module that must run in the serial tail (never the parallel pool) because it
+    trips a source ban / IPS signature, or because it belongs to a non-default device
+    group whose ban must be tracked separately."""
+    return bool(meta.get("run_last") or meta.get("trips_ips")
+                or (meta.get("defer_group") and meta.get("defer_group") != _DEFAULT_GROUP))
+
+
+def _url_host(val):
+    """Host from a URL or bare host[:port] string (for a group's canary target)."""
+    from urllib.parse import urlparse
+    v = (val or "").strip()
+    if not v:
+        return None
+    if "://" not in v:
+        v = "http://" + v
+    try:
+        return urlparse(v).hostname
+    except ValueError:
+        return None
+
+
 # Convention followed by every module in this repo: a line explaining WHY
 # something didn't run (missing privilege, missing tool, etc.) is either
 # "[ERROR] ..."/"[WARN] ..." or "SOMETHING-ERROR: ...". When a NO-RESULT
@@ -2450,6 +2488,14 @@ class Runner:
         self._canary = None
         self._blacklisted = False
         self._bl_lock = _th.Lock()
+        # Per-device-group contamination state (see _defer_group_of): the "boundary"
+        # group uses _canary/_blacklisted above; every other group (e.g. "agency_waf",
+        # "egress") gets its own canary (proto, port, host) and latch here, probed
+        # lazily the first time one of its modules runs. A ban on one device therefore
+        # never flags another device's verdicts.
+        self._group_canary = {}        # group -> (proto, port, host)
+        self._group_bl = {}            # group -> bool (blacklist latched)
+        self._group_canary_tried = set()   # groups whose canary we've already probed
         # Set at recon if the WHOLE target was unreachable from this source (no open
         # port, no ICMP). For a target that normally hosts services that usually means
         # this source is blocked BEFORE the run — e.g. a CONCURRENT tester sharing this
@@ -2755,13 +2801,11 @@ class Runner:
             # must also run sequentially AT THE END (never early in a parallel
             # pool) — otherwise the ban they cause contaminates everything after.
             # Everything else (skips + all modules when conc==1) runs sequentially.
-            def _defer_last(m):
-                return bool(m.META.get("run_last") or m.META.get("trips_ips"))
             parallel, serial = [], []
             for m in modules:
                 mid = m.META["id"]
                 unready = skip_unready and mid not in ready_ids
-                is_serial = bool(m.META.get("serial")) or _defer_last(m)
+                is_serial = bool(m.META.get("serial")) or _is_deferred(m.META)
                 if conc > 1 and not unready and not is_serial:
                     parallel.append(m)
                 else:
@@ -2775,15 +2819,17 @@ class Runner:
             # serial batch (which itself runs after the parallel batch) so the quiet
             # attacks all get a clean, uncontaminated test first; a ban they trigger
             # then only affects the recovery logic below, not earlier verdicts.
-            # Order by (defer_last, META.order): deferred/blacklisting attacks run
+            # Order by (deferred, META.order): deferred/blacklisting attacks run
             # after the quiet ones AND, within that tail, in META["order"] so the
-            # STICKY source-blacklisters (brute order 98, DoS 99) run AFTER the
-            # inline IPS-signature attacks (apache 1 / log4shell 2 / doh 3). Without
-            # this, a stable defer-only sort left ssh_brute (98) ahead of apache/
-            # log4shell (1/2), so its blacklist turned them into false INCONCLUSIVE.
-            serial.sort(key=lambda mm: (_defer_last(mm), mm.META.get("order", 0)))
-            if any(_defer_last(m) for m in serial):
-                lastnames = ", ".join(m.META["name"] for m in serial if _defer_last(m))
+            # STICKY source-blacklisters (brute order 100, DoS 101) run AFTER the
+            # inline IPS-signature attacks (apache 1 / log4shell 2 / …). This keeps a
+            # single global sequence; ban CONTAMINATION is tracked PER DEVICE GROUP
+            # (see _defer_group_of) so a ban on one device — the SD-WAN boundary, the
+            # agency WAF on 443, the egress gateway — never strands another device's
+            # modules or taints their verdicts.
+            serial.sort(key=lambda mm: (_is_deferred(mm.META), mm.META.get("order", 0)))
+            if any(_is_deferred(m.META) for m in serial):
+                lastnames = ", ".join(m.META["name"] for m in serial if _is_deferred(m.META))
                 log(f"  (deferring to run LAST so a triggered blacklist / IPS-signature ban "
                     f"doesn't contaminate other results: {lastnames})")
 
@@ -2796,35 +2842,46 @@ class Runner:
                 self._restore_process_globals(real_stdout)
                 # A ban tripped DURING the parallel batch latches now, so the serial
                 # batch's pre-checks wait; parallel modules that ran while banned are
-                # flagged contaminated and re-tested by the auto-retry pass.
+                # flagged contaminated and re-tested by the auto-retry pass. Parallel
+                # modules are all boundary-group (never grouped/deferred), so this
+                # checks the boundary canary.
                 self._detect_ban(log)
+            # Per-group quarantine give-up: if a device group's ban doesn't clear this
+            # iteration, we stop waiting on IT (fast-mark its later modules INCONCLUSIVE)
+            # but keep running OTHER groups — a ban on device A no longer strands B.
+            given_up = set()
             for i, m in enumerate(serial):
                 if self._stop:
                     break
-                # Mid-run quarantine recovery: if an earlier module tripped the
-                # appliance and the source got blacklisted (canary down), DON'T
-                # grind out false BLOCKEDs on the rest — wait for the ban to clear
-                # before this module. If it recovers, the latch is cleared and we
-                # continue clean; if it stays banned past the window, record this
-                # and every remaining module as INCONCLUSIVE (not tested — the ban,
-                # not a per-attack control) and stop the batch.
-                if self._blacklisted and self._canary and not self._stop:
-                    if not self._await_unblacklist(log, m.META["name"]):
-                        log("  [blacklist] source still in IPS quarantine — recording the "
-                            f"remaining {len(serial) - i} module(s) as INCONCLUSIVE (not tested) "
+                g = _defer_group_of(m.META)
+                if g != _DEFAULT_GROUP:
+                    self._ensure_group_canary(g, m.META, log)
+                # Mid-run quarantine recovery, keyed to THIS module's device group:
+                # if that group is quarantined (its canary down), wait for it to clear;
+                # if it won't (or we already gave up on this group this iteration),
+                # record THIS module INCONCLUSIVE (not a per-attack control) and move on
+                # to the next — modules of other groups are unaffected.
+                if self._canary_of(g) and not self._stop:
+                    if g in given_up:
+                        self._record_untested(
+                            m, it, ev, log, bump, recon_by_id,
+                            reason=f"source in IPS quarantine ({g} canary unreachable) when "
+                                   "this attack was due — not tested")
+                        continue
+                    if self._bl_get(g) and not self._await_unblacklist(log, m.META["name"], g):
+                        given_up.add(g)
+                        log(f"  [blacklist] source still in {g} quarantine — recording this and "
+                            f"the remaining {g}-group module(s) as INCONCLUSIVE (not tested) "
                             "instead of false BLOCKEDs. Whitelist the tester source on the "
                             "appliance (or wait for the quarantine to expire), then re-run.")
-                        for rem in serial[i:]:
-                            if self._stop:
-                                break
-                            self._record_untested(
-                                rem, it, ev, log, bump, recon_by_id,
-                                reason="source in IPS quarantine (canary unreachable) when this "
-                                       "attack was due — not tested")
-                        break
-                # cooldown before each defer-last (brute/DoS/IPS-signature) module
+                        self._record_untested(
+                            m, it, ev, log, bump, recon_by_id,
+                            reason=f"source in IPS quarantine ({g} canary unreachable) when "
+                                   "this attack was due — not tested")
+                        continue
+                # cooldown before each deferred (brute/DoS/IPS-signature) module
                 # so a rate-limit/ban it triggers has time to clear before the next.
-                if self.cooldown and _defer_last(m) and not self._stop:
+                if self.cooldown and _is_deferred(m.META) and not self._stop:
                     log(f"  (cooldown {self.cooldown:.0f}s before {m.META['name']} — "
                         "let any triggered rate-limit / IPS ban clear)")
                     _slept = 0.0
@@ -2838,15 +2895,16 @@ class Runner:
                 # finally can't leave socket.connect patched / stdout redirected
                 # and corrupt every later module.
                 self._restore_process_globals(real_stdout)
-                # Update the ban latch after each module — a tripper that SUCCEEDS
-                # (got through) but still banned the source is otherwise invisible to
-                # the latch, and the NEXT module's pre-check would run contaminated.
-                self._detect_ban(log)
+                # Update the ban latch for THIS module's group after it runs — a tripper
+                # that SUCCEEDS (got through) but still banned the source is otherwise
+                # invisible to the latch, and the next same-group module would run
+                # contaminated.
+                self._detect_ban(log, g)
 
             # Auto-retry: re-run the attacks whose verdict was poisoned by a
             # source-blacklist, once the ban clears, so they earn a REAL verdict
             # instead of ban fallout. No-op when nothing is contaminated.
-            if self.auto_retry and self._canary and not self._stop:
+            if self.auto_retry and (self._canary or self._group_canary) and not self._stop:
                 self._retry_contaminated(it, ev, log, real_stdout, recon_by_id,
                                          modules, skip_unready, ready_ids, pf_by_id)
 
@@ -2867,28 +2925,30 @@ class Runner:
             # de-dup, keep order, run QUIET modules before the trippers so a re-trip
             # lands last (gives the quiet ones a clean window first).
             contam = [by_id[i] for i in dict.fromkeys(contam_ids) if i in by_id]
-            contam.sort(key=lambda m: bool(m.META.get("run_last") or m.META.get("trips_ips")))
+            contam.sort(key=lambda m: _is_deferred(m.META))
             if not contam:
                 return
             log(f"\n[auto-retry {rnd}/{int(self.auto_retry)}] {len(contam)} contaminated "
                 "result(s) to re-test once the source-blacklist clears: "
                 + ", ".join(m.META["name"] for m in contam))
-            if not self._await_unblacklist(log, f"auto-retry round {rnd}"):
-                log("  [auto-retry] source still banned after the wait — leaving the "
-                    "remaining contaminated result(s) as INCONCLUSIVE/SUSPECT (re-run later, "
-                    "or whitelist the tester source on the appliance).")
-                return
+            # Wait out EACH distinct device group that's currently banned (the
+            # contaminated set can span devices — boundary, agency WAF, egress).
+            for g in dict.fromkeys(_defer_group_of(m.META) for m in contam):
+                if self._bl_get(g):
+                    self._await_unblacklist(log, f"auto-retry round {rnd}", g)
             for m in contam:
                 if self._stop:
                     return
-                # a previous re-run may have re-tripped the ban — wait it out first.
-                if self._blacklisted and not self._await_unblacklist(log, m.META["name"]):
-                    break
+                g = _defer_group_of(m.META)
+                # a previous re-run may have re-tripped THIS module's group ban — wait
+                # it out first; if it won't clear, skip this one (stays contaminated).
+                if self._bl_get(g) and not self._await_unblacklist(log, m.META["name"], g):
+                    continue
                 log(f"  [auto-retry {rnd}] re-testing {m.META['name']}")
                 self._process_module(m, it, skip_unready, ready_ids, pf_by_id,
                                      recon_by_id, ev, log, noop)
                 self._restore_process_globals(real_stdout)
-                self._detect_ban(log)
+                self._detect_ban(log, g)
         still = sorted({r.get("attack_id") for r in list(ev.records)
                         if r.get("iteration") == it and r.get("contaminated")})
         if still:
@@ -2913,7 +2973,7 @@ class Runner:
         except Exception:
             pass
 
-    def _await_unblacklist(self, log, where):
+    def _await_unblacklist(self, log, where, group=_DEFAULT_GROUP):
         """SMART HALT: when an attack trips the appliance and the tester source is
         blacklisted/quarantined (canary down), PAUSE the run — sending no attack
         traffic (only benign canary probes, so the lockout timer counts down instead
@@ -2936,19 +2996,21 @@ class Runner:
         tighter fit. A detected ban never gets the near-useless 30s of old. If the cap
         is reached still banned, return False (the caller marks the rest INCONCLUSIVE,
         then auto-retry gives them another full-window shot once the ban clears)."""
-        if not (self._blacklisted and self._canary):
+        if not (self._bl_get(group) and self._canary_of(group)):
             return True
+        c = self._canary_of(group)
+        gtag = "" if group == _DEFAULT_GROUP else f" ({group})"
         wait = self.wait_unblock if (getattr(self, "wait_unblock", 0) or 0) > 0 \
             else max(90.0, self.cooldown or 0.0, 2.0 * (getattr(self, "ban_expiry", 0) or 0) + 60.0)
-        log(f"  [blacklist] source appears quarantined — SMART HALT: pausing up to {wait:.0f}s "
-            f"(no attack traffic) for the canary {self._canary[1] or 'icmp'}/{self._canary[0]} "
+        log(f"  [blacklist]{gtag} source appears quarantined — SMART HALT: pausing up to {wait:.0f}s "
+            f"(no attack traffic) for the canary {c[1] or 'icmp'}/{c[0]} on {c[2]} "
             "to recover, then resuming (whitelist the tester source to avoid this).")
         waited = 0.0
         while waited < wait and not self._stop:
-            if self._canary_reachable():
+            if self._canary_reachable(group):
                 with self._bl_lock:
-                    self._blacklisted = False
-                log(f"  [blacklist] canary recovered after {waited:.0f}s — ban lifted, "
+                    self._bl_set(group, False)
+                log(f"  [blacklist]{gtag} canary recovered after {waited:.0f}s — ban lifted, "
                     "resuming the battery clean.")
                 return True
             time.sleep(min(5.0, wait - waited))
@@ -2971,41 +3033,95 @@ class Runner:
         self._record(ev, it, meta, b, "-", verdict, recon_by_id or {}, contaminated=True)
         bump()
 
-    def _canary_reachable(self):
-        """Is the canary port still reachable from the source? (quick probe)."""
-        if not self._canary:
+    # ---- per-device-group canary/latch accessors ------------------------------
+    # The "boundary" group is backed by the original _canary / _blacklisted (so the
+    # single-device path and its tests are byte-for-byte unchanged); every other group
+    # is backed by _group_canary / _group_bl, keyed by group name.
+    def _canary_of(self, group):
+        """(proto, port, host) for a group's canary, or None. Boundary's canary is on
+        the run target; a group canary carries its own host."""
+        if group == _DEFAULT_GROUP:
+            if not self._canary:
+                return None
+            proto, port = self._canary
+            return (proto, port, self.target_ip)
+        return self._group_canary.get(group)
+
+    def _bl_get(self, group):
+        return self._blacklisted if group == _DEFAULT_GROUP else self._group_bl.get(group, False)
+
+    def _bl_set(self, group, val):
+        if group == _DEFAULT_GROUP:
+            self._blacklisted = val
+        else:
+            self._group_bl[group] = val
+
+    def _ensure_group_canary(self, group, meta, log):
+        """Lazily pick a non-boundary group's canary the first time one of its modules
+        runs: a benign port on the device THAT group trips (declared by the module via
+        defer_canary_cfg / defer_canary_port). If it isn't reachable we just skip the
+        canary — the group's modules are still isolated from other groups' bans; only
+        auto-detection of this group's own ban is unavailable."""
+        if group == _DEFAULT_GROUP or group in self._group_canary_tried:
+            return
+        self._group_canary_tried.add(group)
+        port = meta.get("defer_canary_port")
+        if not port:
+            return
+        host = None
+        cfgkey = meta.get("defer_canary_cfg")
+        if cfgkey:
+            host = _url_host(self.ctx.cfg(cfgkey))
+        host = host or self.target_ip
+        try:
+            if probe_tcp(host, int(port), timeout=2, retries=0) == "open":
+                self._group_canary[group] = ("tcp", int(port), host)
+                log(f"  canary ({group} group): {port}/tcp on {host} reachable — a later "
+                    f"drop flags a {group}-specific ban (tracked apart from the boundary).")
+            else:
+                log(f"  ({group} group: no reachable canary on {host}:{port} — a {group} ban "
+                    "can't be auto-detected, but its modules stay isolated from other groups.)")
+        except Exception:
+            pass
+
+    def _canary_reachable(self, group=_DEFAULT_GROUP):
+        """Is the group's canary still reachable from the source? (quick probe)."""
+        c = self._canary_of(group)
+        if not c:
             return None
-        proto, port = self._canary
+        proto, port, host = c
         try:
             if proto == "tcp":
-                return probe_tcp(self.target_ip, port, timeout=2, retries=0) == "open"
+                return probe_tcp(host, port, timeout=2, retries=0) == "open"
             if proto == "icmp":
-                return probe_icmp(self.target_ip) == "up"
+                return probe_icmp(host) == "up"
         except Exception:
             return None
         return None
 
-    def _detect_ban(self, log):
-        """Probe the canary once (unless already latched); on the FIRST drop, latch
-        self._blacklisted and warn. Returns True if the source is (now) considered
-        blacklisted/quarantined. Cheap after the first ban (no further probing while
-        latched). Used both by the per-verdict SUSPECT tag and proactively after each
-        module, so a tripper that SUCCEEDS but still bans the source is caught too."""
-        if not self._canary:
+    def _detect_ban(self, log, group=_DEFAULT_GROUP):
+        """Probe the group's canary once (unless already latched); on the FIRST drop,
+        latch that group's blacklist and warn. Returns True if the source is (now)
+        considered blacklisted for this group. Cheap after the first ban (no further
+        probing while latched). Used both by the per-verdict SUSPECT tag and proactively
+        after each module, so a tripper that SUCCEEDS but still bans the source is caught."""
+        if not self._canary_of(group):
             return False
         # Fast path: already latched → no probe. Checked under the lock.
         with self._bl_lock:
-            if self._blacklisted:
+            if self._bl_get(group):
                 return True
         # Probe OUTSIDE the lock — a ~2s TCP connect (or ~7s ping); holding the lock
         # across it would serialize every parallel worker behind this one probe.
-        if self._canary_reachable() is False:
+        if self._canary_reachable(group) is False:
             with self._bl_lock:
-                first = not self._blacklisted
-                self._blacklisted = True
+                first = not self._bl_get(group)
+                self._bl_set(group, True)
             if first:
-                log("[WARN] SOURCE APPEARS BLACKLISTED by the boundary — the canary "
-                    f"{self._canary[1] or 'icmp'}/{self._canary[0]} (reachable at start) "
+                c = self._canary_of(group)
+                where = "the boundary" if group == _DEFAULT_GROUP else f"the {group} device"
+                log(f"[WARN] SOURCE APPEARS BLACKLISTED by {where} — the canary "
+                    f"{c[1] or 'icmp'}/{c[0]} on {c[2]} (reachable at start) "
                     "is now unreachable. BLOCKED/NO-SERVICE/NO-RESULT verdicts from here are "
                     "SUSPECT (the ban, not per-attack controls). The run will wait for the ban "
                     "to clear and (with --auto-retry) re-test the contaminated attacks. Standard "
@@ -3013,18 +3129,19 @@ class Runner:
             return True
         return False
 
-    def _flag_if_blacklisted(self, verdict, log):
+    def _flag_if_blacklisted(self, verdict, log, group=_DEFAULT_GROUP):
         """Called on a non-SUCCESS verdict (BLOCKED / NO-SERVICE / NO-RESULT /
-        INCONCLUSIVE): if the canary says the source is blacklisted, this verdict may
-        be ban fallout, not a per-attack control — annotate it SUSPECT so the operator
-        isn't misled (and so the auto-retry pass, which keys off contaminated=True,
-        can find it). INCONCLUSIVE is included because a module that couldn't decide
+        INCONCLUSIVE): if the module's GROUP canary says the source is blacklisted, this
+        verdict may be ban fallout, not a per-attack control — annotate it SUSPECT so the
+        operator isn't misled (and so the auto-retry pass, which keys off
+        contaminated=True, can find it). A ban on a DIFFERENT device's group never flags
+        this verdict. INCONCLUSIVE is included because a module that couldn't decide
         (icmp_flood: baseline ICMP 100% lost AND TCP-liveness all-timeouts) is itself a
         late-ban signal; re-probing here catches a quarantine the earlier verdicts
         missed. Canary still up → verdict returned unchanged (no false SUSPECT)."""
-        if not self._canary:
+        if not self._canary_of(group):
             return verdict
-        if self._detect_ban(log):
+        if self._detect_ban(log, group):
             return verdict + "  [SUSPECT: source appears blacklisted — this verdict " \
                              "may be the ban, not this attack's own control]"
         return verdict
@@ -3063,6 +3180,10 @@ class Runner:
         if self._stop:
             return
         meta = m.META
+        # The device group this module trips (SD-WAN boundary / agency WAF / egress) —
+        # the SUSPECT contamination tag below is keyed to THIS group's canary, so a ban
+        # on another device never flags this verdict.
+        group = _defer_group_of(meta)
         log(f"  [{meta['category']}] {meta['name']}")
 
         # Skip modules whose prerequisites aren't met, recording WHY.
@@ -3118,7 +3239,7 @@ class Runner:
             # INCONCLUSIVE is included for the same reason as the single-target path
             # (a quarantine-shaped indeterminate re-probes the canary → auto-retry).
             if a in ("BLOCKED", "NO-SERVICE", "NO-RESULT", "INCONCLUSIVE"):
-                verdict = self._flag_if_blacklisted(verdict, log)
+                verdict = self._flag_if_blacklisted(verdict, log, group)
             # Reference only — the appliance verdict (a) is the real test result; the
             # policy note just disambiguates a through-boundary block as segmentation.
             pol = getattr(self, "_pol_by_id", {}).get(meta["id"])
@@ -3341,7 +3462,7 @@ class Runner:
             # (udp443_quic's handshake-less UDP, petitpotam's unobservable callback)
             # is left exactly as the module reported it.
             if b in ("BLOCKED", "NO-SERVICE", "NO-RESULT", "INCONCLUSIVE"):
-                verdict = self._flag_if_blacklisted(verdict, log)
+                verdict = self._flag_if_blacklisted(verdict, log, group)
             # Port-policy attribution is a REFERENCE only — the verdict above comes
             # from the actual test (what the probe/attack did on the wire), never
             # from the policy. The note just disambiguates a BLACKBOX block as
