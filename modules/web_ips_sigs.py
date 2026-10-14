@@ -34,6 +34,10 @@ META = {
     "tactic": 'Initial Access',
     "requires": ["curl"],
     "trips_ips": True,   # SQLi/XSS/cmd-inj/webshell battery trips the IPS → source blacklist; run last
+    "order": 5,          # IPS-sig tier, after the single-signature tests (apache 1 /
+                         #   log4shell 2 / doh 3 / struts2 4). Without an explicit order
+                         #   (==0) this multi-signature battery sorted ahead of them and
+                         #   its (stickier) ban turned those earlier tests INCONCLUSIVE.
     "ports": [("tcp", 80)],
     "port_customizable": True,
     # delivered at least one signature -> IPS gap (finding)

@@ -64,6 +64,12 @@ META = {
     "serial": True,               # DoS: must run alone
     "run_last": True,             # a flood can trip anti-DoS rate-limiting/blacklist of
                                   # the source — run after everything else (see icmp_flood)
+    "order": 100,                 # DoS tier: without an explicit order (==0) this flood
+                                  #   sorted to the FRONT of the deferred tail and ran
+                                  #   BEFORE the inline IPS-sig attacks (apache 1 /
+                                  #   log4shell 2 / doh 3), so its anti-DoS ban turned
+                                  #   them into false INCONCLUSIVE. Run with the other
+                                  #   sticky blacklisters, just before icmp_flood (101).
     "os_supported": ["Linux"],
     "ports": [("tcp", SYN_PORT)],
     "port_customizable": True,
