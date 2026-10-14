@@ -829,7 +829,8 @@ def main():
         # posture (whitebox/blackbox) is per-target: an explicit flag wins, else
         # ('auto'/omitted) the target's DESIGNATED posture from memory, else blackbox.
         mode = core.resolve_posture(target, args.mode)
-        if (args.mode in (None, "auto")) and mem.get("mode"):
+        if (args.mode in (None, "auto")) and mem.get("mode") and args.debug:
+            # redundant with the panel header (which shows posture) — debug-only
             print(f"[recall] posture {mode} (designated for {target})")
         ssh_p_port = args.ssh_port or (mem.get("ssh_port") if cloud else None) or 22
         if source:
@@ -882,7 +883,8 @@ def main():
         if ssh_p is not None:
             runner.ctx.creds["ssh_pass"] = ssh_p
         site_id = args.site_id or mem.get("site_id") or ""
-        if site_id and not args.site_id:
+        if site_id and not args.site_id and args.debug:
+            # redundant with the panel header (which shows the site) — debug-only
             print(f"[recall] site {site_id} (remembered for {target})")
         # remember creds/site only when explicitly given this run.
         cred_fields = {}
