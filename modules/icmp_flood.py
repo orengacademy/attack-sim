@@ -372,6 +372,21 @@ def _lowconf(base_loss):
     return ""
 
 
+def _ratelimit_caveat():
+    """Confidence tag appended to EVERY BLOCKED-RATELIMIT verdict. A single source rarely
+    reaches a carrier/SD-WAN anti-DoS ceiling, so a 'knee' found from one host is more
+    often the TARGET's own kernel ICMP-reply rate-limit (sysctl net.ipv4.icmp_ratelimit/
+    icmp_ratemask) or the cloud provider's edge than a dedicated anti-DoS control. The
+    verdict is also vantage-dependent: a raw-socket host (hping3) can find a knee where a
+    WSL1 datagram flood self-congests and reads PASS. So BLOCKED-RATELIMIT here means
+    'the high-rate ICMP was policed somewhere in path', NOT proof of an SD-WAN control."""
+    return ("  [CONFIDENCE: single-source — a knee at this rate is likely the TARGET kernel's "
+            "ICMP-reply rate-limit or the cloud/ISP edge, NOT necessarily a dedicated SD-WAN "
+            "anti-DoS; and the verdict varies by vantage (raw-socket host finds a knee where a "
+            "WSL1 datagram flood self-congests -> PASS). Confirm WHICH device policed it via the "
+            "appliance/host logs, or test through the real boundary (--appliance dual-path).]")
+
+
 def _ping_once(target, count=BASELINE_COUNT, interval=BASELINE_INTERVAL):
     """One ping sample: (loss%, avg_rtt_ms, raw_text)."""
     try:
@@ -491,7 +506,8 @@ def run(target, ctx):
                     "threshold (Sangfor/Forcepoint defaults aren't published — the ramp measured it); "
                     "the control holds at/above this rate."
                     % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
-                       _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1)) + _lowconf(base_loss))
+                       _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1))
+                    + _lowconf(base_loss) + _ratelimit_caveat())
             elif MIN_MBPS and max_mbps < MIN_MBPS:
                 # Delivered, but never reached a DoS-grade volume -> can't claim the control
                 # is absent (the test didn't push to the rate it triggers at).
@@ -570,7 +586,8 @@ def run(target, ctx):
             out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline, "
                        "with the round-trip STAYING low (~%sms vs %sms baseline) — a remote rate-limiter "
                        "dropped the excess ICMP without queuing it, so the boundary policed the high-rate "
-                       "flood (control held)." % (_fmt(flood_rtt, 0), _fmt(base_rtt, 0)) + _lowconf(base_loss))
+                       "flood (control held)." % (_fmt(flood_rtt, 0), _fmt(base_rtt, 0))
+                       + _lowconf(base_loss) + _ratelimit_caveat())
     elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
         # Delivered, but the datagram fallback couldn't push a DoS-grade volume -> can't
         # conclude the control is absent. This is the common WSL1 / no-raw-socket case.

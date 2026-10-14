@@ -482,7 +482,7 @@ def _print_summary(ev, args, no_color, elapsed, target=None):
             if "REJECTION RESPONSE" in vtext:
                 detail = "rejection block (in-path IPS/WAF or host)"
             elif "BLOCKED-RATELIMIT" in otext:
-                detail = "rate-limited/shaped (boundary policed the flood)"
+                detail = "rate-limited/shaped — single-source; may be host/edge rate-limit, confirm device (see verdict)"
             # In WHITEBOX there's no boundary in path, so a BLOCKED is an anomaly — the
             # policing is almost certainly the cloud-provider edge or the TARGET's own
             # kernel ICMP rate-limit, NOT a control under test. Say so in the table, not
