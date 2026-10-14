@@ -65,17 +65,16 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertTrue(core._match(out, m.META["success_regex"]),
                         "a delivered high-volume fallback flood should PASS")
 
-    def test_blocked_ratelimit_verdict_renders(self):
-        # REGRESSION (v1.9.61): the flat-RTT BLOCKED-RATELIMIT verdict once mixed an
-        # f-string with %-formatting and crashed at runtime (ValueError: unsupported
-        # format character 'v'). Force loss delta >= threshold with RTT NOT inflated and
-        # assert the verdict RENDERS and reads BLOCKED (no crash).
+    def test_hping_knee_blocked_renders(self):
+        # The BLOCKED-RATELIMIT verdict now lives ONLY in the hping3 raw-socket ramp (the
+        # datagram fallback no longer scores BLOCKED). Drive the ramp to a knee and assert the
+        # verdict renders + reads BLOCKED (also guards the v1.9.62 format-string crash).
         m = _load_module("icmp_flood")
         m._baseline = lambda t: (0.0, 15.0, "15 packets transmitted, 15 received, 0% packet loss")
-        m._sampled_loss_rtt = lambda t, samples=None: (40.0, 16.0, "flood samples")
-        m._py_icmp_flood = lambda t, s, result: result.update({"mode": "raw(root)", "sent": 200000})
+        # a step that jumps loss >= RATE_LIMIT_DELTA over baseline -> _is_knee True
+        m._hping_flood_at = lambda t, pps, sz, sec: (40.0, 16.0, 100000, "hping output, no priv error")
         real_which = m.shutil.which
-        m.shutil.which = lambda x: None            # no hping3 -> Python fallback path
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
         try:
             out = m.run("203.0.113.9", _Ctx())
         finally:
@@ -83,22 +82,25 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertIn("BLOCKED-RATELIMIT", out)
         self.assertTrue(core._match(out, m.META["blocked_regex"]))
 
-    def test_selfcongestion_pass_verdict_renders(self):
-        # the companion branch: loss up AND RTT ballooned (>= RTT_INFLATION x baseline and
-        # >= RTT_ABS_FLOOR) -> self-congestion -> PASS. Must also render cleanly.
+    def test_fallback_highloss_reads_pass_not_blocked(self):
+        # The datagram fallback measures DELIVERY, not policing: high echo-reply loss with flat
+        # RTT is the TARGET's own kernel reply-throttle, NOT a boundary control. It must read PASS
+        # (delivered) with a kernel-reply-throttle caveat, NEVER BLOCKED (the false-BLOCKED the
+        # user hit from WSL1 against a no-SD-WAN host).
         m = _load_module("icmp_flood")
         m._baseline = lambda t: (0.0, 15.0, "15 packets transmitted, 15 received, 0% packet loss")
-        big_rtt = 15.0 * m.RTT_INFLATION + m.RTT_ABS_FLOOR
-        m._sampled_loss_rtt = lambda t, samples=None: (40.0, big_rtt, "flood samples")
-        m._py_icmp_flood = lambda t, s, result: result.update({"mode": "raw(root)", "sent": 200000})
+        m._sampled_loss_rtt = lambda t, samples=None: (60.0, 22.0, "flood samples")  # flat RTT
+        m._py_icmp_flood = lambda t, s, result: result.update({"mode": "raw(root)", "sent": 143798})
         real_which = m.shutil.which
-        m.shutil.which = lambda x: None
+        m.shutil.which = lambda x: None            # no hping3 -> datagram fallback
         try:
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertIn("self-congestion", out)
-        self.assertTrue(core._match(out, m.META["success_regex"]))
+        self.assertTrue(core._match(out, m.META["success_regex"]),
+                        "a delivered datagram flood must read PASS, not BLOCKED")
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        self.assertIn("kernel", out.lower())       # the reply-throttle caveat is present
 
     def _run_syn(self, base_loss, base_rtt, flood_loss, flood_rtt):
         """Drive syn_flood's verdict branches with mocked helpers (no hping3/network).

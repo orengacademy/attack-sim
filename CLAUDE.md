@@ -120,6 +120,16 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     absolute — the floor stops LAN queueing being a false BLOCKED) → BLOCKED
     (policed). `syn_flood` also flags DoS impact if real connects fail during the
     flood. Decisive in both a bare lab (SUCCESS) and behind a policing SD-WAN (BLOCKED).
+    **`icmp_flood` attribution (v1.9.66):** `BLOCKED-RATELIMIT` comes ONLY from the
+    `hping3` raw-socket rate ramp (which finds the real send-rate knee) or `--appliance`
+    dual-path. The pure-stdlib **datagram fallback** (no raw socket — e.g. WSL1) measures
+    **DELIVERY, not policing**: echo-reply loss there conflates a boundary drop, the
+    TARGET's own kernel ICMP-reply rate-limit (`net.ipv4.icmp_ratelimit`, on by default on
+    every Linux host), and attacker self-congestion, and can't attribute between them — so
+    it reports **PASS (delivered)** with a low-confidence caveat and NEVER scores BLOCKED
+    (that caused false BLOCKEDs + run-to-run flip-flop from WSL1 against a no-SD-WAN host).
+    The only non-SUCCESS from the fallback is leg-1 (baseline ~100% lost → BLOCKED-filtered /
+    a detected ban → INCONCLUSIVE).
   - **`serial: True`** covers two classes: (1) DoS/brute (`icmp_flood`,
     `syn_flood`, `ssh_brute`, `stateful_evasion`) that skew each other's
     rate/latency, and (2) the in-process AD modules (`dcsync`, `psexec`,

@@ -559,63 +559,39 @@ def run(target, ctx):
     out.append(f"python flood: sent {sent} ICMP echoes via {py_result.get('mode', '?')}; "
                f"during-flood loss={flood_loss}%")
     if flood_loss is None:
-        out.append("[ERROR] could not parse the flood's delivery ratio from ping (no stats line) — tool fault, review raw log.")
-    elif base_loss is not None and (flood_loss - base_loss) >= RATE_LIMIT_DELTA:
-        # SELF-CONGESTION GUARD (datagram fallback only). The Python fallback floods from THIS
-        # host's own datagram path, so a flood that ALSO balloons the round-trip (>= RTT_INFLATION x
-        # baseline AND >= RTT_ABS_FLOOR ms) is queuing/dropping its OWN packets upstream — that loss
-        # is self-inflicted sender-side congestion, NOT remote policing. A real anti-DoS rate-limiter
-        # DROPS excess echoes WITHOUT inflating your RTT (the replies that come back come back fast).
-        # So only call BLOCKED when loss rose WITHOUT the congestion signature; loss+ballooned-RTT is
-        # a delivered flood under self-congestion (-> PASS w/ caveat). This stops the WSL1 run-to-run
-        # flip-flop (0% one run -> SUCCESS, 33% the next -> false BLOCKED) on a target with no SD-WAN.
-        _congested = (base_rtt and flood_rtt and base_rtt > 0
-                      and flood_rtt / base_rtt >= RTT_INFLATION and flood_rtt >= RTT_ABS_FLOOR)
-        if _congested:
-            out.append(
-                "PASS (self-congestion, not policing): the flood lost %.1f%% vs %.1f%% baseline, BUT "
-                "the round-trip also ballooned to ~%sms (%.0fx the %sms baseline) — the datagram "
-                "fallback saturated THIS host's own uplink and queued/dropped its OWN packets. That is "
-                "self-congestion, not a remote rate-limit (a rate-limiter drops WITHOUT inflating your "
-                "RTT). ICMP was delivered; no boundary policing was confirmed from here. For a "
-                "trustworthy rate-limit verdict, flood from a host with real raw sockets (hping3, not "
-                "WSL1) so the ramp can find the actual knee, or drive multiple sources (fleet.py)."
-                % (flood_loss, base_loss, _fmt(flood_rtt, 0),
-                   (flood_rtt / base_rtt if base_rtt else 0.0), _fmt(base_rtt, 0)) + _lowconf(base_loss))
-        else:
-            out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline, "
-                       f"with the round-trip STAYING low (~{_fmt(flood_rtt, 0)}ms vs {_fmt(base_rtt, 0)}ms "
-                       f"baseline) — a remote rate-limiter dropped the excess ICMP without queuing it, so "
-                       f"the boundary policed the high-rate flood (control held)."
-                       + _lowconf(base_loss) + _ratelimit_caveat())
-    elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
-        # Delivered, but the datagram fallback couldn't push a DoS-grade volume. DECISIVE:
-        # delivered + not policed -> PASS, with an UNDER-POWERED caveat (the common WSL1 case).
-        out.append(
-            "PASS: the ICMP flood was DELIVERED (%.1f%% loss) and NOT policed — the boundary did not "
-            "rate-limit it at this volume (finding).  [LOW-CONFIDENCE / under-powered: only reached "
-            "~%s Mbit/s, BELOW the %d Mbit/s DoS-volume floor (HARNESS_ICMP_MIN_MBPS); the Python "
-            "datagram fallback is rate-capped (common on WSL1, no raw socket), so a higher-rate "
-            "anti-DoS could still trigger above this — flood from a host with real raw sockets "
-            "(hping3) or drive multiple sources (fleet.py) to confirm.]"
-            % (flood_loss, _fmt(ach_mbps), MIN_MBPS))
-    elif flood_loss <= LOW_LOSS:
-        msg = (f"PASS: the python ICMP flood was delivered ({flood_loss:.1f}% loss, {rate_str}) — "
-               "not policed at this volume.")
-        if source_limited:
-            msg += (" [under-powered] achieved rate is well below target — install hping3 for the "
-                    "rate ramp, or drive multiple sources (fleet.py) to reach the threshold.")
-        out.append(msg + _lowconf(base_loss))
-    else:
-        # Middle band: loss rose but BELOW the policing threshold with the round-trip staying flat.
-        # That is NOT a policing signature — the flood was substantially DELIVERED (most echoes
-        # returned), so the boundary did NOT rate-limit it to a control degree. DECISIVE: PASS. The
-        # partial loss is single-source / internet jitter, not a control.
-        _rise = flood_loss - (base_loss or 0.0)
-        out.append(f"PASS: the ICMP flood was DELIVERED — {flood_loss:.1f}% loss vs {base_loss}% "
-                   f"baseline is a {_rise:.0f}-point rise, BELOW the {RATE_LIMIT_DELTA}-pt policing "
-                   f"threshold, with the round-trip staying flat — so the boundary did NOT rate-limit "
-                   f"the flood (finding: no effective ICMP DoS protection at this volume).  "
-                   f"[LOW-CONFIDENCE: partial loss from a single source over the internet is noisy; a "
-                   f"raw-socket host (hping3) gives the definitive policing knee.]" + _lowconf(base_loss))
+        out.append("[ERROR] could not parse the flood's delivery ratio from ping (no stats line) "
+                   "— tool fault, review raw log.")
+        return "\n".join(out)
+    # The DATAGRAM FALLBACK measures DELIVERY, not boundary policing. Echo-reply loss from a
+    # single unprivileged source conflates three different things and cannot attribute between
+    # them: (a) a boundary dropping the flood in transit, (b) the TARGET's OWN kernel ICMP-reply
+    # rate-limit (net.ipv4.icmp_ratelimit — ON BY DEFAULT on every Linux host; it throttles the
+    # host's REPLIES under any flood), and (c) attacker self-congestion. On a host with no SD-WAN
+    # the reply-loss is (b): a host artifact, NOT a control. So the fallback no longer scores
+    # BLOCKED (that produced false BLOCKEDs + run-to-run flip-flop); it reports the flood as
+    # DELIVERED and defers any boundary-policing verdict to the hping3 raw-socket ramp (real
+    # send-rate knee) or --appliance dual-path.
+    msg = (f"PASS: the ICMP flood was DELIVERED to the target ({sent} echoes sent, {rate_str}) — "
+           "the attack reached the host and no boundary was proven to stop it (finding: no "
+           "confirmed ICMP DoS protection in path).")
+    caveats = []
+    if base_loss is not None and flood_loss - base_loss >= RATE_LIMIT_DELTA:
+        caveats.append(
+            "echo-reply loss rose to %.0f%% (vs %.0f%% baseline) with the round-trip staying flat "
+            "(~%sms) — from a single datagram source that is most likely the TARGET's own kernel "
+            "ICMP-reply rate-limit throttling its REPLIES, NOT a boundary anti-DoS; confirm a real "
+            "boundary rate-limit with hping3's raw-socket ramp or --appliance dual-path"
+            % (flood_loss, base_loss, _fmt(flood_rtt, 0)))
+    elif flood_loss > LOW_LOSS:
+        caveats.append(
+            "echo-reply loss was %.0f%% — partial loss from a single source over the internet is "
+            "noisy (host reply-throttle / jitter), not a boundary verdict" % flood_loss)
+    if source_limited or (MIN_MBPS and ach_mbps < MIN_MBPS):
+        caveats.append(
+            "under-powered: only ~%s Mbit/s, below the %d Mbit/s DoS-volume floor (the datagram "
+            "fallback is rate-capped on WSL1) — a higher-rate anti-DoS could still exist above "
+            "this; use hping3 (raw sockets) or multiple sources (fleet.py)" % (_fmt(ach_mbps), MIN_MBPS))
+    if caveats:
+        msg += "  [LOW-CONFIDENCE: " + "; ".join(caveats) + ".]"
+    out.append(msg + _lowconf(base_loss))
     return "\n".join(out)
