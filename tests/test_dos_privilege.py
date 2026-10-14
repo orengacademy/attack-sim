@@ -101,20 +101,25 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertTrue(core._match(out, m.META["success_regex"]))
 
     def _run_syn(self, base_loss, base_rtt, flood_loss, flood_rtt):
-        """Drive syn_flood's verdict branches with mocked helpers (no hping3/network)."""
+        """Drive syn_flood's verdict branches with mocked helpers (no hping3/network).
+        shutil.which / time.sleep / subprocess.Popen are SHARED stdlib modules, so they are
+        patched with mock.patch.object (auto-restored) — NEVER assigned directly, or they'd
+        leak into other tests (that bug shipped once in v1.9.63)."""
+        from unittest import mock
         m = _load_module("syn_flood")
-        m.shutil.which = lambda x: "/usr/bin/" + x          # hping3 + timeout "present"
+        # module-local helpers: safe to set on the freshly re-exec'd module object
         m._connect_ok = lambda t, p, **k: True              # service up; connects stay up
         m._hping_syn = lambda *a, **k: (base_loss, base_rtt, "baseline txt")
         m._parse_loss = lambda out: flood_loss
         m._parse_rtt_avg = lambda out: flood_rtt
-        m.time.sleep = lambda *a, **k: None
 
         class _P:
             def communicate(self, timeout=None): return ("15 packets ... 100% packet loss", None)
             def kill(self): pass
-        m.subprocess.Popen = lambda *a, **k: _P()
-        return m.run("203.0.113.9", _Ctx())
+        with mock.patch.object(m.shutil, "which", lambda x: "/usr/bin/" + x), \
+             mock.patch.object(m.time, "sleep", lambda *a, **k: None), \
+             mock.patch.object(m.subprocess, "Popen", lambda *a, **k: _P()):
+            return m.run("203.0.113.9", _Ctx())
 
     def test_syn_flood_verdict_branches_render(self):
         # REGRESSION: syn_flood's BLOCKED/PASS verdict strings must RENDER (same shape that
