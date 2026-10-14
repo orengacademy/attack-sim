@@ -119,6 +119,66 @@ def _c(s, color, no_color):
 
 
 DIM = "\033[2m"; BOLD = "\033[1m"; ACC = "\033[36m"; AMBER = "\033[33m"
+CYAN_B = "\033[96m"; BLUE = "\033[34m"; GREEN = "\033[32m"; GREEN_B = "\033[92m"
+MAGENTA = "\033[35m"; GREY = "\033[90m"
+
+# compact 3-row block wordmark for the banner logo (letters used by "ATTACK SIM")
+_LOGO_GLYPHS = {
+    "A": ["\u2584\u2580\u2588", "\u2588\u2580\u2588", "\u2580 \u2580"],
+    "T": ["\u2580\u2588\u2580", " \u2588 ", " \u2580 "],
+    "C": ["\u2584\u2580\u2580", "\u2588  ", "\u2580\u2580\u2580"],
+    "K": ["\u2588 \u2588", "\u2588\u2588 ", "\u2580 \u2580"],
+    "S": ["\u2584\u2580\u2580", "\u2580\u2580\u2584", "\u2580\u2580 "],
+    "I": ["\u2588", "\u2588", "\u2580"],
+    "M": ["\u2588\u2584 \u2584\u2588", "\u2588 \u2580 \u2588", "\u2580   \u2580"],
+    " ": ["  ", "  ", "  "],
+}
+
+
+def _truecolor():
+    if os.environ.get("NO_COLOR"):
+        return False
+    return "truecolor" in os.environ.get("COLORTERM", "") or "24bit" in os.environ.get("COLORTERM", "")
+
+
+def _grad_row(text, start=(34, 211, 238), end=(99, 102, 241)):
+    """Per-character cyan->indigo truecolor gradient across one row (bold)."""
+    n = max(1, len(text) - 1)
+    out = []
+    for i, ch in enumerate(text):
+        if ch == " ":
+            out.append(ch); continue
+        r = int(start[0] + (end[0] - start[0]) * i / n)
+        g = int(start[1] + (end[1] - start[1]) * i / n)
+        b = int(start[2] + (end[2] - start[2]) * i / n)
+        out.append(f"\033[1;38;2;{r};{g};{b}m{ch}")
+    return "".join(out) + _RESET
+
+
+def _logo_lines(no_color, word="ATTACK SIM"):
+    """The 3-row block wordmark, gradient-coloured when the terminal supports it."""
+    rows = ["", "", ""]
+    for ch in word:
+        g = _LOGO_GLYPHS.get(ch.upper(), _LOGO_GLYPHS[" "])
+        for i in range(3):
+            rows[i] += g[i] + " "
+    tty = sys.stdout.isatty()
+    if no_color or not tty:
+        return rows
+    if _truecolor():
+        return [_grad_row(r) for r in rows]
+    return [f"{CYAN_B}{BOLD}{r}{_RESET}" for r in rows]
+
+
+def _print_logo(no_color):
+    print()
+    for ln in _logo_lines(no_color):
+        print("  " + ln)
+    print("  " + _c("Breach & Attack Simulation", DIM, no_color)
+          + _c("  \u00b7  ", GREY, no_color)
+          + _c("MyGovNet", CYAN_B, no_color)
+          + _c("  \u00b7  ", GREY, no_color)
+          + _c(f"v{core.VERSION}", DIM, no_color))
 
 
 def _fmt_recon(s):
@@ -165,7 +225,8 @@ def _setup_panel(buf, args, run_info=None):
 
     def sect(label):
         lab = " " + label + " "
-        print("  " + _c("╶─" + lab, ACC, nc) + _c("─" * max(2, W - len(lab) - 3) + "╴", DIM, nc))
+        print("  " + _c("╶─", ACC, nc) + _c(lab, CYAN_B + BOLD, nc)
+              + _c("─" * max(2, W - len(lab) - 3) + "╴", DIM, nc))
 
     def kv(k, v, vcol=None):
         if not v:
@@ -918,26 +979,33 @@ def main():
             print(_c("│", ACC, args.no_color) + _c(f"{body:<{_BW}}", color, args.no_color)
                   + _c("│", ACC, args.no_color))
 
-        def _brule(left, right):
-            print(_c(left + "─" * _BW + right, ACC, args.no_color))
-        print()
+        def _brule(left, right, color=ACC):
+            print(_c(left + "─" * _BW + right, color, args.no_color))
+
+        def _kvline(label, value, lcol=CYAN_B, vcol=DIM):
+            """A boxed label+value row that pads on PLAIN width (so embedded ANSI in the
+            coloured segments can't throw off the right border like _bl would)."""
+            plain = f"  {label}   {value}"
+            pad = " " * max(1, _BW - len(plain))
+            body = (_c(f"  {label}", lcol + BOLD, args.no_color) + "   "
+                    + _c(value, vcol, args.no_color) + pad)
+            print(_c("│", ACC, args.no_color) + body + _c("│", ACC, args.no_color))
+
+        _print_logo(args.no_color)
         _brule("╭", "╮")
-        _bl(">_  CONTROL VALIDATION HARNESS", BOLD)
-        _bl(f"Breach & Attack Simulation   ·   MyGovNet   ·   v{core.VERSION}", DIM)
-        _brule("├", "┤")
-        _bl(_modeline, ACC)
+        _bl(_modeline, (CYAN_B + BOLD) if _wb else (AMBER + BOLD))
         _bl(f"{_dest}   ·   {_net}" + (f"   ·   site {site_id}" if site_id else ""), DIM)
         # TARGET + CREDS folded in (these used to print as raw [cloud]/[recall] lines
         # above the banner; --debug still emits those).
         _brule("├", "┤")
         if cloud and eff_map:
-            _bl("TARGET  SMB 445→%s · RPC 135→%s · SSH 22→%s"
-                % (smb, rpc, eff_map.get(22, 22)), DIM)
+            _kvline("TARGET", "SMB 445→%s · RPC 135→%s · SSH 22→%s"
+                    % (smb, rpc, eff_map.get(22, 22)))
         else:
-            _bl("TARGET  direct SMB 445 · RPC 135 · SSH %s" % ssh_p_port, DIM)
+            _kvline("TARGET", "direct SMB 445 · RPC 135 · SSH %s" % ssh_p_port)
         _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
                                 runner.ctx.creds.get("dc_user") or "")).strip("\\")
-        _bl("CREDS   %s · src %s" % (_cred_id or "(none set)", source or "default route"), DIM)
+        _kvline("CREDS ", "%s · src %s" % (_cred_id or "(none set)", source or "default route"))
         _brule("╰", "╯")
 
         t0 = time.time()
