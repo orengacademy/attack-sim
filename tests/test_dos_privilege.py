@@ -100,6 +100,39 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertIn("self-congestion", out)
         self.assertTrue(core._match(out, m.META["success_regex"]))
 
+    def _run_syn(self, base_loss, base_rtt, flood_loss, flood_rtt):
+        """Drive syn_flood's verdict branches with mocked helpers (no hping3/network)."""
+        m = _load_module("syn_flood")
+        m.shutil.which = lambda x: "/usr/bin/" + x          # hping3 + timeout "present"
+        m._connect_ok = lambda t, p, **k: True              # service up; connects stay up
+        m._hping_syn = lambda *a, **k: (base_loss, base_rtt, "baseline txt")
+        m._parse_loss = lambda out: flood_loss
+        m._parse_rtt_avg = lambda out: flood_rtt
+        m.time.sleep = lambda *a, **k: None
+
+        class _P:
+            def communicate(self, timeout=None): return ("15 packets ... 100% packet loss", None)
+            def kill(self): pass
+        m.subprocess.Popen = lambda *a, **k: _P()
+        return m.run("203.0.113.9", _Ctx())
+
+    def test_syn_flood_verdict_branches_render(self):
+        # REGRESSION: syn_flood's BLOCKED/PASS verdict strings must RENDER (same shape that
+        # crashed in icmp_flood). Exercise all three: loss-delta BLOCKED, RTT-inflation
+        # BLOCKED, and clean PASS.
+        m = _load_module("syn_flood")
+        INFL, FLOOR = m.RTT_INFLATION, m.RTT_ABS_FLOOR
+        # loss-delta BLOCKED (delta >= threshold, RTT flat)
+        out = self._run_syn(0.0, 10.0, 40.0, 11.0)
+        self.assertIn("BLOCKED-RATELIMIT", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]))
+        # RTT-inflation BLOCKED (delta small, RTT ballooned past floor)
+        out = self._run_syn(0.0, 10.0, 5.0, 10.0 * INFL + FLOOR)
+        self.assertIn("BLOCKED-RATELIMIT", out)
+        # clean PASS (flood delivered, low loss)
+        out = self._run_syn(0.0, 10.0, 0.0, 10.0)
+        self.assertTrue(core._match(out, m.META["success_regex"]))
+
     def test_delivered_but_under_threshold_is_inconclusive(self):
         # Flood delivered (0% loss) but the achieved rate is BELOW the DoS-volume floor
         # -> INCONCLUSIVE, never a false SUCCESS (the "non-aggressive" false-finding).
