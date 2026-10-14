@@ -146,3 +146,37 @@ class TestFloodPacketSize(unittest.TestCase):
         # 8-byte ICMP header + FLOOD_SIZE payload
         self.assertEqual(len(pkt), 8 + m.FLOOD_SIZE)
         self.assertGreater(m.FLOOD_SIZE, 1000, "default flood payload should be bandwidth-grade")
+
+
+class TestNoiseHandling(unittest.TestCase):
+    def test_median_ignores_one_bad_sample(self):
+        m = _load_module("icmp_flood")
+        self.assertEqual(m._median([20.0, 0.0, 33.0]), 20.0)
+        self.assertEqual(m._median([None, 0.0, 0.0]), 0.0)
+        self.assertIsNone(m._median([None, None]))
+
+    def _run_with_baseline(self, base_loss):
+        m = _load_module("icmp_flood")
+        m._baseline = lambda t: (base_loss, 30.0, "baseline")
+        m._hping_flood_at = lambda *a: (None, None, None, "[open_sockraw] Operation not permitted")
+        m._py_icmp_flood = lambda t, s, r: r.update({"mode": "raw(root)", "sent": 200000})
+
+        class _CP:
+            stdout = f"15 packets transmitted, 15 received, {base_loss:.0f}% packet loss"
+        real_run, real_which = m.subprocess.run, m.shutil.which
+        m.subprocess.run = lambda *a, **k: _CP()
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            return m.run("203.0.113.9", _Ctx())
+        finally:
+            m.subprocess.run, m.shutil.which = real_run, real_which
+
+    def test_lossy_baseline_pass_is_low_confidence(self):
+        out = self._run_with_baseline(18.0)   # >= NOISE_FLOOR (10)
+        self.assertIn("PASS:", out)
+        self.assertIn("LOW-CONFIDENCE", out)
+
+    def test_clean_baseline_pass_has_no_caveat(self):
+        out = self._run_with_baseline(0.0)
+        self.assertIn("PASS:", out)
+        self.assertNotIn("LOW-CONFIDENCE", out)
