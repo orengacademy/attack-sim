@@ -99,6 +99,34 @@ class TestLadderPrecedence(unittest.TestCase):
         b, _ = _verdict("[INCONCLUSIVE] udp probe, no handshake", recon="filtered")
         self.assertEqual(b, "INCONCLUSIVE")
 
+    # [NO-SERVICE] self-marker: a module declaring its attack VECTOR is absent though the
+    # port is OPEN (e.g. key-only SSH) -> NO-SERVICE, never a mute NO-RESULT.
+    def test_noservice_marker_on_open_port(self):
+        b, v = _verdict("[NO-SERVICE] SSH password authentication is DISABLED (key-only)",
+                        recon="open")
+        self.assertEqual(b, "NO-SERVICE")
+        self.assertIn("vector", v)
+
+    def test_noservice_marker_beats_filtered(self):
+        # authoritative over the recon-inferred state, like the other self-markers
+        b, _ = _verdict("[NO-SERVICE] password auth disabled", recon="filtered")
+        self.assertEqual(b, "NO-SERVICE")
+
+    def test_noservice_marker_no_whitebox_anomaly_tail(self):
+        # a self-declared NO-SERVICE already states WHY -> no generic whitebox-anomaly tail
+        r = core.Runner("127.0.0.1")
+        r._canary = None; r._blacklisted = False
+        r._bl_lock = threading.Lock(); r._mode = "whitebox"; r.dual = False
+        r.appliance_ip = None; r._pol_by_id = {}; r._port_policy = {"name": "t"}
+        r._detections = {}; r.auto_retry = 0
+        r._unreachable_at_recon = False; r._host_reachable_at_recon = False
+        m = _FakeMod("t", "[NO-SERVICE] key-only SSH", success_regex="WIN", blocked_regex="BLK")
+        ev = core.Evidence(base=tempfile.mkdtemp())
+        r._process_module(m, 1, False, {"t"}, {}, {"t": {"probes": [("tcp", 22, "open")]}}, ev,
+                          lambda *a: None, lambda: None)
+        v = [x for x in ev.records if x["attack_id"] == "t"][-1]["verdict"]
+        self.assertNotIn("whitebox-anomaly", v)
+
     # An INCONCLUSIVE now goes through the contamination guard (icmp_flood's
     # baseline-100%-lost-and-TCP-dead is a late-ban signal): with the source
     # blacklisted it's tagged SUSPECT so it's marked contaminated for auto-retry;

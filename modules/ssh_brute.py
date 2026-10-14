@@ -79,6 +79,11 @@ def _paramiko_cred_test(target, port, user, pw, ctx):
             cli.close()
         except Exception:
             pass
+    except paramiko.BadAuthenticationType as e:
+        # key-only SSH: the server refuses the password method outright (not a wrong
+        # password). Emit the phrase the verdict layer maps to [NO-SERVICE].
+        allowed = ", ".join(getattr(e, "allowed_types", None) or ["publickey"])
+        out.append(f"server does not support password authentication (allowed types: {allowed})")
     except paramiko.AuthenticationException:
         out.append("0 valid passwords found (authentication failed after the burst)")
     except Exception as e:
@@ -297,6 +302,19 @@ def run(target, ctx):
             out.append("\n[+] a valid credential was accepted DESPITE the burst — "
                        "brute-force protection did NOT stop it (finding; the IPS likely "
                        "only DETECTED it). Correlate with the appliance's brute-force log.")
+        elif re.search(r"does not support password authentication|method reply 4|"
+                       r"no supported authentication methods|Bad authentication type",
+                       raw, re.I):
+            # The SSH daemon is KEY-ONLY (PasswordAuthentication no): the port is open but
+            # the password-auth vector isn't offered, so a password brute-force can't even
+            # be attempted. Self-declare [NO-SERVICE] (the engine scores it NO-SERVICE, not a
+            # mute NO-RESULT). This is NOT a weakness — key-only SSH is exactly the hardening
+            # that defeats password brute-force.
+            out.append("\n[NO-SERVICE] SSH password authentication is DISABLED on the target "
+                       "(key-only) — the port answers but no password-auth vector is offered, so a "
+                       "password brute-force cannot be attempted. Not a weakness: key-only SSH is the "
+                       "hardening that defeats this attack. (Test key-based auth / weak-key exposure "
+                       "separately if in scope.)")
         elif re.search(r"\b0 valid passwords? found\b", raw):
             # the valid cred WAS in the list but wasn't accepted -> the control
             # rate-limited / blocked / blacklisted the burst before it got there.
