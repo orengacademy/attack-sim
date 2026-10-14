@@ -92,6 +92,12 @@ RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => polic
 # Default 50 Mbit/s = a conservative "real DoS volume" floor; set it to the SD-WAN's
 # documented threshold (e.g. 84) for a tight fit, or 0 to disable the gate.
 MIN_MBPS = _int_env("HARNESS_ICMP_MIN_MBPS", 50, lo=0)
+# Noise handling: ICMP-reply loss over the internet jitters, so a single sample can flip
+# the verdict. Take SAMPLES measurements and use the MEDIAN (one bad sample can't decide).
+# And if the BASELINE itself is already lossy (>= NOISE_FLOOR %) the path/host is noisy, so
+# any PASS/BLOCKED is tagged low-confidence. 0 disables the respective behaviour.
+SAMPLES = _int_env("HARNESS_ICMP_SAMPLES", 3, lo=1)
+NOISE_FLOOR = _int_env("HARNESS_ICMP_NOISE_FLOOR", 10, lo=0)
 # RTT shaping is a SECONDARY signal and noisy: on a fast/local link, flooding a
 # target bumps its avg RTT from queueing on ITS OWN NIC/CPU — not the boundary.
 # A sub-ms baseline makes that look like a huge multiple, so require BOTH a large
@@ -346,16 +352,54 @@ def _py_icmp_flood(target, seconds, result):
         result["error"] = errs[0]
 
 
-def _baseline(target):
-    """Normal-rate ICMP reference: (loss%, avg_rtt_ms, raw_text)."""
+def _median(xs):
+    """Median of the non-None values, or None if all are None."""
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    return xs[len(xs) // 2]
+
+
+def _lowconf(base_loss):
+    """Caveat appended to a PASS/BLOCKED verdict when the BASELINE itself is already lossy
+    (>= NOISE_FLOOR): the measurement is noisy, so the verdict can flip between runs and
+    shouldn't be read as definitive."""
+    if NOISE_FLOOR and base_loss is not None and base_loss >= NOISE_FLOOR:
+        return (f"  [LOW-CONFIDENCE: baseline ICMP already lost {base_loss:.0f}% at NORMAL rate — "
+                "the path/host is noisy (host ICMP-reply rate-limit / internet jitter), so this "
+                "verdict can flip run-to-run. Use -i N and read the distribution, or --appliance "
+                "dual-path, for a trustworthy result.]")
+    return ""
+
+
+def _ping_once(target, count=BASELINE_COUNT, interval=BASELINE_INTERVAL):
+    """One ping sample: (loss%, avg_rtt_ms, raw_text)."""
     try:
         p = subprocess.run(
-            ["ping", "-c", str(BASELINE_COUNT), "-i", BASELINE_INTERVAL, target],
-            capture_output=True, text=True, timeout=BASELINE_COUNT * 1 + 15,
-            stdin=subprocess.DEVNULL)
+            ["ping", "-c", str(count), "-i", str(interval), target],
+            capture_output=True, text=True,
+            timeout=int(count * float(interval)) + 15, stdin=subprocess.DEVNULL)
         return _parse_loss(p.stdout), _parse_rtt_avg(p.stdout), p.stdout
     except Exception as e:
-        return None, None, f"[baseline ping error] {e}"
+        return None, None, f"[ping error] {e}"
+
+
+def _sampled_loss_rtt(target, samples=None):
+    """Run several ping samples and return (median_loss, median_rtt, combined_text) —
+    smooths internet jitter so one bad sample can't flip the verdict."""
+    n = samples or SAMPLES
+    losses, rtts, texts = [], [], []
+    for i in range(n):
+        lo, rt, tx = _ping_once(target)
+        losses.append(lo)
+        rtts.append(rt)
+        texts.append((f"[sample {i+1}/{n}] " if n > 1 else "") + tx.strip())
+    return _median(losses), _median(rtts), "\n".join(texts)
+
+
+def _baseline(target):
+    """Normal-rate ICMP reference (median of SAMPLES): (loss%, avg_rtt_ms, raw_text)."""
+    return _sampled_loss_rtt(target)
 
 
 def _hping_flood_at(target, pps, size, seconds):
@@ -447,7 +491,7 @@ def run(target, ctx):
                     "threshold (Sangfor/Forcepoint defaults aren't published — the ramp measured it); "
                     "the control holds at/above this rate."
                     % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
-                       _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1)))
+                       _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1)) + _lowconf(base_loss))
             elif MIN_MBPS and max_mbps < MIN_MBPS:
                 # Delivered, but never reached a DoS-grade volume -> can't claim the control
                 # is absent (the test didn't push to the rate it triggers at).
@@ -468,7 +512,8 @@ def run(target, ctx):
                     "threshold, if any, is ABOVE that, and a single host usually can't reach a carrier/"
                     "SD-WAN ceiling: raise HARNESS_ICMP_SIZE (bigger packets for a bits/sec policer), "
                     "extend HARNESS_ICMP_RAMP higher, use a fatter/closer link, or drive MULTIPLE "
-                    "sources (fleet.py) to push past the threshold." % (_fmt(max_pps), _fmt(max_mbps), LOW_LOSS))
+                    "sources (fleet.py) to push past the threshold."
+                    % (_fmt(max_pps), _fmt(max_mbps), LOW_LOSS) + _lowconf(base_loss))
             return "\n".join(out)
 
     # ---- leg 2 (fallback): no hping3 (or its raw socket failed) -> Python flood --
@@ -479,10 +524,10 @@ def run(target, ctx):
     th = threading.Thread(target=_py_icmp_flood, args=(target, FLOOD_SECONDS, py_result), daemon=True)
     th.start()
     try:
-        dp = subprocess.run(["ping", "-c", str(BASELINE_COUNT), target], capture_output=True,
-                            text=True, timeout=BASELINE_COUNT + 15, stdin=subprocess.DEVNULL)
-        flood_loss = _parse_loss(dp.stdout)
-        out.append(dp.stdout.strip())
+        # measure delivery with SAMPLES fast pings DURING the flood and take the median,
+        # so one jittery sample can't flip the verdict (fast -i so they fit the window).
+        flood_loss, _frtt, ftext = _sampled_loss_rtt(target)
+        out.append(ftext)
     finally:
         th.join(FLOOD_SECONDS + 5)
     if py_result.get("error"):
@@ -501,7 +546,7 @@ def run(target, ctx):
         out.append("[INCONCLUSIVE] could not parse the flood's delivery ratio — review raw log.")
     elif base_loss is not None and (flood_loss - base_loss) >= RATE_LIMIT_DELTA:
         out.append(f"BLOCKED-RATELIMIT: flood lost {flood_loss:.1f}% vs {base_loss:.1f}% baseline — "
-                   "the boundary policed the high-rate ICMP (control held).")
+                   "the boundary policed the high-rate ICMP (control held)." + _lowconf(base_loss))
     elif flood_loss <= LOW_LOSS and MIN_MBPS and ach_mbps < MIN_MBPS:
         # Delivered, but the datagram fallback couldn't push a DoS-grade volume -> can't
         # conclude the control is absent. This is the common WSL1 / no-raw-socket case.
@@ -519,7 +564,7 @@ def run(target, ctx):
         if source_limited:
             msg += (" [under-powered] achieved rate is well below target — install hping3 for the "
                     "rate ramp, or drive multiple sources (fleet.py) to reach the threshold.")
-        out.append(msg)
+        out.append(msg + _lowconf(base_loss))
     else:
         out.append(f"[INCONCLUSIVE] flood {flood_loss:.1f}% loss vs {base_loss}% baseline — ambiguous; "
                    "install hping3 for a proper rate ramp. Review raw log.")
