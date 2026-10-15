@@ -117,6 +117,28 @@ def _apply_theme(root):
                      font=("TkDefaultFont", 9, "bold"))
         st.map("Treeview", background=[("selected", SURF2)])
         st.configure("TProgressbar", background=ACCENT, troughcolor=SURF, borderwidth=0)
+        # ---- dark scrollbars (clam defaults render light/beige — the biggest dated tell) ----
+        for _sb in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            st.configure(_sb, background=SURF2, troughcolor=BG, bordercolor=BG,
+                         arrowcolor=MUTED, borderwidth=0, relief="flat")
+            st.map(_sb, background=[("active", "#3a4a60"), ("pressed", "#3a4a60")],
+                   arrowcolor=[("active", FG)])
+        # ---- dark comboboxes (posture / net) + their popup listbox ----
+        st.configure("TCombobox", fieldbackground=SURF, background=SURF, foreground=FG,
+                     arrowcolor=FG, bordercolor=SURF2, borderwidth=0, padding=4, relief="flat")
+        st.map("TCombobox", fieldbackground=[("readonly", SURF)], background=[("readonly", SURF)],
+               foreground=[("readonly", FG)], arrowcolor=[("active", ACCENT)],
+               bordercolor=[("focus", ACCENT)])
+        root.option_add("*TCombobox*Listbox.background", PANEL)
+        root.option_add("*TCombobox*Listbox.foreground", FG)
+        root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        root.option_add("*TCombobox*Listbox.borderWidth", 0)
+        # ---- brand wordmark (two-tone, letter-tracked — echoes the web/report ATTACK·SIM) ----
+        _mf = ("TkFixedFont", 16, "bold")
+        st.configure("Mark1.TLabel", background=BG, foreground=INFOC, font=_mf)
+        st.configure("Mark2.TLabel", background=BG, foreground=ACCENT, font=_mf)
+        st.configure("MarkDot.TLabel", background=BG, foreground=MUTED, font=_mf)
     except Exception:
         pass
 
@@ -142,8 +164,12 @@ class HarnessGUI:
     # ----- header ------------------------------------------------------
     def _build_header(self):
         h = ttk.Frame(self.root); h.pack(fill="x", padx=14, pady=(12, 2))
+        wm = ttk.Frame(h); wm.pack(anchor="w")
+        ttk.Label(wm, text="A T T A C K", style="Mark1.TLabel").pack(side="left")
+        ttk.Label(wm, text="   ·   ", style="MarkDot.TLabel").pack(side="left")
+        ttk.Label(wm, text="S I M", style="Mark2.TLabel").pack(side="left")
         ttk.Label(h, text=f"Control Validation Harness  ·  v{core.VERSION}",
-                  style="H1.TLabel").pack(anchor="w")
+                  style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
         ttk.Label(h, text="Breach & Attack Simulation · MITRE ATT&CK-mapped · "
                           f"{len(self.modules)} modules discovered",
                   style="Sub.TLabel").pack(anchor="w")
