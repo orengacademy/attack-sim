@@ -55,6 +55,14 @@ def _int_env(name, default, lo=1):
         return default
 
 
+def _frac_env(name, default, lo=0.0, hi=1.0):
+    """Parse a 0..1 fraction from env, clamped; else the default."""
+    try:
+        return min(hi, max(lo, float(os.environ.get(name) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _list_env(name, default):
     """Parse a comma-separated int list from env, else the default list."""
     v = os.environ.get(name)
@@ -85,6 +93,15 @@ FLOOD_INTERVAL_US = max(1, 1_000_000 // FLOOD_PPS)                     # hping3 
 FLOOD_WORKERS = _int_env("HARNESS_ICMP_FLOOD_WORKERS", 16, lo=1)
 LOW_LOSS = 20              # <= this %: that rate is "getting through"
 RATE_LIMIT_DELTA = 30      # flood loss this many points ABOVE baseline => policed
+# ATTRIBUTION: a loss knee is only a TARGET control if the source actually REACHED
+# (close to) the rate it's blaming the target for. hping3 sends blind — its achieved
+# pps reflects the SENDER's NIC/CPU/uplink ceiling, not the target. So if a knee
+# appears at a step where achieved << target (the source couldn't even push the
+# requested rate), the loss is the SOURCE saturating its own uplink (self-congestion),
+# NOT the boundary policing — scoring that BLOCKED would credit a control that was
+# never proven. Require achieved >= this fraction of target at the knee to call it a
+# control; below it, report the flood as DELIVERED-to-source-ceiling (a finding).
+SATURATION_FRAC = _frac_env("HARNESS_ICMP_SAT_FRAC", 0.80)
 # THRESHOLD-AWARE verdict: a DELIVERED flood only proves "no policing" if it actually
 # pushed a DoS-grade VOLUME. If the flood got through but the achieved rate stayed BELOW
 # this many Mbit/s, we can't conclude the anti-DoS control is absent (the test simply
@@ -474,6 +491,7 @@ def run(target, ctx):
         out.append(f"## ramp (hping3): step the ICMP rate up — the knee = first rate the boundary "
                    f"polices (baseline loss {_fmt(base_loss, 1)}%, rtt {_fmt(base_rtt, 1)}ms)")
         knee = None
+        saturated = None       # a loss knee the SOURCE caused by saturating its own uplink
         max_pps = max_mbps = 0.0
         for pps in RAMP_PPS:
             loss, rtt, snt, raw = _hping_flood_at(target, pps, FLOOD_SIZE, STEP_SECONDS)
@@ -495,7 +513,15 @@ def run(target, ctx):
             out.append("  step target ~%s pps -> achieved ~%s pps / ~%s Mbit/s . loss=%s%% rtt=%sms"
                        % (f"{pps:,}", _fmt(apps), _fmt(ambps), _fmt(loss, 1), _fmt(rtt, 1)))
             if _is_knee(loss, rtt, base_loss, base_rtt):
-                knee = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
+                # Attribute the knee: did the SOURCE actually reach this rate? If it
+                # couldn't push even SATURATION_FRAC of the target pps, the loss is the
+                # sender's own uplink/CPU ceiling (self-congestion), not the target
+                # policing — don't credit a control that wasn't proven.
+                reached = apps is not None and pps and apps >= SATURATION_FRAC * pps
+                if reached:
+                    knee = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
+                else:
+                    saturated = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
                 break
 
         if not hping_privfail:
@@ -508,6 +534,21 @@ def run(target, ctx):
                     % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
                        _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1))
                     + _lowconf(base_loss) + _ratelimit_caveat())
+            elif saturated:
+                # Loss spiked only where the SOURCE fell short of the target rate
+                # (achieved < %d%% of target) — the sender saturated its own uplink/CPU,
+                # so the loss is self-congestion, NOT a target rate-limit. The flood was
+                # DELIVERED as far as this source could push: a finding, not a block.
+                out.append(
+                    "PASS: the ICMP flood was DELIVERED up to the most this SOURCE could push "
+                    "(~%s pps / ~%s Mbit/s) — beyond that the SENDER saturated (achieved only ~%s pps "
+                    "of the ~%s pps target, loss %s%% vs %s%% baseline), so the loss is self-congestion "
+                    "on the tester's own uplink, NOT a target rate-limit. No anti-DoS policing was "
+                    "proven at a rate the source actually reached. To measure a real threshold, flood "
+                    "from a host with a fatter uplink / real raw sockets, or drive MULTIPLE sources "
+                    "(fleet.py)."
+                    % (_fmt(max_pps), _fmt(max_mbps), _fmt(saturated["pps"]), f"{saturated['target']:,}",
+                       _fmt(saturated["loss"], 1), _fmt(base_loss, 1)) + _lowconf(base_loss))
             elif MIN_MBPS and max_mbps < MIN_MBPS:
                 # Delivered with no policing knee, but below DoS-grade volume. DECISIVE: the
                 # boundary did NOT police it -> PASS (a flood that reached the target is a finding),
