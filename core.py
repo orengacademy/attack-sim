@@ -449,6 +449,30 @@ def module_policy(meta, policy):
 # ---------------------------------------------------------------------
 _TARGET_MEM = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".target_memory.json")
 
+# The evidence report's CSS lives in static/report.css (editable, de-escaped) but
+# is INLINED into every report.html at write-time — the report must stay a
+# self-contained, offline-openable, emailable single file (never an external
+# <link>). Read per-write so edits show on the next report with no restart; a
+# minimal built-in fallback keeps reports styled if the file is ever missing.
+_REPORT_CSS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "report.css")
+_REPORT_CSS_FALLBACK = (":root{--bg:#0a0e15;--tx:#d4deea;--tx2:#8595a8;--acc:#22d3ee}"
+                        "*{box-sizing:border-box}body{font:14px/1.55 system-ui,sans-serif;"
+                        "background:var(--bg);color:var(--tx);margin:0;padding:32px 20px}"
+                        ".wrap{max-width:1120px;margin:0 auto}")
+
+
+def _report_css():
+    """The report stylesheet, read from static/report.css (fallback if absent).
+    Strips the file's leading /* ... */ banner so it doesn't bloat every report."""
+    try:
+        with open(_REPORT_CSS_FILE, encoding="utf-8") as fh:
+            css = fh.read()
+    except OSError:
+        return _REPORT_CSS_FALLBACK
+    if css.lstrip().startswith("/*") and "*/" in css:
+        css = css.split("*/", 1)[1]
+    return css.strip() or _REPORT_CSS_FALLBACK
+
 
 def load_target_memory():
     try:
@@ -1380,50 +1404,7 @@ class Evidence:
         f.write(f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Control Validation — {e(tgt)}</title><style>
-:root{{--bg:#0a0e15;--panel:#0f1620;--panel2:#131c28;--line:#1e2a3a;--line2:#28384c;
---tx:#d4deea;--tx2:#8595a8;--acc:#22d3ee;--acc2:#6366f1}}
-*{{box-sizing:border-box}}
-body{{font:14px/1.55 ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-background:radial-gradient(1200px 600px at 70% -10%,#10243a33,transparent),var(--bg);
-color:var(--tx);margin:0;padding:32px 20px;-webkit-font-smoothing:antialiased}}
-.wrap{{max-width:1120px;margin:0 auto}}
-.brand{{font:800 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.32em;
-background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;
-background-clip:text;color:transparent;margin-bottom:10px}}
-h1{{font-size:22px;font-weight:700;margin:0 0 12px;letter-spacing:-.01em}}
-.chips{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:22px}}
-.chip{{font-size:12px;color:var(--tx2);background:var(--panel);border:1px solid var(--line);
-border-radius:999px;padding:3px 11px}} .chip b{{color:var(--tx);font-weight:600}}
-.score{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin:0 0 22px}}
-.tile{{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
-border-radius:14px;padding:16px 18px}}
-.tnum{{font:700 26px/1 ui-sans-serif,system-ui;letter-spacing:-.02em}}
-.tlab{{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--tx2);margin-top:7px}}
-.card{{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:18px}}
-.sect{{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--tx2);margin:0 0 12px}}
-.bar{{display:flex;align-items:center;gap:10px;margin:7px 0}}
-.dot{{width:9px;height:9px;border-radius:3px;flex:none}}
-.lbl{{width:124px;font-size:12.5px;font-weight:600;color:var(--tx)}}
-.meter{{flex:1;height:8px;background:#0a0f17;border:1px solid var(--line);border-radius:6px;overflow:hidden}}
-.meter>span{{display:block;height:100%;border-radius:6px}}
-.cnt{{width:56px;text-align:right;font:600 13px ui-monospace,monospace}} .cnt i{{color:var(--tx2);font-style:normal}}
-table{{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}}
-th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}}
-thead th{{position:sticky;top:0;background:var(--panel);color:var(--tx2);font-weight:600;
-font-size:11px;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--line2)}}
-tbody tr:hover{{background:#121b27}}
-td:first-child{{border-left:3px solid var(--rc,transparent)}}
-.num{{color:var(--tx2);width:30px;font:600 12px ui-monospace,monospace}}
-.mod{{font-weight:600}} .dim{{color:var(--tx2)}} .mono{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}
-.verdict{{color:var(--tx2);font-size:12px;max-width:440px}}
-.pill{{display:inline-block;color:#06121a;background:var(--pc,#888);padding:2px 10px;border-radius:999px;
-font-size:11px;font-weight:700;white-space:nowrap;letter-spacing:.02em}}
-.warn{{background:#2a1d0a;border:1px solid #7a5200;border-left:3px solid #e3a008;color:#f0d58c;
-padding:12px 14px;border-radius:12px;margin:0 0 18px;font-size:13px}}
-.foot{{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin-top:16px;font-weight:600}}
-.legend{{color:var(--tx2);font-size:12px;font-weight:400;margin-top:12px}}
-.legend b{{color:var(--tx);font-weight:600}} code{{color:var(--acc);font-family:ui-monospace,monospace}}
-@media(max-width:620px){{.verdict{{max-width:none}} .lbl{{width:92px}}}}
+{_report_css()}
 </style></head><body><div class=wrap>
 <div class=brand>ATTACK &middot; SIM</div>
 <h1>Control Validation Report</h1>
