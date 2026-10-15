@@ -525,7 +525,10 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
             print("    " + _c(_detail_of(d, cap=dcap), DIM, no_color))
         print()
     else:
-        # ---- WIDE (default): the full column table; rules span the content width ----
+        # ---- WIDE (default): the full column table, ADAPTED to the terminal ----
+        # The table always shows columns; to fit term_w it first shrinks DETAIL,
+        # then drops lower-value columns (CWE -> MITRE -> PORTS), then shrinks
+        # MODULE, keeping #/VERDICT/MODULE/TIME/DETAIL at every width.
         num_w = max(2, len(str(len(rows))))
         name_w = min(40, max((len(d["name"]) for d in rows), default=10))
         port_w = min(18, max((len((d.get("ports") or "")) for d in rows), default=5))
@@ -533,8 +536,43 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
         cwe_w = min(9, max((len((d.get("cwe") or "")) for d in rows), default=3))
         for d in rows:
             d["_detail"] = _detail_of(d, cap=60)
-        detail_w = max(len("DETAIL"), min(60, max((len(d["_detail"]) for d in rows), default=6)))
-        content_w = 2 + num_w + 3 + 16 + 2 + name_w + 2 + port_w + 2 + mitre_w + 2 + cwe_w + 2 + 8 + 2 + detail_w
+        detail_full = max(len("DETAIL"), min(60, max((len(d["_detail"]) for d in rows), default=6)))
+
+        NAME_MIN, DETAIL_MIN = 16, 14
+        opt = {"ports": port_w, "mitre": mitre_w, "cwe": cwe_w}   # droppable, in KEEP order
+
+        def _nondetail(nw):
+            # everything left of DETAIL: indent(2)+num+" "+gutter+" "+VERDICT(16),
+            # then "  "+MODULE, each "  "+optional col, then "  "+TIME(8).
+            w = 2 + num_w + 1 + 1 + 1 + 16 + 2 + nw
+            w += sum(2 + x for x in opt.values())
+            w += 2 + 8
+            return w
+        # drop optional columns (CWE first, then MITRE, then PORTS) until DETAIL fits
+        for key in ("cwe", "mitre", "ports"):
+            if term_w - _nondetail(name_w) - 2 >= DETAIL_MIN:
+                break
+            opt.pop(key, None)
+        # then shrink MODULE toward its floor if still cramped
+        while name_w > NAME_MIN and term_w - _nondetail(name_w) - 2 < DETAIL_MIN:
+            name_w -= 1
+        # DETAIL fills the leftover width (truncated), capped at its natural length
+        detail_w = max(DETAIL_MIN, min(detail_full, term_w - _nondetail(name_w) - 2))
+        for d in rows:
+            if len(d["_detail"]) > detail_w:
+                d["_detail"] = d["_detail"][:detail_w - 1] + "\u2026"
+        content_w = min(term_w, _nondetail(name_w) + 2 + detail_w)
+
+        # ordered columns BETWEEN verdict and detail (MODULE + survivors + TIME)
+        mid = [("MODULE", name_w, "name")]
+        if "ports" in opt:
+            mid.append(("PORTS", opt["ports"], "ports"))
+        if "mitre" in opt:
+            mid.append(("MITRE", opt["mitre"], "mitre"))
+        if "cwe" in opt:
+            mid.append(("CWE", opt["cwe"], "cwe"))
+        mid.append(("TIME", 8, "time"))
+
         print()
         print("  " + _c("RESULTS", BOLD, no_color) + _c("    " + "  \u00b7  ".join(bits), DIM, no_color))
         print("  " + _c("\u2501" * (content_w - 2), ACC, no_color))
@@ -552,11 +590,11 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
                _VERDICT_STYLE.get(v, ("", ""))[0], no_color) for v in present))
         print()
         HC = CYAN_B + BOLD
-        print("  " + _c(f"{'#':>{num_w}}", HC, no_color) + "   "
-              + _cell("VERDICT", 16, HC, no_color) + "  " + _cell("MODULE", name_w, HC, no_color) + "  "
-              + _cell("PORTS", port_w, HC, no_color) + "  " + _cell("MITRE", mitre_w, HC, no_color) + "  "
-              + _cell("CWE", cwe_w, HC, no_color) + "  " + _cell("TIME", 8, HC, no_color) + "  "
-              + _c("DETAIL", HC, no_color))
+        hdr = "  " + _c(f"{'#':>{num_w}}", HC, no_color) + "   " + _cell("VERDICT", 16, HC, no_color)
+        for label, w, _k in mid:
+            hdr += "  " + _cell(label, w, HC, no_color)
+        hdr += "  " + _c("DETAIL", HC, no_color)
+        print(hdr)
         idx = 0
         cur_cat = object()
         for d in rows:
@@ -568,15 +606,18 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
                 print("  " + _c("\u2576\u2500", ACC, no_color) + _c(lab, CYAN_B + BOLD, no_color)
                       + _c("\u2500" * fill + "\u2574", DIM, no_color))
             col, icon = _VERDICT_STYLE.get(d["v"], ("", "\u2022"))
-            print("  " + _c(f"{idx:>{num_w}}", DIM, no_color) + " " + _c("\u2590", col, no_color) + " "
-                  + _cell(f"{icon} {d['v']}", 16, col, no_color) + "  "
-                  + _cell(d["name"], name_w, BOLD, no_color) + "  "
-                  + _cell((d.get("ports") or "\u2014"), port_w, DIM, no_color) + "  "
-                  + _cell((d.get("mitre") or "\u2014"), mitre_w, DIM, no_color) + "  "
-                  + _cell((d.get("cwe") or "\u2014"), cwe_w, DIM, no_color) + "  "
-                  + _cell(_hhmmss(d.get("ts")), 8, DIM, no_color) + "  "
-                  + _c(d["_detail"], DIM, no_color)
-                  + (_c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""))
+            line = ("  " + _c(f"{idx:>{num_w}}", DIM, no_color) + " " + _c("\u2590", col, no_color) + " "
+                    + _cell(f"{icon} {d['v']}", 16, col, no_color))
+            for label, w, k in mid:
+                if k == "name":
+                    line += "  " + _cell(d["name"], w, BOLD, no_color)
+                elif k == "time":
+                    line += "  " + _cell(_hhmmss(d.get("ts")), w, DIM, no_color)
+                else:
+                    line += "  " + _cell((d.get(k) or "\u2014"), w, DIM, no_color)
+            line += ("  " + _c(d["_detail"], DIM, no_color)
+                     + (_c(f"  {d.get('dur', 0.0):.1f}s", DIM, no_color) if debug else ""))
+            print(line)
         print()
 
     findings = dist.get("SUCCESS", 0)
@@ -783,12 +824,13 @@ def main():
     ap.add_argument("--evidence-dir", default="evidence")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--compact", action="store_true",
-                    help="condensed output for NARROW terminals (2-line cards, no wide "
-                         "table). Auto-enabled when the terminal is narrower than the "
-                         "full table; --wide forces the full table.")
+                    help="condensed output: 2-line cards instead of the columnar table. "
+                         "The table otherwise adapts to any width (it drops CWE/MITRE/"
+                         "PORTS and truncates DETAIL to fit), so this is only for very "
+                         "narrow (phone-width) terminals or a deliberately minimal view.")
     ap.add_argument("--wide", action="store_true",
-                    help="force the full wide results table even on a narrow terminal "
-                         "(overrides the auto-compact).")
+                    help="force the columnar table even on a sub-table-width (~<72 col) "
+                         "terminal, where it would otherwise fall back to 2-line cards.")
     ap.add_argument("--full-report", action="store_true",
                     help="also print the full ATT&CK/CWE/CVE report.txt to the console "
                          "(it is always written to the evidence dir regardless)")
@@ -928,9 +970,11 @@ def main():
         _total = len(run_set) * _iters
         _prog = {"n": 0}
         _setup = {"buf": [], "done": False}   # collect the setup log -> one tidy panel
-        # compact mode for narrow terminals (2-line cards, short live lines); auto when the
-        # terminal is narrower than ~120 cols, forced by --compact, disabled by --wide.
-        _compact = bool(args.compact) or (not args.wide and _term_width() < 120)
+        # The wide results table now ADAPTS to the terminal (shrinks DETAIL, drops
+        # CWE/MITRE/PORTS), so it's the default at any real width. Compact 2-line
+        # cards are opt-in via --compact, with an auto-fallback only on sub-table
+        # widths (~<72 cols, e.g. a phone) unless --wide forces the table anyway.
+        _compact = bool(args.compact) or (not args.wide and _term_width() < 72)
 
         def _on_log(m):
             s = str(m)
