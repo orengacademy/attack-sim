@@ -823,7 +823,11 @@ b{font-weight:600}
  backdrop-filter:blur(16px) saturate(1.35);-webkit-backdrop-filter:blur(16px) saturate(1.35)}
 .brand{display:flex;align-items:center;gap:var(--s3);min-width:0}
 .mark{width:32px;height:32px;color:var(--acc);flex:none;filter:drop-shadow(0 0 9px rgba(95,227,232,.4))}
-.brand .title{font-weight:600;font-size:16px;letter-spacing:-.01em;line-height:1.15}
+.brand .title{display:flex;align-items:baseline;gap:9px;line-height:1.15;flex-wrap:wrap}
+/* wordmark — mirrors the report.html brand (gradient cyan->indigo, mono, wide tracking) */
+.brand .wordmark{font:800 15px/1 var(--mono);letter-spacing:.3em;text-transform:uppercase;white-space:nowrap;
+ background:linear-gradient(90deg,#22d3ee,#6366f1);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .tagline{font-weight:500;font-size:12.5px;letter-spacing:-.01em;color:var(--fg3)}
 .brand .sub{display:flex;flex-wrap:wrap;color:var(--fg3);font-size:11.5px;font-family:var(--mono);margin-top:3px}
 .brand .sub>span{padding:0 9px;border-left:1px solid var(--line2);white-space:nowrap}
 .brand .sub>span:first-child{padding-left:0;border-left:0}
@@ -1231,7 +1235,7 @@ table.evtable .evlinks a.primary{color:var(--acc);border-color:rgba(95,227,232,.
    <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"></circle>
   </svg>
   <div>
-   <div class=title>Control Validation Harness</div>
+   <div class=title><span class=wordmark>ATTACK &middot; SIM</span><span class=tagline>Control Validation Harness</span></div>
    <div class=sub id=subline><span>connecting…</span></div>
   </div>
  </div>
