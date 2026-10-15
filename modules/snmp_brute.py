@@ -6,28 +6,27 @@ module always tried, so landing on anything else FIRST is the more
 interesting finding (a non-default string someone picked is still a
 guessable one), and 'public' working is the unsurprising baseline case.
 
-Uses snmpbulkwalk (GETBULK), not snmpwalk (one GETNEXT per OID). A
-chatty target — routine for a Windows box: process list, TCP table,
-interface stats, ... — can have a large enough MIB tree that walking it
-one OID at a time takes minutes even with nothing wrong on the wire;
-confirmed ~9-12x more throughput from switching to GETBULK against a lab
-DC (a few hundred thousand bytes of MIB data), on top of the existing
--t3 -r1 fast-fail for a genuinely filtered/closed port. Packet loss on
-the path makes the one-OID-at-a-time version even worse: every dropped
-GETNEXT costs a full timeout+retry, and with hundreds of OIDs a couple
-of drops alone adds minutes. (This module is serial + run_last — see
-META — so it runs ALONE at the end, AFTER the DoS floods like
-icmp_flood rather than overlapped with them; an earlier version lacked
-those flags and ran in the parallel pool, where its own community burst
-tripped an SNMP brute-force source-ban mid-walk and 'public' — tried
-last — timed out, scoring a FALSE BLOCKED on a target that is actually
-vulnerable. The GETBULK win still matters for a chatty target on any
-lossy link.) GETBULK needs far fewer
-round-trips for the same walk to begin with, so it's far less exposed
-to that same loss in the first place. -t3 -r1 also means a full ~15-word
-wordlist costs at most ~1-2 min before landing on (or exhausting) the
-list — most of that only paid once, on the way to whichever community
-actually works."""
+Per community it does a BOUNDED snmpbulkwalk of the SYSTEM group
+(1.3.6.1.2.1.1), not a full-tree walk: a valid community returns
+sysDescr/sysObjectID/sysName/... in ~1s (proof the string works), a wrong
+one gets SNMPv2c silence and -t3 -r1 fast-fails in ~6s. Bounding the walk
+is about CORRECTNESS, not just speed — an unbounded walk from root let a
+VALID community (a chatty target's MIB is large) run until the 300s
+per-module command cap, and because _run_cmd discards partial stdout on a
+timeout, the walk's own MIB data was lost and the kill scored a FALSE
+BLOCKED on a target that is actually exposed. The system group is all this
+module needs: it validates the community, it doesn't exfiltrate the MIB.
+
+serial + run_last (see META): runs ALONE at the end, AFTER the DoS floods
+(icmp_flood, …) rather than overlapped with them, so its community burst
+can't skew them; and because that burst trips an SNMP brute-force
+source-ban, running last keeps the ban from contaminating the quiet
+modules — and keeps 'public' (the one that works) from being the attempt
+that lands after the source is already banned.
+
+snmpbulkwalk (GETBULK) is preferred; a pure-stdlib UDP SNMPv2c GET of
+sysDescr.0 is the fallback when it isn't installed (both bounded, both
+fast)."""
 import os
 import re
 import shutil
@@ -177,7 +176,15 @@ def run(target, ctx):
     for community in communities:
         out.append(f"\n--- trying community '{community}' ---")
         if use_cli:
-            raw = ctx.run_cmd(f"snmpbulkwalk -v2c -c {community} -t3 -r1 {agent}", target)
+            # Walk ONLY the system group (1.3.6.1.2.1.1) — enough to PROVE the
+            # community works (sysDescr/sysObjectID/sysName/...) and it returns in
+            # ~1s. Walking the whole MIB from root instead let a VALID community
+            # (e.g. 'public' on a chatty target) run until the 300s command cap —
+            # and _run_cmd discards partial stdout on timeout, so the walk's own
+            # MIB data was lost and the kill read as a FALSE BLOCKED on a target
+            # that is actually exposed. -Cr10 pulls the ~7-scalar group in one
+            # GETBULK; a wrong community still gets silence -> fast -t3 -r1 fail.
+            raw = ctx.run_cmd(f"snmpbulkwalk -v2c -c {community} -t3 -r1 -Cr10 {agent} 1.3.6.1.2.1.1", target)
         else:
             raw = _snmp_get_socket(target, port, community, ctx)
         out.append(raw)
