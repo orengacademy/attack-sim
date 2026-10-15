@@ -799,11 +799,7 @@ PAGE = r"""<!doctype html><html lang=en><head><meta charset=utf-8>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{color:var(--fg);font-family:var(--ui);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
- background:
-   radial-gradient(1100px 520px at 84% -12%, rgba(95,227,232,.06), transparent 62%),
-   radial-gradient(860px 480px at -6% 112%, rgba(183,155,255,.05), transparent 58%),
-   var(--bg);
- background-attachment:fixed}
+ background:var(--bg)}
 a{color:var(--acc);text-decoration:none;transition:color var(--dur)} a:hover{color:#aef3f6}
 b{font-weight:600}
 ::selection{background:rgba(95,227,232,.26);color:#eafcfd}
@@ -817,12 +813,10 @@ b{font-weight:600}
 
 /* =========================================================== scaffold */
 .shell{min-height:100%;display:flex;flex-direction:column}
-.topbar{display:flex;align-items:center;gap:var(--s5);padding:13px var(--s6);position:sticky;top:0;z-index:30;
- border-bottom:1px solid var(--line);
- background:linear-gradient(180deg,rgba(14,20,29,.94),rgba(10,14,20,.8));
- backdrop-filter:blur(16px) saturate(1.35);-webkit-backdrop-filter:blur(16px) saturate(1.35)}
+.topbar{display:flex;align-items:center;gap:var(--s5);padding:14px var(--s6);position:sticky;top:0;z-index:30;
+ border-bottom:1px solid var(--line);background:var(--panel)}
 .brand{display:flex;align-items:center;gap:var(--s3);min-width:0}
-.mark{width:32px;height:32px;color:var(--acc);flex:none;filter:drop-shadow(0 0 9px rgba(95,227,232,.4))}
+.mark{width:28px;height:28px;color:var(--acc);flex:none}
 .brand .title{display:flex;align-items:baseline;gap:9px;line-height:1.15;flex-wrap:wrap}
 /* wordmark — mirrors the report.html brand (gradient cyan->indigo, mono, wide tracking) */
 .brand .wordmark{font:800 15px/1 var(--mono);letter-spacing:.3em;text-transform:uppercase;white-space:nowrap;
@@ -988,24 +982,23 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 
 /* =========================================================== theatre: signal panel */
 .signal{display:grid;grid-template-columns:auto 1fr;gap:var(--s7);align-items:stretch;
- padding:var(--s6) var(--s7);border-bottom:1px solid var(--line);
- background:radial-gradient(620px 240px at 10% -30%,rgba(95,227,232,.05),transparent 70%)}
+ padding:var(--s6) var(--s7);border-bottom:1px solid var(--line)}
 @media(max-width:640px){.signal{grid-template-columns:1fr;gap:var(--s5);padding:var(--s5)}}
 .anchor{display:flex;flex-direction:column;justify-content:center;min-width:150px;
  padding-right:var(--s7);border-right:1px solid var(--hair)}
 @media(max-width:640px){.anchor{border-right:0;padding-right:0;border-bottom:1px solid var(--hair);padding-bottom:var(--s4)}}
-.anchor .big{font-family:var(--mono);font-weight:700;font-size:64px;line-height:.82;color:var(--v-got);letter-spacing:-.04em;
- text-shadow:0 0 36px rgba(255,95,110,.42);transition:color var(--dur)}
-.anchor .big.zero{color:var(--faint);text-shadow:none}
-.anchor .blabel{font-size:12.5px;color:var(--fg2);margin-top:var(--s3);font-weight:500;max-width:14ch}
-.anchor .bsub{font-family:var(--mono);font-size:11px;color:var(--fg3);margin-top:6px}
+.anchor .big{font-family:var(--mono);font-weight:700;font-size:50px;line-height:.9;color:var(--v-got);letter-spacing:-.03em;
+ font-variant-numeric:tabular-nums;transition:color var(--dur)}
+.anchor .big.zero{color:var(--fg3)}
+.anchor .blabel{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg2);margin-top:var(--s3);font-weight:600;max-width:16ch}
+.anchor .bsub{font-family:var(--mono);font-size:11px;color:var(--fg3);margin-top:7px}
 .dist{display:flex;flex-direction:column;justify-content:center;min-width:0}
 .dist .dhd{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:var(--s2)}
 .dist .dhd .lab{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--fg3);font-weight:600}
 .dist .dhd .tot{font-family:var(--mono);font-size:11px;color:var(--fg3)}
 .spectrum{height:14px;display:flex;border-radius:var(--r-pill);overflow:hidden;background:var(--bg);
  border:1px solid var(--line);box-shadow:inset 0 1px 3px rgba(0,0,0,.6)}
-.spectrum i{display:block;height:100%;transition:width .55s var(--ease);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+.spectrum i{display:block;height:100%;transition:width .55s var(--ease)}
 .spectrum i+i{border-left:1px solid rgba(10,14,20,.5)}
 .spectrum .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:10.5px;
  font-family:var(--mono);letter-spacing:.04em}
@@ -1013,7 +1006,7 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 @media(max-width:1180px){.legend{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.legend{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .legend .li{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--fg2);padding:4px 2px;min-width:0}
-.legend .li .sw{width:9px;height:9px;border-radius:3px;flex:none;box-shadow:0 0 7px currentColor}
+.legend .li .sw{width:9px;height:9px;border-radius:2px;flex:none;background:currentColor}
 .legend .li .n{font-family:var(--mono);font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums;min-width:1.6ch;text-align:right}
 .legend .li .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg3)}
 .legend .li.z{opacity:.55} .legend .li.z .n{color:var(--fg3);font-weight:500}
@@ -1021,7 +1014,7 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 /* progress + status */
 .progress{height:2px;background:var(--hair);overflow:hidden}
 .progress>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--acc2),var(--acc));
- box-shadow:0 0 12px rgba(95,227,232,.65);transition:width .3s var(--ease)}
+ transition:width .3s var(--ease)}
 .statusbar{padding:11px var(--s7);color:var(--fg3);font-size:12px;font-family:var(--mono);border-bottom:1px solid var(--hair);
  display:flex;align-items:center;gap:var(--s2)}
 .statusbar::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--faint);flex:none;transition:background var(--dur)}
@@ -1066,7 +1059,7 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
  border-radius:var(--r-pill);background:var(--panel);cursor:pointer;transition:border-color var(--dur),background var(--dur)}
 .vkey .vk:hover{border-color:var(--line2);background:var(--raise)}
 .vkey .vk.on{border-color:var(--acc);background:var(--raise);box-shadow:inset 0 0 0 1px rgba(95,227,232,.3)}
-.vkey .vk .sw{width:9px;height:9px;border-radius:3px;flex:none;box-shadow:0 0 7px currentColor}
+.vkey .vk .sw{width:9px;height:9px;border-radius:2px;flex:none;background:currentColor}
 .vkey .vk b{color:var(--fg2);font-family:var(--mono);font-weight:600;font-size:10.5px;letter-spacing:.02em}
 .vkey .vk:hover b,.vkey .vk.on b{color:var(--fg)}
 
@@ -1085,12 +1078,31 @@ details.cred[open]>summary::before{transform:rotate(45deg)}
 /* table shell */
 .wrap{max-height:52vh;overflow:auto;margin:0 var(--s7);border:1px solid var(--line);border-radius:var(--r);
  background:var(--panel)}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+/* fixed layout: every column has a budget and Detail (unsized) absorbs the slack + truncates,
+ * so the grid always fits its container on desktop and scrolls as one unit on mobile */
+#restable{table-layout:fixed;min-width:910px}
+#restable th,#restable td{overflow:hidden;text-overflow:ellipsis}
+#restable [data-col=n]{width:40px}
+#restable [data-col=verdict]{width:126px}
+#restable [data-col=name]{width:128px}
+#restable [data-col=category]{width:68px}
+#restable [data-col=target]{width:116px}
+#restable [data-col=posture]{width:78px}
+#restable [data-col=ports]{width:52px}
+/* posture holds a pill, not text — never render a truncation ellipsis on it */
+#restable [data-col=posture],#restable td:nth-child(6){text-overflow:clip}
+#restable [data-col=mitre]{width:98px}
+#restable [data-col=cwe]{width:74px}
+#restable [data-col=it]{width:30px}
+#restable [data-col=time]{width:76px}
+/* Detail is the only unsized column — it absorbs remaining width and truncates (full text on hover / in the row drawer) */
 thead th{position:sticky;top:0;z-index:2;background:var(--panel2);text-align:left;font-weight:600;color:var(--fg3);
- font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:10px 11px;border-bottom:1px solid var(--line);
+ font-size:9.5px;letter-spacing:.03em;text-transform:uppercase;padding:9px 9px;border-bottom:1px solid var(--line);
  cursor:pointer;user-select:none;white-space:nowrap}
 thead th:hover{color:var(--fg)} thead th .ar{color:var(--acc);font-size:9px;margin-left:4px}
-tbody td{padding:9px 11px;border-bottom:1px solid var(--hair);vertical-align:top}
+tbody td{padding:9px 9px;border-bottom:1px solid var(--hair);vertical-align:middle;white-space:nowrap}
+tbody td.detail{color:var(--fg2)}
 tbody tr:last-child td{border-bottom:0}
 tbody tr{cursor:pointer;transition:background .12s}
 tbody tr:hover{background:var(--raise)}
@@ -1101,7 +1113,7 @@ td.cell-n{color:var(--faint)}
 .vchip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-weight:600;font-size:10.5px;
  letter-spacing:.02em;white-space:nowrap;padding:2px 8px 2px 6px;border-radius:var(--r-pill);
  border:1px solid currentColor;line-height:1.5}
-.vchip .d{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;box-shadow:0 0 6px currentColor}
+.vchip .d{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
 .vchip .t{color:var(--fg)}
 /* posture chip (Results table) — whitebox=accent, blackbox=muted */
 .pchip{display:inline-flex;align-items:center;font-family:var(--mono);font-weight:600;font-size:10px;letter-spacing:.03em;
