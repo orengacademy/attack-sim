@@ -388,6 +388,17 @@ def _cell(text, w, color, no_color):
     return _c(text, color, no_color) if color else text
 
 
+def _run_date(rows):
+    """The run's calendar date(s) from the rows' timestamps, shown ONCE in the
+    RESULTS header (the per-row TIME column stays HH:MM:SS to keep it narrow).
+    Normally one date; a run that crossed midnight shows 'start→end'."""
+    ds = sorted({(_clock(d.get("ts")) or "")[:10] for d in rows})
+    ds = [d for d in ds if d]
+    if not ds:
+        return ""
+    return ds[0] if len(ds) == 1 else f"{ds[0]}→{ds[-1]}"
+
+
 def _clock(ts):
     """ISO timestamp -> human-readable 'YYYY-MM-DD HH:MM:SS' (date + time), or '' when unparseable."""
     if not ts:
@@ -456,7 +467,9 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
                 detail = "whitebox anomaly \u2014 service-down / edge / host filter, not a control"
         elif d["v"] == "NO-SERVICE":
             nvtext = d["verdicts"].get("NO-SERVICE", "") or ""
-            if "attack vector" in nvtext or "key-only" in nvtext or "password auth" in nvtext.lower():
+            if "TARGET UNREACHABLE" in nvtext:
+                detail = "target unreachable (down/NAT) \u2014 egress test, not a target finding"
+            elif "attack vector" in nvtext or "key-only" in nvtext or "password auth" in nvtext.lower():
                 detail = "no vector \u2014 SSH password auth disabled (key-only)"
         elif d["v"] == "NOT-VULNERABLE":
             nvt = (d["verdicts"].get("NOT-VULNERABLE", "") or "").lower()
@@ -482,7 +495,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
     _cloud = _meta.get("cloud")
     _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
     _dest = f"{_src} \u2192 {target}" if _src else str(target)
-    bits = [_dest, _mode] + ([_net] if _net else []) \
+    _rundate = _run_date(rows)
+    bits = [_dest, _mode] + ([_net] if _net else []) + ([_rundate] if _rundate else []) \
         + [f"{n} modules \u00d7 {args.iterations} iter", f"{elapsed:.0f}s"]
     if site:
         bits.append(f"site {site}")
@@ -497,7 +511,8 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
         rulew = min(inner_w, 72)
         dcap = inner_w - 4
         name_cap = inner_w - 20
-        cbits = [str(target), _mode] + ([_net] if _net else []) + [f"{n} mods", f"{elapsed:.0f}s"]
+        cbits = [str(target), _mode] + ([_net] if _net else []) \
+            + ([_run_date(rows)] if _run_date(rows) else []) + [f"{n} mods", f"{elapsed:.0f}s"]
         if site:
             cbits.append(f"site {site}")
         meta = " \u00b7 ".join(cbits)

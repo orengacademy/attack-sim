@@ -2249,6 +2249,39 @@ def _probe_one(target, proto, port, timeout):
     return "unknown"
 
 
+def _icmp_alive_fast(host, wait=1):
+    """Fast liveness ping: ONE echo with a short wait (vs probe_icmp's 2-ping,
+    timeout+4 reachability probe), so a host-up check adds ~1s, not ~6s. Returns
+    True only on a reply."""
+    if shutil.which("ping") is None:
+        return False
+    if platform.system() == "Windows":
+        cmd = ["ping", "-n", "1", "-w", str(int(wait * 1000)), host]
+    else:
+        cmd = ["ping", "-c", "1", "-W", str(int(wait)), host]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=wait + 1.5, stdin=subprocess.DEVNULL)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+
+def _host_alive(target, timeout):
+    """Module-INDEPENDENT host liveness: True if the host answers ICMP (1 ping) or a
+    near-universal TCP port (443/80/22), probed in PARALLEL and bounded to ~1s. Lets
+    the verdict layer tell 'host up but these ports closed' (NO-SERVICE) from 'host
+    down / behind NAT / unreachable' even for a narrow or egress-only module set."""
+    from concurrent.futures import ThreadPoolExecutor
+    checks = [lambda: _icmp_alive_fast(target)]
+    checks += [(lambda p=p: probe_tcp(target, p, timeout) in _OPEN_STATES) for p in (443, 80, 22)]
+    try:
+        with ThreadPoolExecutor(max_workers=len(checks)) as ex:
+            return any(f.result() for f in [ex.submit(c) for c in checks])
+    except Exception:
+        return any(c() for c in checks)
+
+
 def _cloud_port_map(target):
     """The cloud SMB/RPC alternate-port map for a target, if it's registered as a
     NAT'd cloud target (modules/_portpatch.py: e.g. {445:4445, 135:1135}). The GUI
@@ -2384,7 +2417,15 @@ def reachability(target, modules, timeout=2.0, workers=32):
         results.append({"id": meta["id"], "name": meta["name"], "probes": probes,
                         "reachable": reachable, "category": category, "notes": notes})
     flat = [[proto, port, st] for (proto, port), st in cache.items()]
-    return {"target": target, "probes": flat, "modules": results}
+    # HOST LIVENESS, independent of the selected modules' ports: up if ANY module
+    # probe answered, else a fast fallback (ICMP + 443/80/22). This separates "host
+    # up but these ports closed" from "host down / behind NAT / unreachable" even for
+    # a narrow or egress-only run, and is kept OUT of `probes` so the per-module recon
+    # display and counts are unchanged. The fallback runs only when nothing answered.
+    host_live = any(st in _OPEN_STATES or st == "up" for _p, _pt, st in flat)
+    if not host_live:
+        host_live = _host_alive(target, min(timeout, 1.0))
+    return {"target": target, "probes": flat, "modules": results, "host_live": host_live}
 
 
 def format_reachability_report(rc):
@@ -2767,10 +2808,14 @@ class Runner:
                 # UP, so a dropped ICMP is the boundary FILTERING it (a real BLOCK), not
                 # a down host. A host reachable ONLY on udp/161 counts here too (the
                 # TCP-only canary would miss it, which wrongly flagged it unreachable).
-                self._host_reachable_at_recon = any(
-                    st in ("open", "up") for _p, _pt, st in rc["probes"])
+                # Prefer the module-independent host_live (ICMP/443/80/22 fallback) so
+                # a narrow or egress-only module set doesn't misjudge an up host as
+                # down; fall back to the module-port signal if an older reachability()
+                # didn't supply it.
+                self._host_reachable_at_recon = rc.get("host_live", any(
+                    st in ("open", "up") for _p, _pt, st in rc["probes"]))
                 self.ctx.host_reachable_at_recon = self._host_reachable_at_recon
-                if rc["probes"] and not self._host_reachable_at_recon:
+                if not self._host_reachable_at_recon:
                     # Nothing answered on ANY protocol (TCP/UDP/ICMP). "Everything closed
                     # at once" is implausible as genuine service-absence for a real
                     # target, so it usually means this SOURCE can't reach the target at
@@ -3371,7 +3416,25 @@ class Runner:
             # that happens to match a loose blocked_regex is mis-scored as BLOCKED
             # (fabricating "the control worked" when the test never ran).
             skipped = not ok and _SKIP_MARKER.search(target_raw) is not None
-            if ok:
+            # TARGET-REACHABILITY GATE (operator model: is the host live? is the port
+            # reachable? else NO-SERVICE/unreachable). Target-directed modules already
+            # resolve to NO-SERVICE/BLOCKED via recon's port state. But a no-target-port
+            # EGRESS module (DoH / DNS-tunnel / C2 / DLP-exfil / SOCKS / domain-fronting …)
+            # tests the PERIMETER's egress, not the target — so it would score SUCCESS on
+            # the tester's own internet egress even when the target is DOWN / behind NAT /
+            # segmented. If recon proved the whole target unreachable (no port/ICMP/UDP
+            # answered), don't surface such a module as a target result: it can't be
+            # attributed to a target we could not reach. (It stays assessable from a
+            # vantage that CAN reach the target — see the verdict note.)
+            egress_no_port = not (meta.get("ports") or [])
+            if egress_no_port and getattr(self, "_unreachable_at_recon", False):
+                b = "NO-SERVICE"
+                verdict = ("TARGET UNREACHABLE at recon (down / behind NAT / segmented — no "
+                           "port/ICMP/UDP answered from this source). This is an EGRESS/perimeter "
+                           "test with NO target port, so a passing egress probe here does NOT mean "
+                           "anything reached the target — it is NOT a target finding. Re-run from a "
+                           "vantage that can actually reach the target to assess it.")
+            elif ok:
                 det = self._detection(meta, target_raw)
                 # Appliance/SOC detections (from the detections file) represent the
                 # SD-WAN boundary — they do NOT apply to a WHITEBOX run, which is the
