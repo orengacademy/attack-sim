@@ -257,11 +257,17 @@ class TestServiceVsBlocked(unittest.TestCase):
         core.Runner("127.0.0.1").run([m], 1, ev, skip_unready=False, recon=True)
         self.assertEqual(ev.records[0]["baseline_result"], "NO-SERVICE")
 
-    def test_filtered_port_is_blocked(self):
-        m = self._mod("filt", 9, "[TIMEOUT] no response")  # blackhole -> filtered
+    def test_filtered_port_unreachable_host_is_no_service(self):
+        # 10.255.255.1 is a BLACK HOLE: nothing answers on any protocol at recon, so the
+        # host is wholly unreachable. A [TIMEOUT]/silent drop there is unreachability, NOT
+        # a proven control, so it must read NO-SERVICE (not a false "control worked"
+        # BLOCKED — the bug an operator hit against an unroutable/NAT'd target). The
+        # filtered-port -> BLOCKED semantic for a REACHABLE host is covered in
+        # test_verdict_precedence.test_target_filtered_blocked_when_host_reachable.
+        m = self._mod("filt", 9, "[TIMEOUT] no response")
         ev = core.Evidence(base=tempfile.mkdtemp())
         core.Runner("10.255.255.1").run([m], 1, ev, skip_unready=False, recon=True)
-        self.assertEqual(ev.records[0]["baseline_result"], "BLOCKED")
+        self.assertEqual(ev.records[0]["baseline_result"], "NO-SERVICE")
 
 
 class TestDetectionPhrasing(unittest.TestCase):
