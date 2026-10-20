@@ -1565,10 +1565,10 @@ REFUSED_REGEX = (
 # Shared verdict text for the egress-reachability gate (single-target + appliance):
 # a no-target-port module can't be a TARGET finding when the host is unreachable.
 _EGRESS_UNREACHABLE_VERDICT = (
-    "TARGET UNREACHABLE at recon (down / behind NAT / segmented — no port/ICMP/UDP "
-    "answered from this source). This is an EGRESS/perimeter test with NO target port, "
-    "so a passing egress probe here does NOT mean anything reached the target — it is "
-    "NOT a target finding. Re-run from a vantage that can actually reach the target.")
+    "TARGET UNREACHABLE at recon (down / behind NAT / segmented — nothing answered on any "
+    "protocol from this source). This probe SUCCEEDED against an EXTERNAL resolver/endpoint "
+    "(an EGRESS/perimeter test), NOT the target — so it does NOT mean anything reached the "
+    "target and is NOT a target finding. Re-run from a vantage that can reach the target.")
 
 # Shared verdict text for a TARGET-directed module when the whole host was unreachable:
 # a silent drop there is unreachability, not a proven control, so it is NOT scored BLOCKED.
@@ -3375,18 +3375,14 @@ class Runner:
             app_raw = self._safe_module_run(m, self.appliance_ip)
             ev.save_run(it, meta["id"], "through-appliance", app_raw)
             b, a, verdict = classify(meta, target_raw, app_raw)
-            # Same egress-reachability gate as the single-target path: a no-target-port
-            # (egress) module can't be a TARGET finding when the whole target was
-            # unreachable at recon — it tests the perimeter's egress, not the target.
-            if not (meta.get("ports") or []) and getattr(self, "_unreachable_at_recon", False):
+            # Same unreachable-host gate as the single-target path: when the whole target
+            # answered nothing at recon, a SUCCESS through the appliance is an egress probe
+            # to the internet (not the target) and a BLOCKED is unreachability (not a
+            # control) -> NO-SERVICE either way.
+            if getattr(self, "_unreachable_at_recon", False) and a in ("SUCCESS", "DETECTED", "BLOCKED"):
+                verdict = (_EGRESS_UNREACHABLE_VERDICT if a in ("SUCCESS", "DETECTED")
+                           else _TARGET_UNREACHABLE_VERDICT)
                 b = a = "NO-SERVICE"
-                verdict = _EGRESS_UNREACHABLE_VERDICT
-            elif a == "BLOCKED" and getattr(self, "_unreachable_at_recon", False):
-                # Same unreachable-host gate as single-target: a silent drop THROUGH the
-                # appliance against a host that answered nothing is unreachability, not a
-                # proven control -> NO-SERVICE, not a false "control worked".
-                b = a = "NO-SERVICE"
-                verdict = _TARGET_UNREACHABLE_VERDICT
             elif a == "SUCCESS":
                 det = self._detection(meta, app_raw)
                 # ORG2026-70: verdict from the TEST. Only a module's OWN self-observed
@@ -3456,11 +3452,7 @@ class Runner:
             # answered), don't surface such a module as a target result: it can't be
             # attributed to a target we could not reach. (It stays assessable from a
             # vantage that CAN reach the target — see the verdict note.)
-            egress_no_port = not (meta.get("ports") or [])
-            if egress_no_port and getattr(self, "_unreachable_at_recon", False):
-                b = "NO-SERVICE"
-                verdict = _EGRESS_UNREACHABLE_VERDICT
-            elif ok:
+            if ok:
                 det = self._detection(meta, target_raw)
                 # Appliance/SOC detections (from the detections file) represent the
                 # SD-WAN boundary — they do NOT apply to a WHITEBOX run, which is the
@@ -3656,13 +3648,18 @@ class Runner:
                 verdict = f"no result — {hint}" if hint else "no result — review raw log"
             # UNREACHABLE-HOST GATE: when NOTHING answered on any protocol at recon, the
             # host is down / behind NAT / segmented (or this source is blocked before the
-            # run). A silent drop (BLOCKED) then can't be attributed to a control — report
-            # NO-SERVICE/unreachable, not a false "control worked". A host reachable on
-            # SOME protocol keeps its BLOCKED (a filtered port there IS a real in-transit
-            # drop); egress (no-target-port) modules are already gated above.
-            if b == "BLOCKED" and getattr(self, "_unreachable_at_recon", False):
-                b = "NO-SERVICE"
-                verdict = _TARGET_UNREACHABLE_VERDICT
+            # run). Nothing can be a TARGET result: a SUCCESS is an EGRESS probe that
+            # reached an external resolver/endpoint (not the target — e.g. DoH/DoT/DNS-53
+            # egress tests, which declare their egress port but don't touch the target),
+            # and a BLOCKED is unreachability, not a control. Both -> NO-SERVICE. A host
+            # reachable on SOME protocol keeps BLOCKED/SUCCESS (a filtered port there IS a
+            # real in-transit drop; a success there DID reach the target). Self-declared
+            # NO-SERVICE/INCONCLUSIVE/PREREQ/SKIPPED markers are left as-is.
+            if getattr(self, "_unreachable_at_recon", False):
+                if b in ("SUCCESS", "DETECTED"):
+                    b, verdict = "NO-SERVICE", _EGRESS_UNREACHABLE_VERDICT
+                elif b == "BLOCKED":
+                    b, verdict = "NO-SERVICE", _TARGET_UNREACHABLE_VERDICT
             a = "-"
             # contamination guard: a BLOCKED could be THIS attack's control OR the
             # source having been blacklisted by an earlier attack. If the canary is
