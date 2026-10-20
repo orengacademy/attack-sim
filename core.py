@@ -1562,6 +1562,15 @@ REFUSED_REGEX = (
 )
 
 
+# Shared verdict text for the egress-reachability gate (single-target + appliance):
+# a no-target-port module can't be a TARGET finding when the host is unreachable.
+_EGRESS_UNREACHABLE_VERDICT = (
+    "TARGET UNREACHABLE at recon (down / behind NAT / segmented — no port/ICMP/UDP "
+    "answered from this source). This is an EGRESS/perimeter test with NO target port, "
+    "so a passing egress probe here does NOT mean anything reached the target — it is "
+    "NOT a target finding. Re-run from a vantage that can actually reach the target.")
+
+
 def classify(meta, base_raw, app_raw):
     succ, blk = meta.get("success_regex"), meta.get("blocked_regex")
     base_ok = _match(base_raw, succ)
@@ -3357,7 +3366,13 @@ class Runner:
             app_raw = self._safe_module_run(m, self.appliance_ip)
             ev.save_run(it, meta["id"], "through-appliance", app_raw)
             b, a, verdict = classify(meta, target_raw, app_raw)
-            if a == "SUCCESS":
+            # Same egress-reachability gate as the single-target path: a no-target-port
+            # (egress) module can't be a TARGET finding when the whole target was
+            # unreachable at recon — it tests the perimeter's egress, not the target.
+            if not (meta.get("ports") or []) and getattr(self, "_unreachable_at_recon", False):
+                b = a = "NO-SERVICE"
+                verdict = _EGRESS_UNREACHABLE_VERDICT
+            elif a == "SUCCESS":
                 det = self._detection(meta, app_raw)
                 # ORG2026-70: verdict from the TEST. Only a module's OWN self-observed
                 # signal (det[0] == "module") scores DETECTED; a FILE-sourced detection
@@ -3429,11 +3444,7 @@ class Runner:
             egress_no_port = not (meta.get("ports") or [])
             if egress_no_port and getattr(self, "_unreachable_at_recon", False):
                 b = "NO-SERVICE"
-                verdict = ("TARGET UNREACHABLE at recon (down / behind NAT / segmented — no "
-                           "port/ICMP/UDP answered from this source). This is an EGRESS/perimeter "
-                           "test with NO target port, so a passing egress probe here does NOT mean "
-                           "anything reached the target — it is NOT a target finding. Re-run from a "
-                           "vantage that can actually reach the target to assess it.")
+                verdict = _EGRESS_UNREACHABLE_VERDICT
             elif ok:
                 det = self._detection(meta, target_raw)
                 # Appliance/SOC detections (from the detections file) represent the

@@ -376,6 +376,43 @@ _VERDICT_GLOSS_SHORT = {
     "NO-RESULT": "review log", "INCONCLUSIVE": "indeterminate",
     "SKIPPED": "skipped", "PREREQ-MISSING": "missing prereq",
 }
+# What to DO about each non-SUCCESS verdict — one next-step line per verdict present,
+# printed under the summary so the operator knows how to act on each outcome.
+_VERDICT_HINT = {
+    "DETECTED":       "attack passed but was self-observed — detection works, prevention did not",
+    "BLOCKED":        "confirm WHICH device dropped it (SD-WAN vs host/edge) — --appliance dual-path / appliance logs",
+    "NOT-VULNERABLE": "service reached but target hardened — a defender win (host config), not a finding",
+    "NO-SERVICE":     "service absent / port closed / target unreachable — the attack could not apply",
+    "AUTH-FAILED":    "credential error — fix creds (HARNESS_DC_PASS / --dc-pass), NOT a control result",
+    "INCONCLUSIVE":   "indeterminate — re-run clean once the source-ban clears: cli.py --suspect <evidence>",
+    "NO-RESULT":      "tool fault / no network signal — review the raw log in the evidence dir",
+    "PREREQ-MISSING": "a runtime prerequisite is missing — install it (see the raw log) and re-run",
+    "SKIPPED":        "module did nothing — not applicable / not configured (never a control result)",
+}
+
+
+def _redacted_invocation():
+    """The command this run was invoked with, secret values masked (••• for
+    --dc-pass / --ssh-pass, incl. the =VALUE form) — so the console + evidence
+    self-document exactly which flags/arguments were used."""
+    secret = {"--dc-pass", "--ssh-pass"}
+    argv = list(sys.argv) or ["cli.py"]
+    out = [os.path.basename(argv[0])]
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        key = a.split("=", 1)[0]
+        if key in secret and "=" in a:
+            out.append(f"{key}=•••")
+        elif key in secret:
+            out.append(a)
+            if i + 1 < len(argv):            # mask the following value token
+                out.append("•••")
+                i += 1
+        else:
+            out.append(a)
+        i += 1
+    return " ".join(out)
 
 
 def _cell(text, w, color, no_color):
@@ -445,8 +482,16 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
     # ---- results layout: rows + per-row detail (shared by both modes) ----------
     debug = getattr(args, "debug", False)
     show_iters = args.iterations > 1
+    # FINDINGS-FIRST: categories that CONTAIN a finding (SUCCESS/DETECTED) sort above
+    # those that don't, so what got through is read first; the category grouping is
+    # kept, and within each category findings still sort to the top (verdict order).
+    _FINDING_V = {"SUCCESS", "DETECTED"}
+    _cat_has_finding = {}
+    for _d in by_mod.values():
+        _cat_has_finding[_d["cat"]] = _cat_has_finding.get(_d["cat"], False) or (_d["v"] in _FINDING_V)
     rows = sorted(by_mod.values(),
-                  key=lambda x: (x["cat"],
+                  key=lambda x: (not _cat_has_finding.get(x["cat"], False),
+                                 x["cat"],
                                  _VERDICT_ORDER.index(x["v"]) if x["v"] in _VERDICT_ORDER else 9,
                                  x["name"]))
 
@@ -496,8 +541,11 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
     _net = "cloud" if _cloud else ("on-prem" if _cloud is not None else "")
     _dest = f"{_src} \u2192 {target}" if _src else str(target)
     _rundate = _run_date(rows)
+    _ts = sorted(t for t in (_hhmmss(d.get("ts")) for d in rows) if t)
+    _span = f"{_ts[0]}\u2192{_ts[-1]}" if _ts else ""      # start -> finish wall-clock
     bits = [_dest, _mode] + ([_net] if _net else []) + ([_rundate] if _rundate else []) \
-        + [f"{n} modules \u00d7 {args.iterations} iter", f"{elapsed:.0f}s"]
+        + [f"{n} modules \u00d7 {args.iterations} iter"] \
+        + ([_span] if _span else []) + [f"{elapsed:.0f}s"]
     if site:
         bits.append(f"site {site}")
     if debug:
@@ -511,8 +559,10 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
         rulew = min(inner_w, 72)
         dcap = inner_w - 4
         name_cap = inner_w - 20
+        _cspan = sorted(t for t in (_hhmmss(d.get("ts")) for d in rows) if t)
         cbits = [str(target), _mode] + ([_net] if _net else []) \
-            + ([_run_date(rows)] if _run_date(rows) else []) + [f"{n} mods", f"{elapsed:.0f}s"]
+            + ([_run_date(rows)] if _run_date(rows) else []) + [f"{n} mods"] \
+            + ([f"{_cspan[0]}→{_cspan[-1]}"] if _cspan else []) + [f"{elapsed:.0f}s"]
         if site:
             cbits.append(f"site {site}")
         meta = " \u00b7 ".join(cbits)
@@ -642,6 +692,18 @@ def _print_summary(ev, args, no_color, elapsed, target=None, compact=False):
     print(_c(f"  → {findings} finding(s) got through"
              + (f", {detected} detected" if detected else "")
              + f"; {blocked} blocked.", BOLD, no_color))
+
+    # Next-step hint per non-SUCCESS verdict present — what to DO about each outcome.
+    # Skipped in compact mode (phone-width) to keep it terse.
+    if not compact:
+        hint_rows = [(v, dist[v]) for v in _VERDICT_ORDER
+                     if v != "SUCCESS" and dist.get(v) and v in _VERDICT_HINT]
+        if hint_rows:
+            print()
+            for v, cnt in hint_rows:
+                col, icon = _VERDICT_STYLE.get(v, ("", "•"))
+                print("  " + _c(f"{icon} {v} ×{cnt}", col, no_color)
+                      + _c(f"   {_VERDICT_HINT[v]}", DIM, no_color))
 
     # Contamination banner: SUSPECT (BLOCKED that may be a source-IP ban) and
     # INCONCLUSIVE (never tested; source in IPS quarantine) are NOT control wins.
@@ -1203,6 +1265,9 @@ def main():
         _cred_id = ("%s\\%s" % (runner.ctx.creds.get("domain") or "",
                                 runner.ctx.creds.get("dc_user") or "")).strip("\\")
         _kv("creds", _cred_id or "(none set)")
+        # Echo the exact arguments this run was invoked with (passwords masked) so the
+        # console self-documents which flags/options were used.
+        _kv("invocation", _redacted_invocation())
         # version-check result (the gate ran in main(); an OUTDATED copy already hard-
         # stopped before here, so this shows up-to-date or could-not-verify).
         _lat = getattr(core, "LATEST_SEEN", None)
@@ -1235,14 +1300,15 @@ def main():
                     print("\n" + f.read())
             except Exception:
                 pass
-        elif _compact:
-            # narrow: one short line, no hint tail (keeps it under the terminal width)
-            print(_c(f"\n  report: {report_path}", DIM, args.no_color))
+        # ALWAYS show the evidence paths (clickable), with or without --full-report,
+        # compact or wide — so every run ends with where the report + evidence live.
+        if _compact:
+            print(_c(f"\n  report:   {report_path}", DIM, args.no_color))
             print(_c(f"  evidence: {root}", ACC, args.no_color))
         else:
-            print(_c(f"\n  Full ATT&CK/CWE/CVE report:  {report_path}"
-                     "   (add --full-report to print it here)", DIM, args.no_color))
-            print(_c(f"  Evidence:                    {root}", ACC, args.no_color))
+            hint = "" if args.full_report else "   (add --full-report to print it here)"
+            print(_c(f"\n  report:    {report_path}{hint}", DIM, args.no_color))
+            print(_c(f"  evidence:  {root}", ACC, args.no_color))
         return root, 0
 
     # One scan, one or more targets (comma-separated): e.g. the on-prem DC (B) and
