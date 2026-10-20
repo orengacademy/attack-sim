@@ -194,16 +194,15 @@ class TestLadderPrecedence(unittest.TestCase):
         self.assertEqual(b, "BLOCKED")
         self.assertIn("FILTERS/denies ICMP", v)
 
-    def test_inconclusive_liveness_blocked_with_caveat_when_wholly_unreachable(self):
-        # the 167-blackbox case: ICMP sent, 100% silent loss, nothing answered on any
-        # protocol, source NOT banned => dropped in transit = BLOCKED (boundary blocked
-        # it), with a host-liveness-unconfirmed caveat. NOT a mute INCONCLUSIVE.
+    def test_liveness_unreachable_is_no_service_not_blocked(self):
+        # host answered NOTHING on any protocol (down / behind NAT / segmented) and the
+        # source is not banned: a silent drop can't be attributed to a control, so it is
+        # NO-SERVICE/unreachable, NOT a false "control worked" BLOCKED. (Contrast the
+        # host-reachable test above, which stays BLOCKED — a real in-transit drop.)
         b, v = _verdict("[INCONCLUSIVE] TCP liveness couldn't confirm the host is up",
                         recon="filtered", unreachable=True, banned=False)
-        self.assertEqual(b, "BLOCKED")
-        self.assertIn("dropped in transit", v)
-        self.assertIn("host-liveness is unconfirmed", v)
-        self.assertIn("known-good source", v)
+        self.assertEqual(b, "NO-SERVICE")
+        self.assertIn("TARGET UNREACHABLE", v)
 
     def test_inconclusive_liveness_stays_when_source_banned(self):
         # a DETECTED source ban is the one case that stays INCONCLUSIVE: the 100% loss
@@ -274,6 +273,25 @@ class TestLadderPrecedence(unittest.TestCase):
         rec = _verdict("WIN", ports=(), unreachable=False, reachable_at_recon=True,
                        dual=True, full=True)
         self.assertEqual(rec["appliance_result"], "SUCCESS")
+
+    # TARGET-directed unreachable gate: a silent drop (filtered/timeout) against a host
+    # that answered NOTHING is unreachability, not a proven control -> NO-SERVICE, not a
+    # false "control worked" BLOCKED. A host reachable on SOME protocol keeps BLOCKED.
+    def test_target_filtered_blocked_when_host_reachable(self):
+        b, _ = _verdict("timed out", recon="filtered", reachable_at_recon=True)
+        self.assertEqual(b, "BLOCKED")
+
+    def test_target_filtered_no_service_when_host_unreachable(self):
+        b, v = _verdict("timed out", recon="filtered", unreachable=True)
+        self.assertEqual(b, "NO-SERVICE")
+        self.assertIn("TARGET UNREACHABLE", v)
+
+    def test_target_blocked_appliance_no_service_when_host_unreachable(self):
+        # [TIMEOUT] through the appliance -> classify() scores the appliance leg BLOCKED;
+        # with the host wholly unreachable the gate makes it NO-SERVICE, not a false win.
+        rec = _verdict("[TIMEOUT] exceeded", recon="filtered", unreachable=True, dual=True, full=True)
+        self.assertEqual(rec["appliance_result"], "NO-SERVICE")
+        self.assertIn("TARGET UNREACHABLE", rec["verdict"])
 
     # rung 6 GUARD: an incidental "Connection refused" while the attack port is OPEN
     # must NOT rob a module of the BLOCKED its own blocked_regex earned (the noPac

@@ -1570,6 +1570,15 @@ _EGRESS_UNREACHABLE_VERDICT = (
     "so a passing egress probe here does NOT mean anything reached the target — it is "
     "NOT a target finding. Re-run from a vantage that can actually reach the target.")
 
+# Shared verdict text for a TARGET-directed module when the whole host was unreachable:
+# a silent drop there is unreachability, not a proven control, so it is NOT scored BLOCKED.
+_TARGET_UNREACHABLE_VERDICT = (
+    "TARGET UNREACHABLE at recon — nothing answered on any protocol (TCP/UDP/ICMP) from "
+    "this source. A down / NAT'd / segmented host (or a source blocked before the run) "
+    "can't be told apart from a total in-transit block here, so this is NOT scored a "
+    "'control worked' result — re-test from a vantage that can reach the target / verify "
+    "the host is up from a known-good source.")
+
 
 def classify(meta, base_raw, app_raw):
     succ, blk = meta.get("success_regex"), meta.get("blocked_regex")
@@ -3372,6 +3381,12 @@ class Runner:
             if not (meta.get("ports") or []) and getattr(self, "_unreachable_at_recon", False):
                 b = a = "NO-SERVICE"
                 verdict = _EGRESS_UNREACHABLE_VERDICT
+            elif a == "BLOCKED" and getattr(self, "_unreachable_at_recon", False):
+                # Same unreachable-host gate as single-target: a silent drop THROUGH the
+                # appliance against a host that answered nothing is unreachability, not a
+                # proven control -> NO-SERVICE, not a false "control worked".
+                b = a = "NO-SERVICE"
+                verdict = _TARGET_UNREACHABLE_VERDICT
             elif a == "SUCCESS":
                 det = self._detection(meta, app_raw)
                 # ORG2026-70: verdict from the TEST. Only a module's OWN self-observed
@@ -3639,6 +3654,15 @@ class Runner:
                 hint = _error_hint(target_raw)
                 b = "NO-RESULT"
                 verdict = f"no result — {hint}" if hint else "no result — review raw log"
+            # UNREACHABLE-HOST GATE: when NOTHING answered on any protocol at recon, the
+            # host is down / behind NAT / segmented (or this source is blocked before the
+            # run). A silent drop (BLOCKED) then can't be attributed to a control — report
+            # NO-SERVICE/unreachable, not a false "control worked". A host reachable on
+            # SOME protocol keeps its BLOCKED (a filtered port there IS a real in-transit
+            # drop); egress (no-target-port) modules are already gated above.
+            if b == "BLOCKED" and getattr(self, "_unreachable_at_recon", False):
+                b = "NO-SERVICE"
+                verdict = _TARGET_UNREACHABLE_VERDICT
             a = "-"
             # contamination guard: a BLOCKED could be THIS attack's control OR the
             # source having been blacklisted by an earlier attack. If the canary is
