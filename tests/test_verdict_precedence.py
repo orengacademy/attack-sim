@@ -26,7 +26,7 @@ class _FakeMod:
 
 def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
              detected=None, detections=None, banned=False, unreachable=False,
-             reachable_at_recon=False, ports=(("tcp", 80),)):
+             reachable_at_recon=False, ports=(("tcp", 80),), dual=False, full=False):
     """Drive the REAL classifier for one module and return (baseline_result, verdict).
     `recon` is the injected TCP port state ('open'/'closed'/'filtered'/...), or None
     for 'no recon'. Port policy is disabled (not under test). `banned=True` arms the
@@ -36,7 +36,10 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
     being unreachable from this source at recon (the concurrent-tester / shared-ban
     case) so NO-SERVICE is flagged low-confidence. `reachable_at_recon=True` simulates
     the target having answered on SOME protocol at recon (host-up ground truth) so a
-    liveness INCONCLUSIVE can be upgraded to BLOCKED (ICMP filtered, host up)."""
+    liveness INCONCLUSIVE can be upgraded to BLOCKED (ICMP filtered, host up).
+    `dual=True` runs the APPLIANCE dual-path (the module is run against the appliance
+    leg too; the fake returns the same output for both). `full=True` returns the whole
+    record dict (so a dual test can inspect `appliance_result`) instead of the pair."""
     r = core.Runner("127.0.0.1")
     if banned:
         r._canary = ("tcp", 9)            # latched: _detect_ban returns True w/o probing
@@ -48,8 +51,8 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
     r._host_reachable_at_recon = reachable_at_recon
     r._bl_lock = threading.Lock()
     r._mode = "blackbox"
-    r.dual = False
-    r.appliance_ip = None
+    r.dual = dual
+    r.appliance_ip = "198.51.100.9" if dual else None
     r._pol_by_id = {}
     r._port_policy = {"name": "t"}
     r._detections = detections or {}
@@ -65,6 +68,8 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
     r._process_module(m, 1, False, {"t"}, {}, recon_by_id, ev,
                       lambda *a: None, lambda: None)
     rec = [x for x in ev.records if x["attack_id"] == "t"][-1]
+    if full:
+        return rec
     return rec["baseline_result"], rec["verdict"]
 
 
@@ -255,6 +260,20 @@ class TestLadderPrecedence(unittest.TestCase):
         # host reachable -> the egress module is assessed normally (gate does NOT fire).
         b, _ = _verdict("WIN", ports=(), unreachable=False, reachable_at_recon=True)
         self.assertEqual(b, "SUCCESS")
+
+    # Same egress gate on the APPLIANCE dual-path: a no-target-port module can't be a
+    # target finding THROUGH the appliance either when the host is wholly unreachable.
+    def test_egress_appliance_no_service_when_target_unreachable(self):
+        rec = _verdict("WIN", ports=(), unreachable=True, dual=True, full=True)
+        self.assertEqual(rec["appliance_result"], "NO-SERVICE")   # the authoritative leg
+        self.assertEqual(rec["baseline_result"], "NO-SERVICE")
+        self.assertIn("TARGET UNREACHABLE", rec["verdict"])
+
+    def test_egress_appliance_success_when_target_reachable(self):
+        # host reachable -> assessed normally through the appliance (gate does NOT fire).
+        rec = _verdict("WIN", ports=(), unreachable=False, reachable_at_recon=True,
+                       dual=True, full=True)
+        self.assertEqual(rec["appliance_result"], "SUCCESS")
 
     # rung 6 GUARD: an incidental "Connection refused" while the attack port is OPEN
     # must NOT rob a module of the BLOCKED its own blocked_regex earned (the noPac
