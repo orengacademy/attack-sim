@@ -26,7 +26,7 @@ class _FakeMod:
 
 def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
              detected=None, detections=None, banned=False, unreachable=False,
-             reachable_at_recon=False):
+             reachable_at_recon=False, ports=(("tcp", 80),)):
     """Drive the REAL classifier for one module and return (baseline_result, verdict).
     `recon` is the injected TCP port state ('open'/'closed'/'filtered'/...), or None
     for 'no recon'. Port policy is disabled (not under test). `banned=True` arms the
@@ -54,7 +54,9 @@ def _verdict(raw, recon=None, success=r"WIN", blocked=r"BLOCKED-X",
     r._port_policy = {"name": "t"}
     r._detections = detections or {}
     r.auto_retry = 0
-    meta = {"success_regex": success, "blocked_regex": blocked}
+    # ports default to a target port so the fake is a TARGET-directed module; pass
+    # ports=() for an EGRESS module (no target port) to exercise the unreachable gate.
+    meta = {"success_regex": success, "blocked_regex": blocked, "ports": list(ports)}
     if detected is not None:
         meta["detected_regex"] = detected
     m = _FakeMod("t", raw, **meta)
@@ -239,6 +241,20 @@ class TestLadderPrecedence(unittest.TestCase):
         b, v = _verdict("Connection refused", recon="closed", unreachable=False)
         self.assertEqual(b, "NO-SERVICE")
         self.assertNotIn("LOW CONFIDENCE", v)
+
+    # EGRESS-module reachability gate: a no-target-port module (DoH/DNS-tunnel/C2/exfil)
+    # tests the perimeter's egress, not the target, so it would score SUCCESS on the
+    # tester's own egress even when the target is DOWN / behind NAT. When the whole
+    # target is unreachable at recon it must read NO-SERVICE, not a target finding.
+    def test_egress_module_no_service_when_target_unreachable(self):
+        b, v = _verdict("WIN", ports=(), unreachable=True)
+        self.assertEqual(b, "NO-SERVICE")
+        self.assertIn("TARGET UNREACHABLE", v)
+
+    def test_egress_module_success_when_target_reachable(self):
+        # host reachable -> the egress module is assessed normally (gate does NOT fire).
+        b, _ = _verdict("WIN", ports=(), unreachable=False, reachable_at_recon=True)
+        self.assertEqual(b, "SUCCESS")
 
     # rung 6 GUARD: an incidental "Connection refused" while the attack port is OPEN
     # must NOT rob a module of the BLOCKED its own blocked_regex earned (the noPac
