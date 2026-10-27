@@ -109,6 +109,15 @@ SATURATION_FRAC = _frac_env("HARNESS_ICMP_SAT_FRAC", 0.80)
 # Default 50 Mbit/s = a conservative "real DoS volume" floor; set it to the SD-WAN's
 # documented threshold (e.g. 84) for a tight fit, or 0 to disable the gate.
 MIN_MBPS = _int_env("HARNESS_ICMP_MIN_MBPS", 50, lo=0)
+# A near-TOTAL loss can't be self-congestion: a saturated uplink still delivers SOME
+# packets, so ~100% loss (with a working baseline) is an active in-path BLACKHOLE /
+# anti-DoS ban that dropped the WHOLE flood (the "DOS detected" signature) — a control,
+# regardless of the achieved-vs-target rate or the achieved volume. This OVERRIDES the
+# SATURATION_FRAC / MIN_MBPS self-congestion demotions, which only apply to PARTIAL loss
+# (when an anti-DoS bans the source mid-send the achieved rate ALSO collapses, which would
+# otherwise masquerade as a thin-uplink ceiling and hide the control — the false PASS a
+# real "DOS detected" produced). >= this % loss at a knee => the control dropped it all.
+TOTAL_LOSS_PCT = _int_env("HARNESS_ICMP_TOTAL_LOSS_PCT", 99, lo=1)
 # Noise handling: ICMP-reply loss over the internet jitters, so a single sample can flip
 # the verdict. Take SAMPLES measurements and use the MEDIAN (one bad sample can't decide).
 # And if the BASELINE itself is already lossy (>= NOISE_FLOOR %) the path/host is noisy, so
@@ -257,6 +266,12 @@ def _knee_verdict(loss, rtt, base_loss, base_rtt, apps, pps, ambps):
     loss_jump, rtt_jump = _knee_signals(loss, rtt, base_loss, base_rtt)
     if not (loss_jump or rtt_jump):
         return None
+    # Near-TOTAL loss is an active in-path blackhole / anti-DoS ban, NOT self-congestion
+    # (a saturated uplink still delivers SOME packets). Credit it as a control regardless
+    # of achieved rate/volume — see TOTAL_LOSS_PCT. This is the "DOS detected" case the
+    # SATURATION_FRAC/MIN_MBPS demotions below would otherwise bury as a false PASS.
+    if loss is not None and loss >= TOTAL_LOSS_PCT:
+        return "control"
     reached = bool(apps is not None and pps and apps >= SATURATION_FRAC * pps)
     dos_grade = (not MIN_MBPS) or (ambps is not None and ambps >= MIN_MBPS)
     return "control" if (reached and (rtt_jump or dos_grade)) else "saturated"
@@ -551,7 +566,19 @@ def run(target, ctx):
                 break
 
         if not hping_privfail:
-            if knee:
+            if knee and knee["loss"] is not None and knee["loss"] >= TOTAL_LOSS_PCT:
+                # TOTAL loss: the whole flood was dropped in transit while ordinary pings
+                # worked — an anti-DoS / blackhole DETECTED the flood and dropped (or banned)
+                # it. Not self-congestion (a saturated uplink still delivers some packets).
+                out.append(
+                    "BLOCKED-DOS-DETECTED: the high-rate ICMP flood was ENTIRELY dropped (%s%% loss "
+                    "vs %s%% baseline) at ~%s pps / ~%s Mbit/s (target %s pps) while normal-rate pings "
+                    "worked — an anti-DoS control DETECTED the flood and blackholed/banned it in transit "
+                    "(the 'DOS detected' signature; control held). The threshold is at/below this rate."
+                    % (_fmt(knee["loss"], 1), _fmt(base_loss, 1), _fmt(knee["pps"]), _fmt(knee["mbps"]),
+                       f"{knee['target']:,}")
+                    + _lowconf(base_loss) + _ratelimit_caveat())
+            elif knee:
                 out.append(
                     "BLOCKED-RATELIMIT: ICMP policing kicked in at ~%s pps / ~%s Mbit/s (target %s pps) "
                     "— loss %s%% vs %s%% baseline, rtt %sms vs %sms. This is the MEASURED anti-DoS "

@@ -419,6 +419,12 @@ class TestIcmpRateReport(unittest.TestCase):
         self.assertEqual(kv(36.0, 6.4, 0.0, 0.8, apps=32872.0, pps=60000, ambps=376.0), "saturated")
         # RTT shaping is credited even at low volume (active shaping is attributable)
         self.assertEqual(kv(1.0, 900.0, 1.0, 8.0, apps=900.0, pps=1000, ambps=10.0), "control")
+        # TOTAL loss at a LOW volume + achieved << target = an anti-DoS blackhole/ban,
+        # NOT self-congestion (the "DOS detected" field case) -> control, overriding the
+        # SATURATION_FRAC/MIN_MBPS demotions that would otherwise read it a false PASS.
+        self.assertEqual(kv(100.0, 0.0, 0.0, 67.0, apps=711.0, pps=1000, ambps=8.0), "control")
+        # ...but PARTIAL loss at a low volume stays self-congestion -> PASS
+        self.assertEqual(kv(45.0, 2.0, 0.0, 67.0, apps=711.0, pps=1000, ambps=8.0), "saturated")
         # no knee at all
         self.assertIsNone(kv(1.0, 8.0, 1.0, 7.0, apps=900.0, pps=1000, ambps=10.0))
 
