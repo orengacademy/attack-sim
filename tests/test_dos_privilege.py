@@ -139,6 +139,11 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         # clean PASS (flood delivered, low loss)
         out = self._run_syn(0.0, 10.0, 0.0, 10.0)
         self.assertTrue(core._match(out, m.META["success_regex"]))
+        # TOTAL loss with a working baseline = anti-DoS blackhole -> BLOCKED, never a
+        # self-congestion INCONCLUSIVE (mirrors icmp_flood's total-loss override).
+        out = self._run_syn(0.0, 10.0, 100.0, 0.0)
+        self.assertIn("BLOCKED-RATELIMIT", out)
+        self.assertFalse(core._match(out, m.META["success_regex"]))
 
     def test_delivered_but_under_threshold_is_pass_with_caveat(self):
         # Flood delivered (0% loss) BELOW the DoS-volume floor. DECISIVE (v1.9.65): PASS
@@ -216,15 +221,16 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
                         "a real DoS-grade policed flood should still score BLOCKED")
 
     def test_real_policing_sub_dos_volume_is_pass(self):
-        # The batch-vs-solo flip fix: a high-loss knee at a trivial volume (< MIN_MBPS) is
-        # the source hitting its OWN uplink ceiling, not a boundary control — it must read
-        # PASS, never the vantage-dependent false BLOCKED. Here 95% loss appears already at
-        # target 1000 pps (~11 Mbit/s over 4s), far below the 50 Mbit/s DoS floor.
+        # The batch-vs-solo flip fix: a PARTIAL loss knee at a trivial volume (< MIN_MBPS)
+        # is the source hitting its OWN uplink ceiling, not a boundary control — it must
+        # read PASS, never the vantage-dependent false BLOCKED. Here 45% loss appears at
+        # target 1000 pps (~11 Mbit/s over 4s), far below the 50 Mbit/s DoS floor. (Partial,
+        # NOT total — a near-total loss is the blackhole case covered below.)
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
         m._hping_flood_at = lambda t, pps, sz, sec: (
-            95.0, 1.0, pps * sec,
-            f"{pps*sec} packets transmitted, {int(pps*sec*0.05)} received, 95% packet loss")
+            45.0, 2.0, pps * sec,
+            f"{pps*sec} packets transmitted, {int(pps*sec*0.55)} received, 45% packet loss")
         real_which = m.shutil.which
         m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
         try:
@@ -232,8 +238,31 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         finally:
             m.shutil.which = real_which
         self.assertTrue(core._match(out, m.META["success_regex"]),
-                        "a sub-DoS-volume loss knee is self-congestion -> PASS, not BLOCKED")
+                        "a partial sub-DoS-volume loss knee is self-congestion -> PASS, not BLOCKED")
         self.assertFalse(core._match(out, m.META["blocked_regex"]))
+
+    def test_total_loss_is_dos_detected_blocked(self):
+        # The "DOS detected" case: a WORKING baseline then ~100% loss of the flood at a
+        # LOW volume (the source pushed only ~8 Mbit/s — no uplink saturates there, and
+        # this source can do 300+ Mbit/s elsewhere) = an anti-DoS blackhole/ban dropped
+        # the WHOLE flood. Must read BLOCKED (BLOCKED-DOS-DETECTED), not a false PASS from
+        # the achieved-rate self-congestion demotion (the bug the field run hit).
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 67.0, "15 packets transmitted, 15 received, 0% packet loss")
+        # step 1 (target 1000 pps): source SENT ~711 pps but 100% was dropped, RTT unmeasurable
+        m._hping_flood_at = lambda t, pps, sz, sec: (
+            100.0, 0.0, 711 * sec,
+            f"{711*sec} packets transmitted, 0 received, 100% packet loss")
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("10.38.98.14", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertIn("BLOCKED-DOS-DETECTED", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]))
+        self.assertFalse(core._match(out, m.META["success_regex"]),
+                         "a total-loss blackhole must NOT read PASS")
 
 
 if __name__ == "__main__":

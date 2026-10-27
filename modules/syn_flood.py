@@ -242,9 +242,19 @@ def run(target, ctx):
     # the boundary (mirror icmp_flood's attribution — don't credit an unproven control).
     reached_rate = (achieved_pps is None  # unparseable -> don't block the loss-delta path on it
                     or achieved_pps >= SATURATION_FRAC * TARGET_PPS)
+    # A near-TOTAL SYN-loss is an anti-DoS blackhole/ban that dropped the WHOLE flood (the
+    # "DOS detected" signature), NOT self-congestion — a saturated uplink still gets SOME
+    # SYN-ACKs back. When an anti-DoS bans the source mid-flood the achieved rate ALSO
+    # collapses, so WITHOUT this override a real block reads as a false self-congestion
+    # INCONCLUSIVE (mirror icmp_flood's TOTAL_LOSS_PCT). >= this % => the control dropped it.
+    try:
+        TOTAL_LOSS_PCT = min(100.0, max(1.0, float(os.environ.get("HARNESS_SYN_TOTAL_LOSS_PCT") or 99)))
+    except (TypeError, ValueError):
+        TOTAL_LOSS_PCT = 99.0
+    total_loss = flood_loss is not None and flood_loss >= TOTAL_LOSS_PCT
 
     # 2) boundary rate-limited the high-rate SYN stream (differential loss).
-    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and not reached_rate:
+    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and not reached_rate and not total_loss:
         out.append(
             f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts, but the source only sent "
             f"~{achieved_pps:,.0f} pps of the ~{TARGET_PPS:,} pps target — it saturated its OWN "
