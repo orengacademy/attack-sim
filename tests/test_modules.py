@@ -118,6 +118,44 @@ class TestNtlmMd4Prereq(unittest.TestCase):
             _util.ntlm_md4_available = orig
 
 
+class TestSamaccountnameResetVerdict(unittest.TestCase):
+    """A socket reset ON the sAMAccountName rename — after the machine account was
+    already created on the same session — is the target refusing the spoof (a
+    control), so it must score BLOCKED, not fall through to an ambiguous NO-RESULT
+    (the Oct-2026 field bug: '[Errno 104] Connection reset by peer' => NO-RESULT)."""
+
+    def setUp(self):
+        self.sama = importlib.import_module("modules.samaccountname_spoof")
+
+    def test_is_conn_reset_detects_wrapped_econnreset(self):
+        try:
+            raise Exception("error receiving data: [Errno 104] Connection reset by peer") \
+                from ConnectionResetError(104, "Connection reset by peer")
+        except Exception as ex:
+            self.assertTrue(self.sama._is_conn_reset(ex))
+        self.assertTrue(self.sama._is_conn_reset(BrokenPipeError(32, "Broken pipe")))
+
+    def test_is_conn_reset_ignores_non_network_errors(self):
+        # a genuine bug (not a reset) must NOT be miscredited as a target control
+        self.assertFalse(self.sama._is_conn_reset(ValueError("bad DN")))
+        self.assertFalse(self.sama._is_conn_reset(FileNotFoundError(2, "No such file")))
+
+    def test_spoof_blocked_marker_scores_blocked(self):
+        out = ("[INFO] Created WIN-X$\n[INFO] Renaming sAMAccountName -> dc01\n"
+               "[ERROR] SPOOF-BLOCKED: the DC reset the LDAP connection on the "
+               "sAMAccountName rename (LDAPSocketReceiveError: error receiving data: "
+               "[Errno 104] Connection reset by peer)")
+        self.assertRegex(out, self.sama.META["blocked_regex"])
+        self.assertNotRegex(out, self.sama.META["success_regex"])
+
+    def test_bare_reset_without_marker_is_not_blocked(self):
+        # a reset that did NOT happen on the rename step (no SPOOF-BLOCKED marker)
+        # stays unmatched => NO-RESULT (honest: we never proved the benign baseline)
+        out = ("[ERROR] LDAPSocketReceiveError: error receiving data: "
+               "[Errno 104] Connection reset by peer")
+        self.assertNotRegex(out, self.sama.META["blocked_regex"])
+
+
 class TestLog4ShellOOB(unittest.TestCase):
     """The log4shell module's --active out-of-band exploitation confirmation.
     Localhost-only: a simulated 'vulnerable target' connects back to the catcher
