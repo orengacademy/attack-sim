@@ -8,6 +8,7 @@ block the (marked) exfil — a finding; the canary callback also proves reach.
 SAFE by design: synthetic marked data only (never real records), one small POST.
 Config: canary_url. MITRE T1567.002 (Exfil to Cloud Storage).
 """
+import socket
 import ssl
 import uuid
 from urllib.parse import urlparse
@@ -54,8 +55,18 @@ def run(target, ctx):
            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}")
     try:
         raw = U.connect(host, port, ctx, timeout=10)
+    except socket.gaierror:
+        out.append(f"[SKIP] could not resolve {host} from THIS SOURCE (resolver/DNS artifact, "
+                   "not a DLP/egress control) — fix the source resolver or configure an IP.")
+        return "\n".join(out)
+    except ConnectionRefusedError:
+        out.append(f"[SKIP] {host}:{port} refused the connection (no listener) — egress REACHED "
+                   "the canary host (traversed), so this is NOT a DLP block. Use a live canary "
+                   "endpoint (Canarytokens / webhook.site).")
+        return "\n".join(out)
     except OSError as e:
-        out.append(f"exfil blocked — cannot reach {host}:{port} ({e.__class__.__name__})")
+        out.append(f"exfil blocked — cannot reach {host}:{port} ({e.__class__.__name__}): "
+                   "dropped/filtered in transit (DLP/egress control holding).")
         return "\n".join(out)
     try:
         c = ssl.create_default_context()
@@ -84,8 +95,16 @@ def run(target, ctx):
     except ssl.SSLError as e:
         out.append(f"exfil blocked — TLS error ({e.__class__.__name__}) "
                    "(possible TLS-inspection/DLP interception)")
+    except (ConnectionResetError, BrokenPipeError) as e:
+        # Connected + TLS established, then the POST/response was TORN DOWN in transit —
+        # a DLP/forward-proxy resetting the exfil session on the marked payload. That is
+        # the control working, so score it BLOCKED (sibling modules do this) instead of
+        # letting a raw "exfil error:" fall through to a mute NO-RESULT.
+        out.append(f"exfil blocked — the exfil session was torn down in transit "
+                   f"({e.__class__.__name__}) after TLS was established (DLP/proxy reset the "
+                   "marked POST — control holding).")
     except Exception as e:
-        out.append(f"exfil error: {e.__class__.__name__}: {e}")
+        out.append(f"[ERROR] exfil probe fault: {e.__class__.__name__}: {e}")
     finally:
         try:
             raw.close()

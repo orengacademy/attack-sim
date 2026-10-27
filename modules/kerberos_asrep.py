@@ -35,7 +35,8 @@ META = {
     # to NO-RESULT, which is honest). Bare "Errno" removed too (a non-network traceback
     # [Errno 2]/[Errno 13] would false-BLOCK); network errnos carry "timed out" /
     # "unreachable" / "No route to host".
-    "blocked_regex": r"timed out|Connection refused|unreachable|No route to host",
+    "blocked_regex": (r"timed out|Connection refused|unreachable|No route to host|"
+                      r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"),
 }
 
 

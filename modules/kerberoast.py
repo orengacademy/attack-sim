@@ -22,7 +22,8 @@ META = {
     # segmentation block — so it's removed (would false-credit the control). Bare "Errno"
     # removed (non-network [Errno 2]/[Errno 13] traceback -> false BLOCKED); network
     # drops still covered by timed out / unreachable / No route to host.
-    "blocked_regex": r"timed out|Connection refused|unreachable|No route to host",
+    "blocked_regex": (r"timed out|Connection refused|unreachable|No route to host|"
+                      r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"),
 }
 
 def run(target, ctx):

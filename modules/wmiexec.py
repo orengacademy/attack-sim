@@ -48,7 +48,11 @@ META = {
     "success_regex": r"nt authority\\system|\\administrator\s*$",
     "blocked_regex": (
         r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|"
-        r"No route to host|Can't find a valid stringBinding"  # dropped bare "Errno" (non-network traceback -> false BLOCKED)
+        r"No route to host|Can't find a valid stringBinding|"  # dropped bare "Errno" (non-network traceback -> false BLOCKED)
+        # SPECIFIC reset tokens: a target/EDR that RSTs the DCOM/Win32_Process.Create
+        # step AFTER benign SMB/RPC auth succeeded raised ConnectionResetError, which
+        # matched nothing and fell to NO-RESULT; a reset is an active refusal = BLOCKED.
+        r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"
     ),
 }
 

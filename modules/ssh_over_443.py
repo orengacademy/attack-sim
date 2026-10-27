@@ -48,8 +48,21 @@ def run(target, ctx):
     # ---- indicator: reach 443 and read a banner --------------------------------
     try:
         s = U.connect(vps, 443, ctx, timeout=8)
+    except ConnectionRefusedError:
+        # RST at connect = the SYN REACHED the VPS and it has no listener on 443
+        # (egress TRAVERSED) — a tester-setup gap, NOT the boundary blocking SSH-over-443.
+        out.append(f"[SKIP] {vps}:443 refused the connection (no listener) — egress REACHED the "
+                   "VPS (traversed), so this is not a boundary block. Start sshd on the VPS's 443.")
+        return "\n".join(out)
+    except socket.gaierror:
+        out.append(f"[SKIP] could not resolve {vps} from THIS SOURCE (resolver/DNS artifact, not "
+                   "the target's egress control) — fix the source resolver or configure an IP.")
+        return "\n".join(out)
     except OSError as e:
-        out.append(f"SSH-over-443 blocked — cannot reach {vps}:443 ({e.__class__.__name__})")
+        # timeout / unreachable / reset in transit = the SYN was dropped/torn down before
+        # reaching a listener = the egress control stopped SSH-over-443.
+        out.append(f"SSH-over-443 blocked — cannot reach {vps}:443 ({e.__class__.__name__}): "
+                   "dropped/filtered in transit (egress control holding).")
         return "\n".join(out)
     try:
         s.settimeout(6)

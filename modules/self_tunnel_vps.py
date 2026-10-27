@@ -57,7 +57,18 @@ def run(target, ctx):
     ok, detail = U.tls_reachable(vps, 443, ctx)
     out.append(f"{'REACHABLE' if ok else 'blocked'} {vps}:443 (TLS) — {detail}")
     if not ok:
-        out.append(f"egress to VPS blocked — 443 to uncategorised host {vps} is filtered")
+        low = detail.lower()
+        if "refused" in low:
+            # RST = the SYN REACHED the VPS (egress traversed), it just has no 443 listener.
+            out.append(f"[SKIP] {vps}:443 refused (no listener) — egress REACHED the VPS "
+                       "(traversed), so this is NOT an egress block. Start the tunnel server on 443.")
+        elif "resolve" in low or "dns" in low:
+            out.append(f"[SKIP] {vps} did not resolve from THIS SOURCE (resolver/DNS artifact, not "
+                       "the target's egress control) — fix the source resolver or use an IP.")
+        else:
+            # timed out / unreachable = dropped in transit = the egress control stopped it.
+            out.append(f"egress to VPS blocked — 443 to uncategorised host {vps} is filtered "
+                       "(dropped in transit — egress control holding).")
         return "\n".join(out)
     out.append(f"[FINDING] egress to uncategorised host {vps}:443 is permitted — a raw "
                "TLS/WS tunnel (chisel/gost/wstunnel) has no known-bad domain to filter.")

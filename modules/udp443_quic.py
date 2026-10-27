@@ -41,7 +41,7 @@ def run(target, ctx):
     vps = ctx.cfg("attacker_vps")
     dests = [vps] if vps else _DEFAULT_QUIC
     out = ["# UDP/443 (QUIC) egress test (Family A)"]
-    replied, noreply = [], []
+    replied, noreply, reached, unresolved = [], [], [], []
     for host in dests:
         st = U.udp_egress(host, 443, ctx, payload=_QUIC_PROBE, timeout=4)
         out.append(f"{host}:443/udp — {st}")
@@ -49,6 +49,10 @@ def run(target, ctx):
             replied.append(host)
         elif st == "sent (no reply)":
             noreply.append(host)
+        elif st == "refused":
+            reached.append(host)          # ICMP port-unreachable = datagram REACHED the host
+        elif st == "unresolved":
+            unresolved.append(host)
     out.append("")
     # Only a real REPLY proves the datagram traversed and a QUIC server answered.
     # "sent (no reply)" is ambiguous — a silently-dropping firewall looks identical
@@ -58,11 +62,21 @@ def run(target, ctx):
         out.append(f"UDP443-OPEN — a QUIC server replied over UDP/443 from: "
                    f"{', '.join(replied)}. A QUIC tunnel (cloudflared) can use this path "
                    "even if TCP/443 is controlled. [FINDING]")
+    elif reached:
+        # An ICMP port-unreachable came back = the datagram EGRESSED and REACHED the host
+        # (just no QUIC listener there). Egress TRAVERSED — NOT a default-deny block.
+        out.append(f"[SKIP] UDP/443 to {', '.join(reached)} was REFUSED (ICMP port-unreachable) "
+                   "— the datagram REACHED the host (egress traversed; no QUIC listener there), "
+                   "so this is NOT 'egress blocked'. Point at a QUIC endpoint to confirm the tunnel.")
     elif noreply:
         out.append(f"[INCONCLUSIVE] UDP/443 datagram(s) sent to {', '.join(noreply)} but no "
                    "reply — UDP has no handshake, so a dropping firewall and a "
                    "permitted-but-unanswered path are indistinguishable here; not scored "
                    "as open. Confirm against firewall logs or a known-responsive endpoint.")
+    elif unresolved and not (replied or noreply or reached):
+        out.append(f"[SKIP] {', '.join(unresolved)} did not resolve from THIS SOURCE "
+                   "(resolver/DNS artifact, not the target's egress control) — fix the source "
+                   "resolver or pass an IP. This is NOT 'egress blocked'.")
     else:
         out.append("UDP/443 egress blocked — datagrams refused/blocked (default-deny holding)")
     return "\n".join(out)

@@ -79,8 +79,10 @@ def run(target, ctx):
         return "\n".join(out)
     out.append(f"# IPv6 target: {addr}")
     opened = []
+    states = []
     for port, name in _PORTS:
         st = _probe6(addr, port, ctx)
+        states.append(st)
         out.append(f"  [{addr}]:{port}/{name} — {st}")
         if st == "open":
             opened.append(f"{port}/{name}")
@@ -89,6 +91,14 @@ def run(target, ctx):
         out.append(f"IPV6-OPEN — sensitive port(s) reachable over IPv6: {', '.join(opened)}. "
                    "[FINDING] confirm IPv4 policy blocks these — an IPv6 ACL gap bridges the "
                    "boundary the IPv4 rules protect.")
+    elif states and all(s == "unreachable" for s in states):
+        # Every probe returned OSError 'network unreachable' — THIS SOURCE has no IPv6
+        # route/egress at all, so none of the traffic even left the tester. That is a
+        # tester-side artifact, NOT the target's IPv6 ACL — scoring it "parity holding"
+        # (BLOCKED) would credit a control that was never exercised. Skip instead.
+        out.append("[SKIP] every IPv6 probe returned 'network unreachable' — THIS SOURCE has no "
+                   "IPv6 egress/route, so the target's IPv6 ACL cannot be assessed from here "
+                   "(this is NOT 'parity holding'). Re-run from a host with working IPv6.")
     else:
         out.append("no sensitive IPv6 ports reachable — IPv6 ACL parity holding")
     return "\n".join(out)

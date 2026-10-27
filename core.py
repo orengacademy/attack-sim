@@ -690,8 +690,23 @@ def _run_cmd(template, target, creds, timeout, debug=False):
                            stdin=subprocess.DEVNULL, start_new_session=True)
         body = (p.stdout or "") + "\n[stderr]\n" + (p.stderr or "")
         return header + _redact(body, creds)
-    except subprocess.TimeoutExpired:
-        return header + "[TIMEOUT] command exceeded time limit (likely blocked/filtered)"
+    except subprocess.TimeoutExpired as e:
+        # Preserve whatever the tool STREAMED before the watchdog killed it. A
+        # slow-but-working tool (e.g. GetNPUsers/GetUserSPNs roasting a long user/SPN
+        # list, which emits $krb5asrep$/$krb5tgs$ hashes incrementally) would otherwise
+        # lose its success proof and be mis-scored a FALSE BLOCKED — success_regex is
+        # checked BEFORE blocked_regex, so keeping the partial output lets a proven
+        # success win. The [TIMEOUT] marker STAYS (a genuinely blocked tool has no
+        # success proof in its partial output, so it still reads BLOCKED).
+        def _s(x):
+            if not x:
+                return ""
+            return x if isinstance(x, str) else x.decode("utf-8", "replace")
+        partial = _s(e.stdout)
+        if e.stderr:
+            partial += "\n[stderr]\n" + _s(e.stderr)
+        partial = (_redact(partial, creds) + "\n") if partial.strip() else ""
+        return header + partial + "[TIMEOUT] command exceeded time limit (likely blocked/filtered)"
     except FileNotFoundError:
         return header + "[ERROR] tool not found — is it installed (see preflight.py)?"
     except OSError as e:
