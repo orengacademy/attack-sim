@@ -12,6 +12,7 @@ it) — both must be infrastructure you control/are authorised to front. Without
 it degrades to an ECH/SNI-visibility note (SKIP). NON-DESTRUCTIVE: one request.
 MITRE T1090.004 (Domain Fronting).
 """
+import socket
 import ssl
 from modules import _util as U
 
@@ -51,8 +52,22 @@ def run(target, ctx):
     c.verify_mode = ssl.CERT_NONE
     try:
         raw = U.connect(front, 443, ctx, timeout=8)
+    except socket.gaierror:
+        # The front is a high-reputation CDN; a resolve failure is almost always THIS
+        # SOURCE's resolver, not the egress control blocking the front -> SKIP, not BLOCKED.
+        out.append(f"[SKIP] could not resolve front {front} from THIS SOURCE (resolver/DNS "
+                   "artifact, not the egress control) — fix the source resolver or use an IP.")
+        return "\n".join(out)
+    except ConnectionRefusedError:
+        # RST = the SYN reached the CDN front (egress traversed), it just refused 443 —
+        # not the boundary blocking the front.
+        out.append(f"[SKIP] front {front}:443 refused — egress REACHED the CDN (traversed), "
+                   "not a boundary block.")
+        return "\n".join(out)
     except OSError as e:
-        out.append(f"fronting blocked — could not reach front {front}:443 ({e.__class__.__name__})")
+        # timed out / unreachable in transit = the egress control dropped the front.
+        out.append(f"fronting blocked — could not reach front {front}:443 ({e.__class__.__name__}): "
+                   "dropped/filtered in transit (egress control holding).")
         return "\n".join(out)
     try:
         with c.wrap_socket(raw, server_hostname=front) as tls:

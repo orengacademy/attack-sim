@@ -43,7 +43,9 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^WAF-EVADED",
-    "blocked_regex": r"WAF blocked all variants|unreachable|Connection reset|reset by peer|Broken pipe",
+    # no bare "unreachable" — an app that doesn't answer is SERVICE ABSENT (NO-SERVICE),
+    # not a WAF block; it now self-declares [NO-SERVICE]. Real teardowns are reset/pipe.
+    "blocked_regex": r"WAF blocked all variants|Connection reset|reset by peer|Broken pipe",
 }
 
 _XSS = "<script>alert(1)</script>"
@@ -98,8 +100,17 @@ def run(target, ctx):
         out.append(f"WAF-EVADED — the plain probe was blocked ({plain}) but variant(s) "
                    f"{served} were served (200): the WAF normalises inconsistently and is "
                    "evadable. [FINDING]")
+    elif all(v is None for v in results.values()):
+        # NOTHING answered any probe -> the app/endpoint is down/unreachable (service
+        # absent), NOT the WAF blocking — don't credit the control for a dead app. (recon
+        # probes `target`, which may differ from a published_app_url host, so the engine's
+        # NO-SERVICE gate can't catch this; self-declare it.)
+        out.append(f"[NO-SERVICE] no response to ANY probe — the app/endpoint on {host}:{port} "
+                   "is down/unreachable (service absent), NOT a WAF block.")
     elif all(v in (403, 406, 501) or v is None for v in results.values()):
-        out.append("WAF blocked all variants — normalising WAF holding (or app unreachable)")
+        # at least one EXPLICIT block code (403/406/501) and nothing served -> the WAF
+        # actively rejected the variants = holding.
+        out.append("WAF blocked all variants — normalising WAF holding")
     else:
         out.append("REVIEW — WAF did not clearly block the plain probe; confirm the target "
                    "is WAF-fronted and whether these should be blocked.")

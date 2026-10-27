@@ -41,6 +41,8 @@ META = {
 def run(target, ctx):
     out = [f"# covert-channel / tunneling test vs {target}"]
     open_ch = []
+    ch_clean = []    # channels that cleanly reported "not open / did not egress" (a real block signal)
+    ch_errors = []   # channels that failed on the TESTER side (missing tool / local resolver error)
 
     # --- ICMP data payload ---
     try:
@@ -53,10 +55,13 @@ def run(target, ctx):
             open_ch.append("ICMP")
         else:
             out.append("ICMP: no usable replies (channel not open)")
+            ch_clean.append("ICMP")
     except FileNotFoundError:
         out.append("[ERROR] ping not found")
+        ch_errors.append("ICMP")
     except Exception as e:
         out.append(f"ICMP: error {e}")
+        ch_errors.append("ICMP")
 
     # --- DNS egress / tunnelling precondition ---
     # HONEST SCOPE: proving DNS tunnelling needs a zone you are AUTHORITATIVE for —
@@ -89,14 +94,26 @@ def run(target, ctx):
             open_ch.append("DNS")
         else:
             out.append(f"DNS: query under your zone did not egress/resolve ({label})")
+            ch_clean.append("DNS")
     except FileNotFoundError:
         out.append("[ERROR] dig not found (install dnsutils)")
+        ch_errors.append("DNS")
     except Exception as e:
         out.append(f"DNS: error {e}")
+        ch_errors.append("DNS")
 
     out.append("")
     if open_ch:
         out.append("[FINDING] covert channel(s) open A->B: " + ", ".join(open_ch))
-    else:
+    elif ch_clean:
+        # at least one channel cleanly reported "not open / did not egress" -> that IS a
+        # real block signal from the target/boundary (the control held on that channel).
         out.append("no covert channel open")
+    else:
+        # NO channel produced a clean signal — every attempted channel failed on the
+        # TESTER side (missing ping/dig, or the tester's own resolver errored). That is
+        # NOT evidence the control works, so don't score it BLOCKED (false control win).
+        out.append("[ERROR] could not assess any covert channel — every channel failed on the "
+                   "TESTER side (missing tool / local resolver error) — NOT a control result; "
+                   "review the raw log and fix the tester (ping/dig/resolver).")
     return "\n".join(out)

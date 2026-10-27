@@ -302,6 +302,145 @@ class TestDlpCanaryTeardown(unittest.TestCase):
         self.assertFalse(_match(out, self.m.META["success_regex"]))
 
 
+class TestSegmentationSweepAttribution(unittest.TestCase):
+    """A sensitive port that is CLOSED (RST) means the SYN TRAVERSED the boundary to a
+    reachable host with the service off — NOT a segmentation block. Only a FILTERED
+    (silently dropped) port is 'segmentation holding' (BLOCKED)."""
+
+    def setUp(self):
+        self.m = importlib.import_module("modules.segmentation_sweep")
+
+    def _run(self, state):
+        orig = self.m._probe
+        self.m._probe = lambda host, port: state
+        try:
+            return self.m.run("10.0.0.9", _ctx())
+        finally:
+            self.m._probe = orig
+
+    def test_all_closed_is_no_service(self):
+        out = self._run("closed")
+        self.assertIn("[NO-SERVICE]", out)
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]))
+
+    def test_filtered_is_segmentation_holding_blocked(self):
+        out = self._run("filtered")
+        self.assertTrue(_match(out, self.m.META["blocked_regex"]))
+        self.assertNotIn("[NO-SERVICE]", out)
+
+    def test_open_is_finding(self):
+        out = self._run("OPEN")
+        self.assertTrue(_match(out, self.m.META["success_regex"]))
+
+
+class TestExposedMgmtApiNoService(unittest.TestCase):
+    """443 not open = no web/API surface to probe = service absent (NO-SERVICE),
+    not a boundary block — must not be a false BLOCKED via a bare 'unreachable'."""
+
+    def setUp(self):
+        self.m = importlib.import_module("modules.exposed_mgmt_api")
+
+    def test_443_closed_is_no_service(self):
+        orig = self.m.U.tcp_state
+        self.m.U.tcp_state = lambda *a, **k: "closed"
+        try:
+            out = self.m.run("10.0.0.9", _ctx())
+        finally:
+            self.m.U.tcp_state = orig
+        self.assertIn("[NO-SERVICE]", out)
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]))
+
+
+class TestWafEvasionNoService(unittest.TestCase):
+    """All probes returning no response = the app is DOWN (service absent), not the
+    WAF blocking — must not false-BLOCK (esp. via published_app_url != recon target)."""
+
+    def setUp(self):
+        self.m = importlib.import_module("modules.waf_evasion")
+
+    def _run(self, code):
+        orig = self.m._get
+        self.m._get = lambda *a, **k: code      # every probe returns the same code
+        try:
+            return self.m.run("10.0.0.9", _ctx())
+        finally:
+            self.m._get = orig
+
+    def test_all_none_is_no_service(self):
+        out = self._run(None)                   # nothing answered -> app down
+        self.assertIn("[NO-SERVICE]", out)
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]))
+
+    def test_all_blocked_is_waf_holding(self):
+        out = self._run(403)                    # every probe explicitly blocked -> WAF holding
+        self.assertTrue(_match(out, self.m.META["blocked_regex"]))
+        self.assertNotIn("[NO-SERVICE]", out)
+
+
+class TestHttpSmugglingNoService(unittest.TestCase):
+    def setUp(self):
+        self.m = importlib.import_module("modules.http_smuggling")
+
+    def test_refused_is_no_service(self):
+        orig = self.m.U.connect
+        self.m.U.connect = lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError(111, "refused"))
+        try:
+            out = self.m.run("10.0.0.9", _ctx())
+        finally:
+            self.m.U.connect = orig
+        self.assertIn("[NO-SERVICE]", out)
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]))
+
+
+class TestDomainFrontingAttribution(unittest.TestCase):
+    def setUp(self):
+        self.m = importlib.import_module("modules.domain_fronting")
+
+    def _run(self, exc):
+        orig = self.m.U.connect
+        self.m.U.connect = lambda *a, **k: (_ for _ in ()).throw(exc)
+        try:
+            return self.m.run("t", _ctx(config={"front_domain": "cdn.test", "front_host": "secret.test"}))
+        finally:
+            self.m.U.connect = orig
+
+    def test_dns_fail_is_skip(self):
+        import socket
+        out = self._run(socket.gaierror("name resolution failed"))
+        self.assertIn("[SKIP]", out)
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]))
+
+    def test_refused_is_skip_traversed(self):
+        out = self._run(ConnectionRefusedError(111, "refused"))
+        self.assertIn("[SKIP]", out)
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]))
+
+    def test_timeout_is_blocked(self):
+        import socket
+        out = self._run(socket.timeout("timed out"))
+        self.assertTrue(_match(out, self.m.META["blocked_regex"]))
+
+
+class TestCovertChannelTesterError(unittest.TestCase):
+    """If every channel fails on the TESTER side (missing tool / dead resolver) there is
+    no clean block signal -> NO-RESULT, not a false 'no covert channel open' BLOCKED."""
+
+    def setUp(self):
+        self.m = importlib.import_module("modules.covert_channel")
+
+    def test_all_tester_errors_not_blocked(self):
+        import subprocess
+        orig = self.m.subprocess.run
+        self.m.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(OSError("tester resolver dead"))
+        try:
+            out = self.m.run("10.0.0.9", _ctx())
+        finally:
+            self.m.subprocess.run = orig
+        self.assertFalse(_match(out, self.m.META["blocked_regex"]),
+                         "tester-side channel errors must NOT score a false BLOCKED")
+        self.assertIn("[ERROR]", out)
+
+
 class TestSynFloodSelfCongestion(unittest.TestCase):
     """A flood SYN-loss delta from a source that didn't reach the target send-rate is
     self-congestion -> INCONCLUSIVE, not a false BLOCKED-RATELIMIT (icmp parallel)."""
