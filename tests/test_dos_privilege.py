@@ -193,7 +193,33 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertFalse(core._match(out, m.META["success_regex"]))
 
     def test_real_policing_still_blocks(self):
-        # a genuine policed flood (high loss, NO privilege error) must still read BLOCKED
+        # A genuine policer kicks in at a DoS-GRADE volume, not at a trivial rate: the
+        # flood delivers clean at low steps, then loss jumps once the achieved volume is
+        # >= MIN_MBPS. That reached + DoS-grade loss knee must still read BLOCKED. (Loss
+        # at a sub-DoS volume is now PASS — the source's own ceiling, not a control —
+        # see test_real_policing_sub_dos_volume_is_pass below.)
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+        # loss jumps only at pps >= 5000, where sent=20000 over 4s => ~57 Mbit/s (>= 50 floor)
+        m._hping_flood_at = lambda t, pps, sz, sec: (
+            (95.0 if pps >= 5000 else 1.0), 1.0, pps * sec,
+            f"{pps*sec} packets transmitted, {int(pps*sec*(0.05 if pps>=5000 else 0.99))} received, "
+            f"{'95' if pps>=5000 else '1'}% packet loss")
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertNotIn("FLOOD-PRIV-ERROR", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]),
+                        "a real DoS-grade policed flood should still score BLOCKED")
+
+    def test_real_policing_sub_dos_volume_is_pass(self):
+        # The batch-vs-solo flip fix: a high-loss knee at a trivial volume (< MIN_MBPS) is
+        # the source hitting its OWN uplink ceiling, not a boundary control — it must read
+        # PASS, never the vantage-dependent false BLOCKED. Here 95% loss appears already at
+        # target 1000 pps (~11 Mbit/s over 4s), far below the 50 Mbit/s DoS floor.
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
         m._hping_flood_at = lambda t, pps, sz, sec: (
@@ -205,9 +231,9 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertNotIn("FLOOD-PRIV-ERROR", out)
-        self.assertTrue(core._match(out, m.META["blocked_regex"]),
-                        "a real policed flood should still score BLOCKED")
+        self.assertTrue(core._match(out, m.META["success_regex"]),
+                        "a sub-DoS-volume loss knee is self-congestion -> PASS, not BLOCKED")
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
 
 
 if __name__ == "__main__":

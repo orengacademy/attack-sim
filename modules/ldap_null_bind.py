@@ -26,7 +26,10 @@ META = {
     # reporting SUCCESS on every run (even tool-not-found / refused). ^...:
     # under re.MULTILINE matches only a real reply line, not the echoed command.
     "success_regex": r"^namingContexts:",
-    "blocked_regex": r"timed out|Can't contact LDAP|Connection refused",
+    # reset tokens: a bare "Connection reset by peer" from the ldapsearch CLI that
+    # isn't wrapped in "Can't contact LDAP server" would otherwise fall to NO-RESULT;
+    # a reset on the bind with 389 open is the target/boundary refusing it = BLOCKED.
+    "blocked_regex": r"timed out|Can't contact LDAP|Connection refused|Connection reset|reset by peer",
 }
 
 

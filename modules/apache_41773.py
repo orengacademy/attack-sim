@@ -27,8 +27,13 @@ META = {
     # reports a reset / empty reply / recv failure, NOT the file. Catch those (and
     # 403/406) so an IPS-blocked run scores BLOCKED instead of NO-RESULT. success
     # is still checked first, so a variant that bypasses and reads the file wins.
+    # NOTE: "could not resolve" is NOT here — a DNS resolution failure is the
+    # TESTER's own resolver failing to look up the target (a measurement/setup
+    # artifact), NOT the target's IPS blocking the traversal, so it must fall to
+    # NO-RESULT ("couldn't run — review"), never a false BLOCKED. For an IP target
+    # it never arose anyway; for a hostname target it was a mis-attribution.
     "blocked_regex": (
-        r"timed out|Connection refused|could not resolve|"
+        r"timed out|Connection refused|"
         r"Connection reset|reset by peer|Empty reply from server|Recv failure|"
         r"403 Forbidden|406 Not Acceptable|curl: \((52|56|104)\)"
     ),

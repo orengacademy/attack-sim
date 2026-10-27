@@ -221,15 +221,45 @@ def _fmt(x, nd=0):
     return "?" if x is None else f"{x:,.{nd}f}"
 
 
-def _is_knee(loss, rtt, base_loss, base_rtt):
-    """True if a ramp step shows the boundary POLICING the flood: loss jumped
-    >= RATE_LIMIT_DELTA points over baseline, OR RTT inflated >= RTT_INFLATION x
-    baseline AND >= RTT_ABS_FLOOR ms (the floor keeps LAN queueing from faking it)."""
+def _knee_signals(loss, rtt, base_loss, base_rtt):
+    """(loss_jump, rtt_jump) for a ramp step vs baseline: loss jumped
+    >= RATE_LIMIT_DELTA points, and/or RTT inflated >= RTT_INFLATION x baseline
+    AND >= RTT_ABS_FLOOR ms (the floor keeps LAN queueing from faking it)."""
     loss_jump = (loss is not None and base_loss is not None
                  and (loss - base_loss) >= RATE_LIMIT_DELTA)
     rtt_jump = (base_rtt and rtt and base_rtt > 0
                 and rtt / base_rtt >= RTT_INFLATION and rtt >= RTT_ABS_FLOOR)
-    return bool(loss_jump or rtt_jump)
+    return bool(loss_jump), bool(rtt_jump)
+
+
+def _is_knee(loss, rtt, base_loss, base_rtt):
+    """True if a ramp step shows a knee at all (loss OR RTT). See _knee_signals."""
+    loss_jump, rtt_jump = _knee_signals(loss, rtt, base_loss, base_rtt)
+    return loss_jump or rtt_jump
+
+
+def _knee_verdict(loss, rtt, base_loss, base_rtt, apps, pps, ambps):
+    """Classify a ramp step's knee and ATTRIBUTE it — pure, so it's unit-testable:
+      * None        — no knee (delivered clean at this rate).
+      * "saturated" — a knee that is the SOURCE's own ceiling (self-congestion),
+                      NOT a target control. Either the source fell short of the
+                      target rate (achieved < SATURATION_FRAC x target) OR a pure
+                      LOSS knee appeared at a trivial, below-DoS volume (< MIN_MBPS)
+                      the source couldn't exceed. Reported as DELIVERED (a finding).
+      * "control"   — a knee attributable to an in-path policer: the source REACHED
+                      ~the target rate AND either (a) RTT shaping fired (volume-
+                      independent — active shaping, guarded by the 6x/150ms floor),
+                      or (b) a LOSS knee at a DoS-grade volume (>= MIN_MBPS).
+    Gating the LOSS knee on DoS-grade volume is what stops a thin-uplink source
+    (which saturates at a LOW ramp step where achieved is still >= 80% of that small
+    target) from miscrediting ~10 Mbit/s of self-congestion as BLOCKED — the
+    vantage/load-dependent false BLOCKED (solo) vs PASS (warm batch) flip."""
+    loss_jump, rtt_jump = _knee_signals(loss, rtt, base_loss, base_rtt)
+    if not (loss_jump or rtt_jump):
+        return None
+    reached = bool(apps is not None and pps and apps >= SATURATION_FRAC * pps)
+    dos_grade = (not MIN_MBPS) or (ambps is not None and ambps >= MIN_MBPS)
+    return "control" if (reached and (rtt_jump or dos_grade)) else "saturated"
 
 
 # TCP ports probed to decide "is the host actually UP?" when ICMP is 100% lost,
@@ -512,16 +542,12 @@ def run(target, ctx):
             max_mbps = max(max_mbps, ambps or 0.0)
             out.append("  step target ~%s pps -> achieved ~%s pps / ~%s Mbit/s . loss=%s%% rtt=%sms"
                        % (f"{pps:,}", _fmt(apps), _fmt(ambps), _fmt(loss, 1), _fmt(rtt, 1)))
-            if _is_knee(loss, rtt, base_loss, base_rtt):
-                # Attribute the knee: did the SOURCE actually reach this rate? If it
-                # couldn't push even SATURATION_FRAC of the target pps, the loss is the
-                # sender's own uplink/CPU ceiling (self-congestion), not the target
-                # policing — don't credit a control that wasn't proven.
-                reached = apps is not None and pps and apps >= SATURATION_FRAC * pps
-                if reached:
-                    knee = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
-                else:
-                    saturated = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
+            verdict = _knee_verdict(loss, rtt, base_loss, base_rtt, apps, pps, ambps)
+            if verdict == "control":
+                knee = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
+                break
+            elif verdict == "saturated":
+                saturated = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
                 break
 
         if not hping_privfail:
@@ -535,20 +561,24 @@ def run(target, ctx):
                        _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1))
                     + _lowconf(base_loss) + _ratelimit_caveat())
             elif saturated:
-                # Loss spiked only where the SOURCE fell short of the target rate
-                # (achieved < %d%% of target) — the sender saturated its own uplink/CPU,
-                # so the loss is self-congestion, NOT a target rate-limit. The flood was
-                # DELIVERED as far as this source could push: a finding, not a block.
+                # The loss spiked only where it is the SOURCE's own ceiling, not a target
+                # control: either the sender fell short of the target rate (achieved <
+                # SATURATION_FRAC of target) OR the loss appeared at a trivial, below-DoS
+                # volume (< MIN_MBPS) the source simply couldn't exceed. Both are
+                # self-congestion on the tester's uplink/CPU, NOT a boundary rate-limit —
+                # so the flood was DELIVERED as far as this source could push: a finding,
+                # not a block (and not the vantage-dependent false BLOCKED this would be).
                 out.append(
                     "PASS: the ICMP flood was DELIVERED up to the most this SOURCE could push "
-                    "(~%s pps / ~%s Mbit/s) — beyond that the SENDER saturated (achieved only ~%s pps "
-                    "of the ~%s pps target, loss %s%% vs %s%% baseline), so the loss is self-congestion "
-                    "on the tester's own uplink, NOT a target rate-limit. No anti-DoS policing was "
-                    "proven at a rate the source actually reached. To measure a real threshold, flood "
-                    "from a host with a fatter uplink / real raw sockets, or drive MULTIPLE sources "
-                    "(fleet.py)."
-                    % (_fmt(max_pps), _fmt(max_mbps), _fmt(saturated["pps"]), f"{saturated['target']:,}",
-                       _fmt(saturated["loss"], 1), _fmt(base_loss, 1)) + _lowconf(base_loss))
+                    "(~%s pps / ~%s Mbit/s) — the loss (%s%% vs %s%% baseline) appeared only at the "
+                    "source's OWN ceiling (achieved ~%s pps / ~%s Mbit/s of the ~%s pps target), so it "
+                    "is self-congestion on the tester's uplink/CPU, NOT a target rate-limit. No anti-DoS "
+                    "policing was proven at a DoS-grade rate the source actually reached. To measure a "
+                    "real threshold, flood from a host with a fatter uplink / real raw sockets, or drive "
+                    "MULTIPLE sources (fleet.py)."
+                    % (_fmt(max_pps), _fmt(max_mbps), _fmt(saturated["loss"], 1), _fmt(base_loss, 1),
+                       _fmt(saturated["pps"]), _fmt(saturated["mbps"]), f"{saturated['target']:,}")
+                    + _lowconf(base_loss))
             elif MIN_MBPS and max_mbps < MIN_MBPS:
                 # Delivered with no policing knee, but below DoS-grade volume. DECISIVE: the
                 # boundary did NOT police it -> PASS (a flood that reached the target is a finding),

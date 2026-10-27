@@ -41,7 +41,14 @@ META = {
     # Dropped the bare Errno (it matched non-network errors like [Errno 2]/[Errno 13]
     # in an in-process traceback -> false BLOCKED); network drops are covered by the
     # text below, and a refused/closed port is scored NO-SERVICE by the engine anyway.
-    "blocked_regex": r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|No route to host",
+    # SPECIFIC reset tokens (not bare Errno): an IPS "PsExec signature" (the control
+    # under test) typically RSTs the SMB/RPC connection ON the service-create/start
+    # step, AFTER benign auth succeeded — impacket then raises ConnectionResetError/
+    # BrokenPipeError, which matched nothing and fell through to NO-RESULT. A reset
+    # with 445 open and no success marker is the target refusing the attack = BLOCKED
+    # (success_regex is checked FIRST, so a reset AFTER reaching SVCManager still SUCCEEDs).
+    "blocked_regex": (r"STATUS_ACCESS_DENIED|rpc_s_access_denied|timed out|refused|unreachable|No route to host|"
+                      r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"),
 }
 
 _PSEXEC_SCRIPT = "/usr/share/doc/python3-impacket/examples/psexec.py"

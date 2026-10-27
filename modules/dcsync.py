@@ -59,8 +59,15 @@ META = {
     # non-network errors like [Errno 2]/[Errno 13] in a traceback -> false BLOCKED);
     # auth NTSTATUS codes are AUTHFAIL (scored earlier), and the network conditions are
     # covered by the text below.
+    # SPECIFIC reset tokens (not bare Errno): a boundary that RSTs the DRSUAPI
+    # replication (or the VSS-over-SMB fallback) AFTER benign SMB auth succeeded
+    # raises ConnectionResetError/BrokenPipeError, which matched nothing and fell
+    # through to NO-RESULT. A reset is an ACTIVE refusal (distinct from the
+    # timeout/refused that the NAT-unreachable DRSUAPI path legitimately hits and
+    # VSS handles), so a reset = the control stopped the attack = BLOCKED.
     "blocked_regex": (r"timed out|Connection refused|unreachable|No route to host|"
-                      r"STATUS_ACCESS_DENIED|rpc_s_access_denied"),
+                      r"STATUS_ACCESS_DENIED|rpc_s_access_denied|"
+                      r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"),
 }
 
 
