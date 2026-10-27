@@ -59,7 +59,19 @@ def run(target, ctx):
            "Connection: close\r\n\r\n" + body)
     try:
         raw = U.connect(host, port, ctx, timeout=8)
+    except ConnectionRefusedError:
+        # RST = no HTTP service listening here = service absent (NO-SERVICE), not a
+        # control dropping the desync. (recon usually catches a closed port, but keep
+        # the module honest regardless of host/recon alignment.)
+        out.append(f"[NO-SERVICE] {host}:{port} refused — no HTTP service to desync "
+                   "(service absent, not a control block).")
+        return "\n".join(out)
+    except socket.gaierror:
+        out.append(f"[SKIP] could not resolve {host} from THIS SOURCE (resolver/DNS artifact, "
+                   "not the target's control).")
+        return "\n".join(out)
     except OSError as e:
+        # timed out / unreachable in transit = dropped before reaching a service.
         out.append(f"unreachable: {e.__class__.__name__}")
         return "\n".join(out)
     try:

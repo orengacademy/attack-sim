@@ -51,13 +51,16 @@ class TestSegmentationSweep(unittest.TestCase):
         finally:
             close()
 
-    def test_no_open_is_blocked(self):
+    def test_closed_port_is_no_service_not_blocked(self):
         seg = importlib.import_module("modules.segmentation_sweep")
-        # a port nothing is listening on -> closed -> no finding
+        # a port nothing is listening on -> CLOSED (RST). A RST means the SYN reached a
+        # live host whose service is off = service absent (NO-SERVICE), NOT a segmentation
+        # drop (which would be a silent FILTERED). So it must NOT read 'segmentation holding'.
         seg.SENSITIVE = [(1, "TEST")]
         out = seg.run("127.0.0.1", core.Context())
         self.assertFalse(re.search(seg.META["success_regex"], out, re.M))
-        self.assertTrue(re.search(seg.META["blocked_regex"], out, re.M))
+        self.assertFalse(re.search(seg.META["blocked_regex"], out, re.M))
+        self.assertIn("[NO-SERVICE]", out)
 
 
 class TestAppIdMismatch(unittest.TestCase):

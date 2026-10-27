@@ -102,6 +102,18 @@ def run(target, ctx):
     if opened:
         out.append(f"[FINDING] {len(opened)} sensitive port(s) reachable A->B "
                    f"(segmentation gap): " + ", ".join(opened))
+    elif any(v == "filtered" for v in results.values()):
+        # At least one sensitive port was SILENTLY DROPPED (SYN filtered) in transit =
+        # the boundary stopped it = segmentation holding = BLOCKED.
+        out.append("no sensitive ports reachable (sensitive ports dropped/filtered in "
+                   "transit — segmentation holding)")
     else:
-        out.append("no sensitive ports reachable (segmentation holding)")
+        # No OPEN and nothing FILTERED: every probe was CLOSED (RST) / unreachable. A RST
+        # means the SYN TRAVERSED the boundary to a reachable host whose service is simply
+        # off — the boundary did NOT drop it, so this is service-absent (NO-SERVICE), not a
+        # segmentation block. Crediting "segmentation holding" here would over-credit a
+        # control that forwarded the traffic (same class as switch_mgmt's NO-SERVICE fix).
+        out.append("[NO-SERVICE] no sensitive service answered, but every probe was closed "
+                   "(RST) / unreachable — the services are absent on a reachable host (a RST "
+                   "means the SYN traversed the boundary), NOT dropped by segmentation.")
     return "\n".join(out)

@@ -43,7 +43,11 @@ META = {
     "ports": [("tcp", 443)],
     "port_customizable": True,
     "success_regex": r"^MGMT-SURFACE-EXPOSED",
-    "blocked_regex": r"no management surface exposed|unreachable|Connection reset|reset by peer|Broken pipe",
+    # NOTE: no bare "unreachable" — the module's only "unreachable" text was its own
+    # "443 not open" line, which is SERVICE ABSENT (NO-SERVICE), not a boundary block;
+    # it now self-declares [NO-SERVICE] instead. Real in-transit teardowns are the
+    # reset/broken-pipe tokens.
+    "blocked_regex": r"no management surface exposed|Connection reset|reset by peer|Broken pipe",
 }
 
 
@@ -76,7 +80,10 @@ def run(target, ctx):
     out = [f"# exposed management/API surface vs {host}:{port} (Family F)"]
     # confirm 443 is even up
     if U.tcp_state(host, port, ctx, timeout=6) != "open":
-        out.append("unreachable — 443 not open on the target")
+        # 443 isn't open -> there is no web/API surface to probe. That is SERVICE
+        # ABSENT (NO-SERVICE), NOT a boundary/control block — don't score it BLOCKED.
+        out.append(f"[NO-SERVICE] {host}:{port} not open — no web/API surface to probe "
+                   "(service absent, not a control block).")
         return "\n".join(out)
     exposed = []
     for path in _PATHS:
