@@ -156,6 +156,48 @@ class TestSamaccountnameResetVerdict(unittest.TestCase):
         self.assertNotRegex(out, self.sama.META["blocked_regex"])
 
 
+class TestInProcAttackResetVerdict(unittest.TestCase):
+    """psexec / dcsync are the same shape as samaccountname: benign SMB auth
+    succeeds, then the lateral-movement / replication step is RST by the target's
+    control. That ConnectionResetError must score BLOCKED, not fall to NO-RESULT.
+    success_regex is checked FIRST, so a reset after reaching a success marker
+    still SUCCEEDs — only a reset with NO success marker reads BLOCKED."""
+
+    _RESETS = (
+        "[ERROR] ConnectionResetError: [Errno 104] Connection reset by peer",
+        "[ERROR] BrokenPipeError: [Errno 32] Broken pipe",
+        "impacket ... Connection reset by peer",
+    )
+
+    def test_psexec_reset_scores_blocked(self):
+        psexec = importlib.import_module("modules.psexec")
+        for s in self._RESETS:
+            self.assertRegex(s, psexec.META["blocked_regex"])
+        # a non-network traceback must NOT be mis-scored BLOCKED
+        self.assertNotRegex("[ERROR] FileNotFoundError: [Errno 2] No such file",
+                            psexec.META["blocked_regex"])
+
+    def test_dcsync_reset_scores_blocked(self):
+        dcsync = importlib.import_module("modules.dcsync")
+        for s in self._RESETS:
+            self.assertRegex(s, dcsync.META["blocked_regex"])
+        self.assertNotRegex("[ERROR] PermissionError: [Errno 13] Permission denied",
+                            dcsync.META["blocked_regex"])
+
+    def test_ldap_null_bind_reset_scores_blocked(self):
+        ldap = importlib.import_module("modules.ldap_null_bind")
+        self.assertRegex("Connection reset by peer", ldap.META["blocked_regex"])
+
+    def test_apache_dns_resolve_is_not_blocked(self):
+        # a tester-side DNS resolution failure is a measurement artifact, not the
+        # target's IPS — it must NOT score BLOCKED (removed from blocked_regex).
+        apache = importlib.import_module("modules.apache_41773")
+        self.assertNotRegex("could not resolve (Name or service not known)",
+                            apache.META["blocked_regex"])
+        # genuine IPS resets are still BLOCKED
+        self.assertRegex("Connection reset by peer", apache.META["blocked_regex"])
+
+
 class TestLog4ShellOOB(unittest.TestCase):
     """The log4shell module's --active out-of-band exploitation confirmation.
     Localhost-only: a simulated 'vulnerable target' connects back to the catcher
@@ -364,6 +406,26 @@ class TestIcmpRateReport(unittest.TestCase):
     def test_is_knee_rtt_inflation(self):
         self.assertTrue(self.icmp._is_knee(1.0, 900.0, 1.0, 10.0))   # 90x and >=150ms -> shaped
         self.assertFalse(self.icmp._is_knee(1.0, 40.0, 1.0, 10.0))   # 4x, under the 6x/150ms floor
+
+    def test_knee_verdict_attribution(self):
+        # The batch-vs-solo flip fix: a LOSS knee is a boundary control ONLY if the
+        # source reached ~the target rate AND at a DoS-grade volume (>= MIN_MBPS).
+        kv = self.icmp._knee_verdict
+        # thin-uplink flip: reached 90% of a LOW target but only ~10 Mbit/s -> self-congestion
+        self.assertEqual(kv(35.0, 8.0, 1.0, 7.0, apps=900.0, pps=1000, ambps=10.0), "saturated")
+        # genuine high-volume policer: reached 92% of target at ~620 Mbit/s -> control
+        self.assertEqual(kv(90.0, 8.0, 1.0, 7.0, apps=55000.0, pps=60000, ambps=620.0), "control")
+        # undershoot (achieved << target) -> self-congestion regardless of volume
+        self.assertEqual(kv(36.0, 6.4, 0.0, 0.8, apps=32872.0, pps=60000, ambps=376.0), "saturated")
+        # RTT shaping is credited even at low volume (active shaping is attributable)
+        self.assertEqual(kv(1.0, 900.0, 1.0, 8.0, apps=900.0, pps=1000, ambps=10.0), "control")
+        # no knee at all
+        self.assertIsNone(kv(1.0, 8.0, 1.0, 7.0, apps=900.0, pps=1000, ambps=10.0))
+
+    def test_knee_signals_split(self):
+        self.assertEqual(self.icmp._knee_signals(45.0, 10.0, 2.0, 9.0), (True, False))
+        self.assertEqual(self.icmp._knee_signals(1.0, 900.0, 1.0, 10.0), (False, True))
+        self.assertEqual(self.icmp._knee_signals(1.0, 10.0, 1.0, 9.0), (False, False))
 
     def test_fmt(self):
         self.assertEqual(self.icmp._fmt(None), "?")
