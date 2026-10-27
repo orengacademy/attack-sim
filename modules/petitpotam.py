@@ -81,7 +81,12 @@ META = {
     # deliberately does NOT match RESPONDER-PRIV-ERROR — that means the
     # attack never ran at all (no root), which must NOT read as "blocked".
     "success_regex": r"NTLMv2-SSP Hash|Skipping previously captured hash",
-    "blocked_regex": r"could not connect|timed out|Connection refused|RPC_S_ACCESS_DENIED",
+    # reset tokens (not bare Errno): a target that RSTs the EfsRpcOpenFileRaw coercion
+    # AFTER connect()+bind() succeeded raised ConnectionResetError -> matched nothing ->
+    # NO-RESULT; a reset is an active refusal of the coercion = BLOCKED. (RESPONDER-PRIV-
+    # ERROR stays OUT — a tester-side no-root failure must NOT read BLOCKED.)
+    "blocked_regex": (r"could not connect|timed out|Connection refused|RPC_S_ACCESS_DENIED|"
+                      r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"),
 }
 
 # For NAT'd targets whose only route out is via a droplet's libvirt NAT

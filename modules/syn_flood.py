@@ -102,6 +102,27 @@ def _parse_rtt_avg(text):
     return float(m.group(1)) if m else None
 
 
+def _parse_sent(text):
+    """SYNs actually transmitted, from hping3's 'N packets transmitted' line."""
+    m = re.search(r"(\d+)\s+packets transmitted", text or "")
+    return int(m.group(1)) if m else None
+
+
+# ATTRIBUTION (mirrors icmp_flood): a flood SYN-loss knee is only a TARGET control if
+# the SOURCE actually SENT at ~the target rate. hping3 sends blind — under a boundary
+# rate-limit it still transmits at the full rate (only the responses are dropped), so
+# a high achieved send-rate + high response-loss = in-path policing. But if the source
+# couldn't even SEND the rate (achieved << target), the lost responses are the sender
+# saturating its OWN uplink/CPU (self-congestion), NOT the boundary — scoring that
+# BLOCKED would credit a control the source never pushed. Require achieved >= this
+# fraction of the target send-rate before crediting a loss-delta knee as a control.
+try:
+    SATURATION_FRAC = min(1.0, max(0.0, float(os.environ.get("HARNESS_SYN_SAT_FRAC") or 0.80)))
+except (TypeError, ValueError):
+    SATURATION_FRAC = 0.80
+TARGET_PPS = 1_000_000 // max(1, FLOOD_INTERVAL_US)   # hping3 -i uX => ~this many pps
+
+
 def _hping_syn(target, port, count, interval_us, cap_seconds):
     """Counted SYN probe/flood via hping3; returns (loss%, avg_rtt_ms, raw_text).
     Counted (-c) so hping3 prints a real SYN-ACK/RST response ratio."""
@@ -152,6 +173,7 @@ def run(target, ctx):
         "hping3", "-S", "-p", str(port), "-c", str(FLOOD_COUNT),
         "-i", "u%d" % FLOOD_INTERVAL_US, target]
     out.append("## high-rate flood (engine: hping3 -S, counted fast mode)")
+    t0 = time.time()
     try:
         flood = subprocess.Popen(flood_cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True,
@@ -171,6 +193,7 @@ def run(target, ctx):
     except Exception:
         flood.kill()
         fout, _ = flood.communicate()
+    elapsed = max(0.001, time.time() - t0)
     out.append((fout or "").strip())
 
     # Privilege failure regardless of whether a loss% parsed: unprivileged hping3
@@ -185,8 +208,14 @@ def run(target, ctx):
 
     flood_loss = _parse_loss(fout)
     flood_rtt = _parse_rtt_avg(fout)
+    sent = _parse_sent(fout)
+    achieved_pps = (sent / elapsed) if sent else None
     connect_fail = 100.0 * fails / SAMPLES
     out.append(f"flood: syn_loss={flood_loss}%  avg_rtt={flood_rtt}ms  "
+               f"sent={sent} in ~{elapsed:.1f}s (~{achieved_pps:,.0f} pps achieved vs "
+               f"~{TARGET_PPS:,} pps target)  connect_fail_during_flood={connect_fail:.0f}%"
+               if achieved_pps is not None else
+               f"flood: syn_loss={flood_loss}%  avg_rtt={flood_rtt}ms  "
                f"connect_fail_during_flood={connect_fail:.0f}%")
 
     # ---- verdict -------------------------------------------------------------
@@ -206,13 +235,32 @@ def run(target, ctx):
     inflated = (base_rtt and flood_rtt and base_rtt > 0
                 and flood_rtt / base_rtt >= RTT_INFLATION and flood_rtt >= RTT_ABS_FLOOR)
 
+    # Did the SOURCE actually send at ~the target rate? Under a boundary rate-limit
+    # hping3 still transmits blind at full rate (only responses drop), so a high
+    # achieved send-rate + high loss = in-path policing. A low achieved rate means the
+    # sender saturated its OWN uplink/CPU → the lost responses are self-congestion, not
+    # the boundary (mirror icmp_flood's attribution — don't credit an unproven control).
+    reached_rate = (achieved_pps is None  # unparseable -> don't block the loss-delta path on it
+                    or achieved_pps >= SATURATION_FRAC * TARGET_PPS)
+
     # 2) boundary rate-limited the high-rate SYN stream (differential loss).
-    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
+    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and not reached_rate:
+        out.append(
+            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts, but the source only sent "
+            f"~{achieved_pps:,.0f} pps of the ~{TARGET_PPS:,} pps target — it saturated its OWN "
+            "uplink/CPU, so the lost responses are self-congestion, NOT a boundary rate-limit "
+            "(can't credit a control the source never pushed). Flood from a host with a fatter "
+            "uplink / real raw sockets, or drive MULTIPLE sources (fleet.py).")
+    elif base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
+        rate_note = (f"at ~{achieved_pps:,.0f} pps sent (~{SATURATION_FRAC:.0%}+ of target) "
+                     if achieved_pps is not None else "")
         out.append(
             f"BLOCKED-RATELIMIT: normal-rate SYNs lost {base_loss:.1f}% but the high-rate "
-            f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) — the boundary rate-limited/"
-            "dropped the SYN flood while answering ordinary SYNs (SYN-flood protection — "
-            "control held).")
+            f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) {rate_note}— the boundary "
+            "rate-limited/dropped the SYN flood while answering ordinary SYNs (SYN-flood "
+            "protection — control held). [CONFIDENCE: single-source — confirm via the appliance "
+            "log or --appliance dual-path that the SD-WAN (not the target's own backlog/SYN-cookie "
+            "handling) policed it.]")
     elif base_ok and inflated:
         out.append(
             f"BLOCKED-RATELIMIT: the SYN flood was answered but RTT inflated to "

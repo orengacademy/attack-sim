@@ -11,6 +11,7 @@ is needed. Reported as a control observation (both handshakes' outcomes).
 Destination: target:443 by default, or attacker_vps. NON-DESTRUCTIVE.
 MITRE T1573 (Encrypted Channel).
 """
+import socket
 import ssl
 from modules import _util as U
 
@@ -53,19 +54,27 @@ def _handshake(host, port, ctx, browser_like):
     try:
         with U.connect(host, port, ctx, timeout=8) as raw:
             with c.wrap_socket(raw, server_hostname=host) as t:
-                return True, f"{t.version()} / {t.cipher()[0]}"
+                return True, f"{t.version()} / {t.cipher()[0]}", "ok"
     except ssl.SSLError as e:
-        return False, f"TLS error ({e.__class__.__name__})"
-    except (OSError, Exception) as e:
-        return False, f"{e.__class__.__name__}"
+        return False, f"TLS error ({e.__class__.__name__})", "tls"
+    except socket.timeout:
+        return False, "timed out", "timeout"
+    except ConnectionResetError:
+        return False, "reset by peer", "reset"
+    except ConnectionRefusedError:
+        return False, "refused (no listener — egress reached the endpoint)", "refused"
+    except socket.gaierror:
+        return False, "DNS did not resolve", "dns"
+    except OSError as e:
+        return False, f"{e.__class__.__name__}", "other"
 
 
 def run(target, ctx):
     host = ctx.cfg("attacker_vps") or target
     port = ctx.get_port("ja3_mimicry", 443)
     out = [f"# TLS fingerprint mimicry test vs {host}:{port} (Family C)"]
-    d_ok, d_det = _handshake(host, port, ctx, browser_like=False)
-    b_ok, b_det = _handshake(host, port, ctx, browser_like=True)
+    d_ok, d_det, d_kind = _handshake(host, port, ctx, browser_like=False)
+    b_ok, b_det, b_kind = _handshake(host, port, ctx, browser_like=True)
     out.append(f"default (tool-like) ClientHello : {'OK' if d_ok else 'blocked'} — {d_det}")
     out.append(f"browser-like ClientHello        : {'OK' if b_ok else 'blocked'} — {b_det}")
     out.append("")
@@ -82,6 +91,20 @@ def run(target, ctx):
                    "evasion cannot be demonstrated here (NOT a finding). Point at a destination "
                    "behind fingerprint-based inspection, or verify against NDR.")
     else:
-        out.append("both handshakes blocked — TLS to this destination is stopped "
-                   "(inspection/egress control holding)")
+        kinds = {d_kind, b_kind}
+        if kinds <= {"refused"}:
+            # Both handshakes got a RST at connect: the SYN REACHED the endpoint (egress
+            # traversed) and it has no TLS listener — a tester-setup gap, NOT the boundary
+            # stopping TLS. Scoring it "both handshakes blocked" (BLOCKED) would credit an
+            # egress control that let the traffic through. Skip.
+            out.append("[SKIP] both handshakes were REFUSED (RST) — the endpoint has no TLS "
+                       f"listener on {port} and egress REACHED it (traversed), so this is NOT a "
+                       "boundary block. Point at a live TLS endpoint / your VPS's 443.")
+        elif "dns" in kinds:
+            out.append("[SKIP] the destination did not resolve from THIS SOURCE (resolver/DNS "
+                       "artifact, not the target's egress control) — can't assess TLS mimicry "
+                       "from here. Fix the source resolver or pass an IP.")
+        else:
+            out.append("both handshakes blocked — TLS to this destination is stopped "
+                       "(timed out / reset / filtered in transit — inspection/egress control holding)")
     return "\n".join(out)

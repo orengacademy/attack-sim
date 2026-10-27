@@ -76,7 +76,12 @@ META = {
     "blocked_regex": (
         r"STATUS_ACCESS_DENIED|Cannot exploit.*MachineAccountQuota|"
         r"timed out|Connection refused|rpc_s_access_denied|KRB_AP_ERR_SKEW|"
-        r"KDC_ERR_TGT_REVOKED|TGT has been revoked"
+        r"KDC_ERR_TGT_REVOKED|TGT has been revoked|"
+        # SPECIFIC reset tokens (not bare Errno): a boundary that RSTs the S4U2Self /
+        # smbexec-over-ADMIN$ attack leg AFTER the benign LDAP/SAMR/Kerberos legs
+        # succeeded raised ConnectionResetError -> matched nothing -> NO-RESULT; a
+        # reset is an active refusal of the attack = BLOCKED.
+        r"Connection reset|reset by peer|\[Errno 104\]|Broken pipe|BrokenPipeError|ConnectionResetError"
     ),
 }
 

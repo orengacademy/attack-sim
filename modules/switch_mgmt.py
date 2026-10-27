@@ -42,10 +42,12 @@ def run(target, ctx):
         targets = [targets]
     out = ["# switch/router management-plane exposure (Family D)"]
     exposed = []
+    tcp_states = []
     for host in targets:
         out.append(f"# device: {host}")
         for port, name in _TCP:
             st = U.tcp_state(host, port, ctx, timeout=3)
+            tcp_states.append(st)
             out.append(f"  {port}/{name} — {st}")
             if st == "open":
                 exposed.append(f"{host}:{port}/{name}")
@@ -61,6 +63,19 @@ def run(target, ctx):
         out.append(f"MGMT-EXPOSED — device management reachable across the boundary: "
                    f"{', '.join(exposed)}. [FINDING] the management plane is not isolated "
                    "to a dedicated VRF/segment (Cisco Smart Install / Winbox especially).")
+    elif any(s == "filtered" for s in tcp_states):
+        # At least one mgmt port was SILENTLY DROPPED (SYN filtered in transit) =
+        # the boundary stopped it = segmentation holding = BLOCKED.
+        out.append("no mgmt-plane exposure — device management not reachable across zones "
+                   "(mgmt ports filtered/dropped in transit — segmentation holding)")
     else:
-        out.append("no mgmt-plane exposure — device management not reachable across zones")
+        # Nothing open and nothing filtered: every probe was REFUSED (RST — the SYN
+        # traversed the boundary and reached a CLOSED port) / unreachable / unresolved.
+        # That is SERVICE ABSENT (closed ports, or the host isn't a managed device),
+        # NOT a boundary block. With ports:[] the engine's recon NO-SERVICE gate can't
+        # run, so self-declare [NO-SERVICE] — otherwise a closed/non-device target is a
+        # FALSE BLOCKED crediting segmentation that was never exercised.
+        out.append("[NO-SERVICE] management plane NOT exposed, but every probed port was refused "
+                   "(RST) / unreachable / unresolved — the mgmt ports are closed or this host "
+                   "is not a managed network device (service absent), NOT a boundary block.")
     return "\n".join(out)

@@ -41,10 +41,12 @@ def run(target, ctx):
     out = ["# reverse / server-initiated egress test (Family D, B->A/out)",
            f"# run from a DC foothold; source bind = {ctx.source_ip or 'OS default route'}"]
     open_ports = []
+    states = []
     if vps:
         out.append(f"# destination: attacker_vps {vps}")
         for p in _EGRESS_PORTS:
             st = U.tcp_state(vps, p, ctx, timeout=5)
+            states.append(st)
             out.append(f"  {vps}:{p}/tcp — {st}")
             if st == "open":
                 open_ports.append(f"{p}->{vps}")
@@ -53,6 +55,7 @@ def run(target, ctx):
         for host in _PUBLIC:
             for p in (443, 80, 53):
                 st = U.tcp_state(host, p, ctx, timeout=5)
+                states.append(st)
                 out.append(f"  {host}:{p}/tcp — {st}")
                 if st == "open":
                     open_ports.append(f"{p}->{host}")
@@ -61,7 +64,18 @@ def run(target, ctx):
         out.append(f"EGRESS-OPEN — server-initiated outbound permitted on: "
                    f"{', '.join(open_ports)}. [FINDING] a DC host can beacon / reverse-shell "
                    "out; server-VLAN egress is not default-denied (the weakest direction).")
+    elif states and all(s == "unresolved" for s in states):
+        out.append("[SKIP] destination(s) did not resolve from THIS SOURCE (resolver/DNS "
+                   "artifact, not the DC egress control) — fix the source resolver or configure "
+                   "an IP. This is NOT 'egress blocked'.")
+    elif "filtered" not in states and "refused" in states:
+        # A RST came back = the SYN REACHED the destination (egress TRAVERSED) and the
+        # port is just closed there — the egress path is open, the endpoint isn't
+        # listening. NOT a default-deny block (that would silently DROP = "filtered").
+        out.append("[SKIP] every destination REFUSED (RST) — server-initiated egress TRAVERSED "
+                   "to the endpoint(s) (the path is open; the ports are simply closed there), so "
+                   "this is NOT 'egress blocked'. Point at a listening endpoint to confirm a tunnel.")
     else:
         out.append("server egress blocked — no server-initiated outbound got through "
-                   "(default-deny on the DC egress path holding)")
+                   "(dropped/filtered in transit — default-deny on the DC egress path holding)")
     return "\n".join(out)
