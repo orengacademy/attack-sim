@@ -537,7 +537,8 @@ def run(target, ctx):
                    f"polices (baseline loss {_fmt(base_loss, 1)}%, rtt {_fmt(base_rtt, 1)}ms)")
         knee = None
         saturated = None       # a loss knee the SOURCE caused by saturating its own uplink
-        max_pps = max_mbps = 0.0
+        max_pps = max_mbps = 0.0        # highest rate the source PUSHED (any step)
+        clean_pps = clean_mbps = 0.0    # highest rate actually DELIVERED clean (no knee)
         for pps in RAMP_PPS:
             loss, rtt, snt, raw = _hping_flood_at(target, pps, FLOOD_SIZE, STEP_SECONDS)
             # hping3's RAW socket can be unavailable (no cap_net_raw / no usable sudo, or a
@@ -564,6 +565,13 @@ def run(target, ctx):
             elif verdict == "saturated":
                 saturated = {"pps": apps, "mbps": ambps, "target": pps, "loss": loss, "rtt": rtt}
                 break
+            else:
+                # step delivered clean (no knee) -> this is a rate the flood was actually
+                # DELIVERED at. Track it SEPARATELY from max_pps (which includes a lossy
+                # knee step): reporting max as "delivered up to ..." when the knee step is
+                # the max contradicts the very loss we attribute to that step.
+                clean_pps = max(clean_pps, apps or 0.0)
+                clean_mbps = max(clean_mbps, ambps or 0.0)
 
         if not hping_privfail:
             if knee and knee["loss"] is not None and knee["loss"] >= TOTAL_LOSS_PCT:
@@ -595,16 +603,23 @@ def run(target, ctx):
                 # self-congestion on the tester's uplink/CPU, NOT a boundary rate-limit —
                 # so the flood was DELIVERED as far as this source could push: a finding,
                 # not a block (and not the vantage-dependent false BLOCKED this would be).
+                if clean_pps > 0:
+                    delivered = (" The flood WAS delivered clean up to ~%s pps / ~%s Mbit/s "
+                                 "below that ceiling." % (_fmt(clean_pps), _fmt(clean_mbps)))
+                else:
+                    delivered = (" No clean delivery rate was established — even the lowest ramp "
+                                 "step hit the source's ceiling.")
                 out.append(
-                    "PASS: the ICMP flood was DELIVERED up to the most this SOURCE could push "
-                    "(~%s pps / ~%s Mbit/s) — the loss (%s%% vs %s%% baseline) appeared only at the "
-                    "source's OWN ceiling (achieved ~%s pps / ~%s Mbit/s of the ~%s pps target), so it "
-                    "is self-congestion on the tester's uplink/CPU, NOT a target rate-limit. No anti-DoS "
+                    "PASS: no target rate-limit was proven — the loss (%s%% vs %s%% baseline) appeared "
+                    "only where the flood hit the TESTER's OWN ceiling (~%s pps / ~%s Mbit/s: achieved "
+                    "< %d%% of the ~%s pps target and/or below the %d Mbit/s DoS-volume floor), so it is "
+                    "self-congestion on the source's uplink/CPU, NOT a boundary rate-limit.%s No anti-DoS "
                     "policing was proven at a DoS-grade rate the source actually reached. To measure a "
                     "real threshold, flood from a host with a fatter uplink / real raw sockets, or drive "
                     "MULTIPLE sources (fleet.py)."
-                    % (_fmt(max_pps), _fmt(max_mbps), _fmt(saturated["loss"], 1), _fmt(base_loss, 1),
-                       _fmt(saturated["pps"]), _fmt(saturated["mbps"]), f"{saturated['target']:,}")
+                    % (_fmt(saturated["loss"], 1), _fmt(base_loss, 1), _fmt(saturated["pps"]),
+                       _fmt(saturated["mbps"]), int(SATURATION_FRAC * 100), f"{saturated['target']:,}",
+                       MIN_MBPS, delivered)
                     + _lowconf(base_loss))
             elif MIN_MBPS and max_mbps < MIN_MBPS:
                 # Delivered with no policing knee, but below DoS-grade volume. DECISIVE: the
