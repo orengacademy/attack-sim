@@ -268,12 +268,12 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertTrue(core._match(out, m.META["success_regex"]),
                         "a self-congestion knee after a clean step is PASS")
         self.assertFalse(core._match(out, m.META["blocked_regex"]))
-        # the DELIVERED-CLEAN ceiling is the earlier 1,000 pps step ...
-        self.assertIn("delivered clean up to ~1,000 pps", out)
+        # the DELIVERED-CLEAN rate is the earlier 1,000 pps step ...
+        self.assertIn("delivered clean (up to ~1,000 pps", out)
         # ... DISTINCT from the self-congestion ceiling (~2,000 pps) where the loss appeared
         self.assertIn("~2,000 pps", out)
         # regression guard: the delivered figure must NOT be the lossy knee rate (old bug)
-        self.assertNotIn("delivered clean up to ~2,000 pps", out)
+        self.assertNotIn("delivered clean (up to ~2,000 pps", out)
 
     def test_total_loss_is_dos_detected_blocked(self):
         # The "DOS detected" case: a WORKING baseline then ~100% loss of the flood at a
