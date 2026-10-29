@@ -241,6 +241,40 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
                         "a partial sub-DoS-volume loss knee is self-congestion -> PASS, not BLOCKED")
         self.assertFalse(core._match(out, m.META["blocked_regex"]))
 
+    def test_saturated_pass_does_not_claim_delivery_at_loss_rate(self):
+        # INCONSISTENCY FIX: when a LATER ramp step self-congests (saturated), the PASS
+        # verdict reported max_pps as "delivered up to the most this source could push" —
+        # but max_pps INCLUDED the lossy knee step, so it claimed the flood was delivered
+        # at the very rate it simultaneously said the loss appeared at (a self-contradiction
+        # in one sentence). The delivered-clean ceiling must be a DISTINCT, lower number.
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+
+        def _hp(t, pps, sz, sec):
+            if pps <= 1000:    # low step delivers CLEAN: apps=1000 pps, 0% loss
+                return (0.0, 1.0, 1000 * sec,
+                        f"{1000*sec} packets transmitted, {1000*sec} received, 0% packet loss")
+            # higher step: source pushes only ~2000 pps of the 5000 target (< 80%) at 45%
+            # loss -> self-congestion (saturated), NOT a control
+            return (45.0, 2.0, 2000 * sec,
+                    f"{2000*sec} packets transmitted, {int(2000*sec*0.55)} received, 45% packet loss")
+        m._hping_flood_at = _hp
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertTrue(core._match(out, m.META["success_regex"]),
+                        "a self-congestion knee after a clean step is PASS")
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        # the DELIVERED-CLEAN ceiling is the earlier 1,000 pps step ...
+        self.assertIn("delivered clean up to ~1,000 pps", out)
+        # ... DISTINCT from the self-congestion ceiling (~2,000 pps) where the loss appeared
+        self.assertIn("~2,000 pps", out)
+        # regression guard: the delivered figure must NOT be the lossy knee rate (old bug)
+        self.assertNotIn("delivered clean up to ~2,000 pps", out)
+
     def test_total_loss_is_dos_detected_blocked(self):
         # The "DOS detected" case: a WORKING baseline then ~100% loss of the flood at a
         # LOW volume (the source pushed only ~8 Mbit/s — no uplink saturates there, and
