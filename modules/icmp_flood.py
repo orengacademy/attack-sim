@@ -604,8 +604,11 @@ def run(target, ctx):
                 # so the flood was DELIVERED as far as this source could push: a finding,
                 # not a block (and not the vantage-dependent false BLOCKED this would be).
                 if clean_pps > 0:
-                    delivered = (" The flood WAS delivered clean up to ~%s pps / ~%s Mbit/s "
-                                 "below that ceiling." % (_fmt(clean_pps), _fmt(clean_mbps)))
+                    # NB: refer to the earlier LOWER-TARGET ramp steps, NOT an achieved-rate
+                    # ordering — under congestion collapse a lower-target step can achieve a
+                    # HIGHER pps than the knee step, so "below that ceiling" would be false.
+                    delivered = (" At the earlier, lower-rate ramp steps the flood WAS delivered "
+                                 "clean (up to ~%s pps / ~%s Mbit/s)." % (_fmt(clean_pps), _fmt(clean_mbps)))
                 else:
                     delivered = (" No clean delivery rate was established — even the lowest ramp "
                                  "step hit the source's ceiling.")
