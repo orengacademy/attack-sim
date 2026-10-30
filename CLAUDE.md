@@ -120,18 +120,24 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     absolute — the floor stops LAN queueing being a false BLOCKED) → BLOCKED
     (policed). `syn_flood` also flags DoS impact if real connects fail during the
     flood. Decisive in both a bare lab (SUCCESS) and behind a policing SD-WAN (BLOCKED).
-    **Loss-knee attribution — SD-WANs are tuned DIFFERENTLY per site (v1.9.87):** a
-    loss knee is a confident **BLOCKED** only when it's a near-TOTAL drop (blackhole/ban,
-    `BLOCKED-DOS-DETECTED`, ≥ `HARNESS_*_TOTAL_LOSS_PCT`), RTT-shaped, or the source
-    provably **reached a DoS-grade volume** (≥ `HARNESS_*_MIN_MBPS`, default 50). A loss
-    knee at a **LOW** volume the source did not provably reach is **INCONCLUSIVE**, not a
-    PASS — from a single host a low-threshold policer (e.g. an SD-WAN that DENYs a
-    2,100-pps flood at ~24 Mbit/s) and the tester's **own uplink/CPU** ceiling are
-    indistinguishable. The field false-PASS was exactly this: the sub-DoS demotion scored
-    a real DENY as SUCCESS. To get a definitive verdict per site, **declare the tester
-    uplink** with `HARNESS_ICMP_UPLINK_MBPS` / `HARNESS_SYN_UPLINK_MBPS` — then a knee at a
-    bandwidth with clear headroom below the uplink can't be the uplink and scores BLOCKED.
-    Both DoS twins share this attribution (`_knee_verdict` returns control/inconclusive/None).
+    **Loss-knee attribution — did the host PUT THE RATE ON THE WIRE? (v1.9.88):** the
+    discriminator is whether hping3 actually TRANSMITTED ~the offered rate (it sends blind,
+    so a boundary rate-limit shows as high loss while the "packets transmitted" count stays
+    full). If the source **reached** the rate (achieved ≥ `SATURATION_FRAC`×target) and the
+    replies were lost, the packets left this NIC and were dropped **downstream** → **BLOCKED**
+    by DEFAULT — even at a LOW volume (the field's 2,100-pps / ~24 Mbit/s DENY now reads
+    BLOCKED with no tuning; a single host doesn't saturate a remote target at these rates, so
+    a drop is the boundary). Also BLOCKED: near-TOTAL loss (`BLOCKED-DOS-DETECTED`, ≥
+    `HARNESS_*_TOTAL_LOSS_PCT`) and RTT shaping. **INCONCLUSIVE** only when the host could NOT
+    transmit the rate (achieved ≪ target = a LOCAL CPU/NIC/raw-socket send bottleneck) **or**
+    a thin tester **declares** its uplink (`HARNESS_ICMP_UPLINK_MBPS` / `HARNESS_SYN_UPLINK_MBPS`)
+    and the loss-onset bandwidth is at/above that uplink's usable headroom (its OWN uplink
+    saturating). A low-volume BLOCKED (< `HARNESS_*_MIN_MBPS`, default 50) carries an
+    ASSUMES-uplink caveat so a thin-link tester knows to declare its uplink to flip it to
+    INCONCLUSIVE. **History:** v1.9.81 added a MIN_MBPS floor that DEMOTED sub-DoS knees to
+    PASS → that buried a real DENY as SUCCESS (the field bug); v1.9.87 made them INCONCLUSIVE;
+    v1.9.88 made them BLOCKED-by-default via the reached/transmit test (floor is now only a
+    caveat trigger). Both twins share `_knee_verdict`/`knee_is_control` (control/inconclusive/None).
     **`icmp_flood` attribution (v1.9.66):** `BLOCKED-RATELIMIT` comes ONLY from the
     `hping3` raw-socket rate ramp (which finds the real send-rate knee) or `--appliance`
     dual-path. The pure-stdlib **datagram fallback** (no raw socket — e.g. WSL1) measures
