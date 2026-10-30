@@ -131,13 +131,17 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     `HARNESS_SYN_UPLINK_MBPS`): a knee whose bandwidth is at/above that uplink's usable headroom
     is its OWN uplink saturating → INCONCLUSIVE (a TOTAL loss stays BLOCKED regardless). A
     low-volume BLOCKED (< `HARNESS_*_MIN_MBPS`, default 50, no uplink declared) carries an
-    ASSUMES-uplink caveat pointing at that knob. **Two false-SUCCESS gaps also closed:** the
+    ASSUMES-uplink caveat pointing at that knob. **Three false-SUCCESS gaps also closed:** (1) the
     pure-Python **datagram fallback** (used when hping3's raw socket is unavailable) now scores
     `BLOCKED-DOS-DETECTED` on a near-TOTAL during-flood loss (a kernel ICMP-reply rate-limit
     throttles to a RATE, it never drops ALL replies; partial datagram reply-loss stays a
-    non-attributable PASS+caveat); and an hping3 ramp that yields **no parseable stats on any
+    non-attributable PASS+caveat); (2) an hping3 ramp that yields **no parseable stats on any
     step** (timed out / output wiped by a mid-send ban) falls through to that fallback instead
-    of a false PASS. **History:** v1.9.81 MIN_MBPS floor demoted sub-DoS knees to PASS (buried
+    of a false PASS; (3) **EPERM at the sender** (`sendto: operation not permitted` from a local
+    egress firewall / host-based SD-WAN agent / in-path `OUTPUT -j DROP`) is only a raw-socket
+    PRIVILEGE failure on the FIRST step — AFTER a clean step already used the raw socket, a later
+    EPERM is the egress DENYING the flood → `BLOCKED-EGRESS-DENIED` (was misread as a priv
+    failure → fallback → false PASS; reproduced in a netns with an iptables policer). **History:** v1.9.81 MIN_MBPS floor demoted sub-DoS knees to PASS (buried
     the DENY); v1.9.87 → INCONCLUSIVE; v1.9.88 → BLOCKED for a *reached* knee (non-reached
     stayed INCONCLUSIVE, fallback still always PASSed); **v1.9.89 → decisive BLOCKED for ANY
     knee + fallback/parse gaps closed.** Both twins share `_knee_verdict`/`knee_is_control`.

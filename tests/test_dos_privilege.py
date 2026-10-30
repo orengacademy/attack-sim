@@ -287,6 +287,36 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
                          "a knee at/above the declared thin uplink is self-congestion, not BLOCKED")
         self.assertFalse(core._match(out, m.META["success_regex"]))
 
+    def test_egress_eperm_after_clean_step_is_blocked_not_fallback(self):
+        # REPRODUCED IN THE FIELD (netns + iptables OUTPUT -j DROP): a clean lower step uses the
+        # raw socket fine, then a higher step is refused with EPERM at the SENDER (a local egress
+        # firewall / host-based SD-WAN agent / in-path OUTPUT DROP). The old code read the
+        # "operation not permitted" as a RAW-SOCKET PRIVILEGE failure, fell back to the datagram
+        # flood, and printed a false PASS. It must now read BLOCKED-EGRESS-DENIED — the control
+        # denied the flood, the socket demonstrably worked at the lower rate.
+        m = _load_module("icmp_flood")
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+
+        def _hp(t, pps, sz, sec):
+            if pps <= 1000:   # clean step: raw socket works
+                return (1.0, 8.0, 1000 * sec,
+                        f"{1000*sec} packets transmitted, {int(1000*sec*0.99)} received, 1% packet loss")
+            # higher step: egress refuses to SEND (EPERM) = the control denied the flood
+            return (None, None, None, "[send_ip] sendto: Operation not permitted")
+        m._hping_flood_at = _hp
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertIn("BLOCKED-EGRESS-DENIED", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]))
+        self.assertFalse(core._match(out, m.META["success_regex"]),
+                         "an egress EPERM after a clean step is the control, not a false PASS")
+        self.assertNotIn("falling back to the Python", out,
+                         "the raw socket worked at the lower step — do NOT misread EPERM as a priv failure")
+
     def test_not_reached_knee_is_blocked_with_threshold_note(self):
         # A clean low step then a higher step the source could NOT fully transmit (achieved
         # ~2000 pps of a 5000 target) that was dropped -> DECISIVE BLOCKED by default (no more
