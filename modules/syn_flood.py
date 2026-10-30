@@ -250,13 +250,6 @@ def run(target, ctx):
     inflated = (base_rtt and flood_rtt and base_rtt > 0
                 and flood_rtt / base_rtt >= RTT_INFLATION and flood_rtt >= RTT_ABS_FLOOR)
 
-    # Did the SOURCE actually send at ~the target rate? Under a boundary rate-limit
-    # hping3 still transmits blind at full rate (only responses drop), so a high
-    # achieved send-rate + high loss = in-path policing. A low achieved rate means the
-    # sender saturated its OWN uplink/CPU → the lost responses are self-congestion, not
-    # the boundary (mirror icmp_flood's attribution — don't credit an unproven control).
-    reached_rate = (achieved_pps is None  # unparseable -> don't block the loss-delta path on it
-                    or achieved_pps >= SATURATION_FRAC * TARGET_PPS)
     # A near-TOTAL SYN-loss is an anti-DoS blackhole/ban that dropped the WHOLE flood (the
     # "DOS detected" signature), NOT self-congestion — a saturated uplink still gets SOME
     # SYN-ACKs back. When an anti-DoS bans the source mid-flood the achieved rate ALSO
@@ -268,16 +261,23 @@ def run(target, ctx):
         TOTAL_LOSS_PCT = 99.0
     total_loss = flood_loss is not None and flood_loss >= TOTAL_LOSS_PCT
 
-    # Bandwidth attribution (mirror icmp_flood): a loss-delta knee is a confident TARGET
-    # control only if the whole flood was blackholed (total_loss), OR a declared uplink has
-    # clear HEADROOM below the loss-onset bandwidth (loss can't be the uplink -> downstream),
-    # OR the source provably REACHED a DoS-grade send-rate. Everything else is the ambiguous
-    # low-volume case (a low-threshold policer vs the source's own uplink/CPU) -> INCONCLUSIVE.
+    # Attribution (mirror icmp_flood): the discriminator is whether the host PUT THE OFFERED
+    # RATE ON THE WIRE. If hping3 transmitted ~the target rate (reached_rate) and the SYN-ACKs
+    # were lost, the SYNs LEFT this NIC and were dropped downstream -> the TARGET policed them
+    # (BLOCKED) — by DEFAULT, even at a LOW volume (a single host doesn't saturate a remote
+    # target at these rates). If the host could NOT transmit the rate (achieved << target) the
+    # loss is a LOCAL send bottleneck -> INCONCLUSIVE. A thin-uplink tester overrides the
+    # default by DECLARING HARNESS_SYN_UPLINK_MBPS: a knee whose bandwidth is at/above the
+    # uplink's usable headroom is then attributed to that uplink -> INCONCLUSIVE.
     achieved_mbps = (achieved_pps * SYN_WIRE_BYTES * 8 / 1e6) if achieved_pps else None
-    dos_grade = (not MIN_MBPS) or (achieved_mbps is not None and achieved_mbps >= MIN_MBPS)
-    uplink_headroom = bool(UPLINK_MBPS and achieved_mbps is not None
-                           and achieved_mbps < SATURATION_FRAC * UPLINK_MBPS)
-    knee_is_control = total_loss or uplink_headroom or (reached_rate and dos_grade)
+    uplink_saturated = bool(UPLINK_MBPS and achieved_mbps is not None
+                            and achieved_mbps >= SATURATION_FRAC * UPLINK_MBPS)
+    # reached_rate here means the host actually transmitted ~the target rate (achieved parsed
+    # and >= SAT*target); an UNPARSED rate can't prove transmission, so it is NOT reached.
+    reached_rate = bool(achieved_pps is not None and achieved_pps >= SATURATION_FRAC * TARGET_PPS)
+    low_vol = bool(MIN_MBPS and achieved_mbps is not None and achieved_mbps < MIN_MBPS
+                   and not UPLINK_MBPS)
+    knee_is_control = total_loss or (not uplink_saturated and reached_rate)
     if achieved_pps is not None:
         achieved_str = f"~{achieved_pps:,.0f} pps / ~{achieved_mbps:,.0f} Mbit/s"
     else:
@@ -286,24 +286,28 @@ def run(target, ctx):
     # 2) boundary rate-limited the high-rate SYN stream (differential loss).
     if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and knee_is_control:
         rate_note = (f"at {achieved_str} sent " if achieved_pps is not None else "")
+        assume_note = (("  [ASSUMES the tester uplink exceeds this ~%s Mbit/s — the host put this rate "
+                        "on the wire and the SYN-ACKs were dropped downstream. If THIS host's uplink is "
+                        "near this bandwidth the loss could be your OWN uplink; set HARNESS_SYN_UPLINK_MBPS"
+                        "=<your uplink Mbit/s> to confirm.]" % f"{achieved_mbps:,.0f}") if low_vol else "")
         out.append(
             f"BLOCKED-RATELIMIT: normal-rate SYNs lost {base_loss:.1f}% but the high-rate "
-            f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) {rate_note}— the boundary "
-            "rate-limited/dropped the SYN flood while answering ordinary SYNs (SYN-flood "
-            "protection — control held). [CONFIDENCE: single-source — confirm via the appliance "
-            "log or --appliance dual-path that the SD-WAN (not the target's own backlog/SYN-cookie "
-            "handling) policed it.]")
+            f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) {rate_note}— the host transmitted "
+            "this rate and the SYN-ACKs were dropped downstream (SYN-flood protection — control "
+            "held). [CONFIDENCE: single-source — confirm via the appliance log or --appliance "
+            "dual-path that the SD-WAN (not the target's own backlog/SYN-cookie handling) policed "
+            "it.]" + assume_note)
     elif base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
-        uplink_note = ((f" The declared source uplink ({UPLINK_MBPS} Mbit/s) had no clear headroom "
-                        "below this volume, so the loss can't be pinned on the target.")
-                       if UPLINK_MBPS else
-                       " No source uplink is declared (HARNESS_SYN_UPLINK_MBPS), so the uplink "
-                       "can't be ruled out as the bottleneck.")
+        if uplink_saturated:
+            uplink_note = (f"the loss appeared at {achieved_str}, AT/ABOVE the declared uplink's "
+                           f"usable headroom ({UPLINK_MBPS} Mbit/s) — the tester's OWN uplink "
+                           "saturating, not the target")
+        else:
+            uplink_note = (f"the host could NOT transmit the target rate (achieved {achieved_str} of "
+                           f"~{TARGET_PPS:,} pps) — a LOCAL send bottleneck, so the target was never "
+                           "tested at that rate")
         out.append(
-            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts at {achieved_str} (target "
-            f"~{TARGET_PPS:,} pps), but from a SINGLE source this can't be attributed: an SD-WAN "
-            "tuned to police at a LOW pps/bandwidth and the tester's OWN uplink/CPU ceiling look "
-            f"identical here (the source did not clearly reach a DoS-grade rate).{uplink_note} "
+            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts but {uplink_note}. "
             "Resolve it (SD-WANs are tuned differently per site): declare HARNESS_SYN_UPLINK_MBPS="
             "<Mbit/s> (a knee with headroom below it then scores BLOCKED), run --appliance dual-path, "
             "read the appliance log, or flood from a host with a known-fat uplink / more sources "

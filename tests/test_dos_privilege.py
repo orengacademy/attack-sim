@@ -131,21 +131,28 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             return m.run("203.0.113.9", _Ctx())
 
     def test_syn_flood_verdict_branches_render(self):
-        # REGRESSION + attribution parity with icmp_flood: a sub-DoS loss knee from one
-        # source is INCONCLUSIVE (ambiguous: low policer vs own uplink); a DECLARED uplink
-        # with headroom, a TOTAL loss, or RTT shaping makes it a confident BLOCKED; a clean
-        # low-loss flood is PASS. (sent=100k over 5s => ~20k pps / ~6.4 Mbit/s.)
+        # Attribution parity with icmp_flood: a REACHED-rate loss knee (host put the rate on
+        # the wire, SYN-ACKs dropped downstream) is BLOCKED by DEFAULT even at low volume; a
+        # THIN declared uplink demotes it to INCONCLUSIVE; a host that could NOT transmit the
+        # rate is INCONCLUSIVE; RTT shaping and TOTAL loss are BLOCKED; a clean flood is PASS.
+        # (sent=100k over 5s => ~20k pps / ~6.4 Mbit/s, reached vs the 5000 pps target.)
         m = _load_module("syn_flood")
         INFL, FLOOR = m.RTT_INFLATION, m.RTT_ABS_FLOOR
-        # loss-delta at a LOW volume, no declared uplink -> INCONCLUSIVE (not a false BLOCKED)
+        # reached-rate loss knee, no declared uplink -> BLOCKED by default (+ uplink caveat)
         out = self._run_syn(0.0, 10.0, 40.0, 11.0)
-        self.assertIn("[INCONCLUSIVE]", out)
-        self.assertFalse(core._match(out, m.META["blocked_regex"]))
-        self.assertFalse(core._match(out, m.META["success_regex"]))
-        # SAME knee, but a declared uplink (1000 Mbit/s) has headroom below ~6.4 Mbit/s -> BLOCKED
-        out = self._run_syn(0.0, 10.0, 40.0, 11.0, uplink=1000)
         self.assertIn("BLOCKED-RATELIMIT", out)
         self.assertTrue(core._match(out, m.META["blocked_regex"]))
+        self.assertIn("ASSUMES the tester uplink", out)
+        # SAME knee, but a THIN declared uplink (5 Mbit/s) is saturated by ~6.4 Mbit/s ->
+        # the tester's own uplink, not the target -> INCONCLUSIVE
+        out = self._run_syn(0.0, 10.0, 40.0, 11.0, uplink=5)
+        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        # host could NOT transmit the rate (sent=5000 over 5s => ~1000 pps << 5000) -> local
+        # send bottleneck -> INCONCLUSIVE
+        out = self._run_syn(0.0, 10.0, 40.0, 11.0, sent=5000)
+        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
         # RTT-inflation BLOCKED (delta small, RTT ballooned past floor) — active shaping
         out = self._run_syn(0.0, 10.0, 5.0, 10.0 * INFL + FLOOR)
         self.assertIn("BLOCKED-RATELIMIT", out)
@@ -233,16 +240,15 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertTrue(core._match(out, m.META["blocked_regex"]),
                         "a real DoS-grade policed flood should still score BLOCKED")
 
-    def test_sub_dos_volume_loss_knee_is_inconclusive(self):
-        # The FIELD false-PASS: a differently-tuned SD-WAN DENIED a 2,100-pps flood at a
-        # LOW volume (~24 Mbit/s), but the script scored PASS because the loss was below
-        # the 50 Mbit/s DoS floor ("self-congestion"). From ONE source a low-threshold
-        # policer and the tester's own uplink/CPU are INDISTINGUISHABLE, so a partial loss
-        # knee at a sub-DoS volume must be INCONCLUSIVE — NOT a false PASS (buries a real
-        # DENY) and NOT a false BLOCKED (credits an unproven control). Here 45% loss at
-        # target 1000 pps (~11 Mbit/s over 4s), below the DoS floor, no declared uplink.
+    def test_reached_low_volume_knee_is_blocked_by_default(self):
+        # The FIELD false-PASS, now fixed: a differently-tuned SD-WAN DENIED a 2,100-pps
+        # flood at a LOW volume (~24 Mbit/s). The source TRANSMITTED that rate (reached) and
+        # the replies were dropped downstream, so by DEFAULT (no uplink declared) it reads
+        # BLOCKED — a single host doesn't saturate a remote target at these rates, so a drop
+        # is the boundary. The low-volume BLOCKED carries an ASSUMES-uplink caveat.
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+        # source transmits ~the target rate (reached) at every step; 45% loss (partial, low vol)
         m._hping_flood_at = lambda t, pps, sz, sec: (
             45.0, 2.0, pps * sec,
             f"{pps*sec} packets transmitted, {int(pps*sec*0.55)} received, 45% packet loss")
@@ -252,32 +258,33 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]),
+                        "a reached-rate loss knee is downstream -> BLOCKED by default (the field DENY)")
         self.assertFalse(core._match(out, m.META["success_regex"]),
-                         "a sub-DoS loss knee must NOT be a confident PASS (the field false-PASS)")
-        self.assertFalse(core._match(out, m.META["blocked_regex"]),
-                         "...and must NOT be a false BLOCKED either (unproven control)")
+                         "...and never the old false PASS")
+        self.assertIn("ASSUMES the tester uplink", out,
+                      "a low-volume BLOCKED must carry the declare-your-uplink caveat")
 
-    def test_declared_uplink_resolves_low_knee_to_blocked(self):
-        # SAME low-volume loss knee as above, but the operator DECLARES the tester uplink
-        # (HARNESS_ICMP_UPLINK_MBPS) and the loss appeared at ~11 Mbit/s — far below it, so
-        # the uplink has clear headroom and the loss MUST be downstream = the target policed
-        # it = BLOCKED. This is how an operator pins a low-threshold SD-WAN per site.
-        import os as _os
+    def test_thin_uplink_declared_demotes_reached_knee_to_inconclusive(self):
+        # SAME reached low-volume knee, but a THIN tester declares its real uplink
+        # (HARNESS_ICMP_UPLINK_MBPS=10). The ~11 Mbit/s loss is AT/ABOVE that uplink's usable
+        # headroom, so it's the tester's OWN uplink saturating, not the target -> INCONCLUSIVE,
+        # never a false BLOCKED. This is the thin-link escape hatch.
         m = _load_module("icmp_flood")
-        m.UPLINK_MBPS = 1000       # declare a fat uplink (as HARNESS_ICMP_UPLINK_MBPS would)
+        m.UPLINK_MBPS = 10         # declare a thin uplink (as HARNESS_ICMP_UPLINK_MBPS would)
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
         m._hping_flood_at = lambda t, pps, sz, sec: (
-            95.0, 2.0, pps * sec,
-            f"{pps*sec} packets transmitted, {int(pps*sec*0.05)} received, 95% packet loss")
+            45.0, 2.0, pps * sec,                               # ~11 Mbit/s at target 1000 pps
+            f"{pps*sec} packets transmitted, {int(pps*sec*0.55)} received, 45% packet loss")
         real_which = m.shutil.which
         m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
         try:
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertTrue(core._match(out, m.META["blocked_regex"]),
-                        "a declared-uplink knee with headroom below it is the target policing -> BLOCKED")
+        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertFalse(core._match(out, m.META["blocked_regex"]),
+                         "a knee at/above the declared thin uplink is self-congestion, not BLOCKED")
         self.assertFalse(core._match(out, m.META["success_regex"]))
 
     def test_inconclusive_knee_reports_clean_rate_distinctly(self):

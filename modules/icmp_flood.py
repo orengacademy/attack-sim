@@ -13,23 +13,23 @@ host as a **differential**:
                  HARNESS_ICMP_RAMP pps x near-MTU payload) and find the KNEE: the
                  lowest rate where delivery drops / RTT inflates vs baseline.
 
-Verdict:
+Verdict (the discriminator is whether the host PUT THE OFFERED RATE ON THE WIRE):
   * a ramp step is ENTIRELY dropped (blackhole/ban), OR dropped/RTT-shaped at a rate
-    the source provably reached (DoS-grade volume, RTT shaping, or — with the uplink
-    declared — a rate with headroom below it) -> the boundary polices = BLOCKED
+    the source PROVABLY TRANSMITTED (achieved ~ the target rate) -> the packets left
+    this NIC and were dropped downstream = the boundary polices = BLOCKED
     (BLOCKED-DOS-DETECTED / BLOCKED-RATELIMIT), with the MEASURED threshold reported.
-    Vendor anti-DoS thresholds (Sangfor NGAF / Forcepoint NGFW) aren't published and
-    are per-config, so we MEASURE rather than guess.
+    This reads BLOCKED even at a LOW volume (the field's 2,100-pps / ~24 Mbit/s DENY),
+    since a single host doesn't saturate a remote target at these rates — a drop is
+    the boundary. Vendor anti-DoS thresholds (Sangfor NGAF / Forcepoint NGFW) aren't
+    published, so we MEASURE rather than guess. A low-volume BLOCKED carries a caveat
+    to declare the uplink if THIS host's own uplink might be the choke.
   * every ramp step is delivered -> NO policing up to the most this source could
     push = SUCCESS/finding; the achieved ceiling is reported so a below-threshold
-    PASS isn't mistaken for "no policing at any volume" (a single host often can't
-    reach the threshold — use fleet.py / a fatter link to push higher).
-  * a loss knee appears at a LOW volume the source did NOT provably reach -> a single
-    source CANNOT tell a low-threshold policer (SD-WANs are tuned differently per
-    site) from its OWN uplink/CPU ceiling -> INCONCLUSIVE (NOT a false PASS that
-    buries a real DENY, NOT a false BLOCKED that credits an unproven control).
-    Declare HARNESS_ICMP_UPLINK_MBPS, or use --appliance / the appliance log, to
-    resolve it. (This mirrors syn_flood's self-congestion handling.)
+    PASS isn't mistaken for "no policing at any volume".
+  * the host could NOT transmit the target rate (achieved << target) -> a LOCAL
+    CPU/NIC/raw-socket send bottleneck; OR a DECLARED uplink (HARNESS_ICMP_UPLINK_MBPS)
+    is itself saturated at the loss-onset bandwidth -> the loss is the tester's OWN
+    send/uplink ceiling, not the target -> INCONCLUSIVE. (Mirrors syn_flood.)
   * baseline ICMP 100% lost but the host is up on TCP -> ICMP filtered entirely =
     BLOCKED-ICMP-FILTERED; can't confirm the host is up -> INCONCLUSIVE.
 
@@ -268,43 +268,47 @@ def _is_knee(loss, rtt, base_loss, base_rtt):
 
 
 def _knee_verdict(loss, rtt, base_loss, base_rtt, apps, pps, ambps):
-    """Classify a ramp step's knee and ATTRIBUTE it — pure, so it's unit-testable:
-      * None           — no knee (delivered clean at this rate).
-      * "control"      — attributable to an in-path TARGET control => BLOCKED:
-                          (a) near-TOTAL loss (blackhole / anti-DoS ban — a saturated
-                              uplink still passes SOME; see TOTAL_LOSS_PCT), OR
-                          (b) the operator-DECLARED uplink has clear HEADROOM below the
-                              loss-onset bandwidth (ambps < SATURATION_FRAC x UPLINK_MBPS),
-                              so the loss can't be the uplink -> it is downstream, OR
-                          (c) the source REACHED ~the target rate AND either RTT shaping
-                              fired (volume-independent, guarded by 6x/150ms) or the volume
-                              is DoS-grade (>= MIN_MBPS).
-      * "inconclusive" — a loss knee that a SINGLE source CANNOT attribute: it fell short
-                          of the target rate, and/or the loss appeared at a sub-DoS volume
-                          with no declared uplink. A LOW-threshold policer (an SD-WAN tuned
-                          to drop at low pps/bandwidth) and the source's OWN uplink/CPU
-                          ceiling are INDISTINGUISHABLE from here, so this is scored
-                          INCONCLUSIVE — never a false PASS that clears a real control
-                          (the 2,100-pps DENY the field hit), and never a false BLOCKED that
-                          credits an unproven one (the thin-uplink solo/batch flip). Mirrors
-                          syn_flood. Resolve with HARNESS_ICMP_UPLINK_MBPS / --appliance /
-                          the appliance log.
+    """Classify a ramp step's knee and ATTRIBUTE it — pure, so it's unit-testable.
+
+    The ONE physical question: were the lost packets DROPPED DOWNSTREAM (a target control)
+    or did they never make it off this host / die at this host's OWN uplink (self-congestion)?
+    The discriminator is whether the host actually PUT THE OFFERED RATE ON THE WIRE:
+      * if hping3 transmitted ~the target rate (achieved >= SATURATION_FRAC x target) and the
+        replies were lost, the packets LEFT this NIC and were dropped downstream -> the TARGET
+        policed them (a single host over the internet does not saturate a remote target at
+        these volumes, so a drop is the boundary). This is scored "control" by DEFAULT —
+        trusting that the tester's uplink is not the choke, which is true for a normal
+        server/VPS tester and is what makes a LOW-threshold policer (the 2,100-pps DENY the
+        field hit at ~24 Mbit/s) read BLOCKED without any tuning.
+      * if the host could NOT even transmit the offered rate (achieved << target), the loss is
+        a LOCAL CPU/NIC/raw-socket send bottleneck -> self-congestion -> "inconclusive".
+
+    A thin-uplink tester (whose ISP uplink, not the NIC, is the bottleneck — invisible to
+    local counters, so it can still read "reached") OVERRIDES the default by DECLARING the
+    uplink (UPLINK_MBPS): a knee whose bandwidth is at/above the uplink's usable headroom is
+    then attributed to that uplink -> "inconclusive", not a false BLOCKED.
+
+    Returns: None (no knee) | "control" (BLOCKED) | "inconclusive" (INCONCLUSIVE).
     """
     loss_jump, rtt_jump = _knee_signals(loss, rtt, base_loss, base_rtt)
     if not (loss_jump or rtt_jump):
         return None
-    # (a) Near-TOTAL loss = active in-path blackhole/ban, NOT self-congestion -> control.
+    # (a) Near-TOTAL loss = active in-path blackhole/ban (a saturated uplink still passes
+    # SOME) -> control, regardless of rate.
     if loss is not None and loss >= TOTAL_LOSS_PCT:
         return "control"
-    # (b) Declared uplink with headroom below the loss-onset bandwidth -> downstream -> control.
-    if UPLINK_MBPS and ambps is not None and ambps < SATURATION_FRAC * UPLINK_MBPS:
-        return "control"
-    # (c) Source reached ~the target rate at a DoS-grade volume (or RTT shaping) -> control.
+    # (b) DECLARED uplink saturation: the loss-onset bandwidth is at/above the uplink's usable
+    # headroom -> the tester's OWN uplink, not the target -> inconclusive. (Only a thin-link
+    # tester sets this; by default UPLINK_MBPS=0 and this is skipped.)
+    if UPLINK_MBPS and ambps is not None and ambps >= SATURATION_FRAC * UPLINK_MBPS:
+        return "inconclusive"
+    # (c) The host put the full offered rate on the wire (reached) but it was dropped, OR
+    # active RTT shaping fired -> a downstream/in-path control.
     reached = bool(apps is not None and pps and apps >= SATURATION_FRAC * pps)
-    dos_grade = (not MIN_MBPS) or (ambps is not None and ambps >= MIN_MBPS)
-    if reached and (rtt_jump or dos_grade):
+    if reached or rtt_jump:
         return "control"
-    # Otherwise: a low-volume / achieved-short loss knee we can't attribute from one source.
+    # (d) The host could NOT transmit the offered rate (achieved << target) -> a LOCAL send
+    # bottleneck -> self-congestion; the target was never tested at that rate -> inconclusive.
     return "inconclusive"
 
 
@@ -618,21 +622,36 @@ def run(target, ctx):
                        f"{knee['target']:,}")
                     + _lowconf(base_loss) + _ratelimit_caveat())
             elif knee:
+                # The source put ~the target rate on the wire but the replies were dropped ->
+                # a downstream control policed it. A LOW-volume knee (< MIN_MBPS) carries an
+                # extra caveat: a thin-uplink tester could instead be hitting its OWN uplink,
+                # so it should declare HARNESS_ICMP_UPLINK_MBPS to rule that out.
+                low_vol = bool(MIN_MBPS and knee["mbps"] is not None and knee["mbps"] < MIN_MBPS
+                               and not UPLINK_MBPS)
+                assume_note = (("  [ASSUMES the tester uplink exceeds this ~%s Mbit/s — the source put "
+                                "this rate on the wire and the replies were dropped downstream. If THIS "
+                                "host's uplink is itself near this bandwidth the loss could be your OWN "
+                                "uplink; set HARNESS_ICMP_UPLINK_MBPS=<your uplink Mbit/s> to confirm "
+                                "(a knee at/above it then reads INCONCLUSIVE, below it stays BLOCKED).]")
+                               % _fmt(knee["mbps"])) if low_vol else ""
                 out.append(
                     "BLOCKED-RATELIMIT: ICMP policing kicked in at ~%s pps / ~%s Mbit/s (target %s pps) "
-                    "— loss %s%% vs %s%% baseline, rtt %sms vs %sms. This is the MEASURED anti-DoS "
-                    "threshold (Sangfor/Forcepoint defaults aren't published — the ramp measured it); "
-                    "the control holds at/above this rate."
+                    "— loss %s%% vs %s%% baseline, rtt %sms vs %sms. The source transmitted this rate but "
+                    "the replies were dropped downstream = the MEASURED anti-DoS threshold (Sangfor/"
+                    "Forcepoint defaults aren't published — the ramp measured it); the control holds "
+                    "at/above this rate."
                     % (_fmt(knee["pps"]), _fmt(knee["mbps"]), f"{knee['target']:,}", _fmt(knee["loss"], 1),
                        _fmt(base_loss, 1), _fmt(knee["rtt"], 1), _fmt(base_rtt, 1))
-                    + _lowconf(base_loss) + _ratelimit_caveat())
+                    + assume_note + _lowconf(base_loss) + _ratelimit_caveat())
             elif ambiguous:
-                # A loss knee that a SINGLE source cannot attribute. At this volume a
-                # LOW-threshold policer (an SD-WAN tuned to drop at low pps/bandwidth — the
-                # 2,100-pps DENY the field hit) and the tester's OWN uplink/CPU ceiling look
-                # IDENTICAL. Scoring it PASS buries a real DENY (false SUCCESS); scoring it
-                # BLOCKED credits an unproven control (the thin-uplink flip). So it is
-                # INCONCLUSIVE — mirror syn_flood — with the concrete levers to resolve it.
+                # A loss knee we could NOT attribute to the target. Two sub-cases:
+                #  (b) a DECLARED uplink explains it (loss-onset bandwidth >= the uplink's usable
+                #      headroom -> the tester's OWN uplink saturated), or
+                #  (d) the host could NOT put the target rate on the wire (achieved << target) ->
+                #      a LOCAL CPU/NIC/raw-socket send bottleneck; the target was never tested at
+                #      that rate. Either way -> INCONCLUSIVE (not a PASS, not a BLOCKED).
+                uplink_bound = bool(UPLINK_MBPS and ambiguous["mbps"] is not None
+                                    and ambiguous["mbps"] >= SATURATION_FRAC * UPLINK_MBPS)
                 if clean_pps > 0:
                     # NB: refer to the earlier LOWER-TARGET ramp steps, NOT an achieved-rate
                     # ordering — under congestion collapse a lower-target step can achieve a
@@ -640,23 +659,24 @@ def run(target, ctx):
                     delivered = (" At the earlier, lower-rate ramp steps the flood WAS delivered "
                                  "clean (up to ~%s pps / ~%s Mbit/s)." % (_fmt(clean_pps), _fmt(clean_mbps)))
                 else:
-                    delivered = " No clean delivery rate was established below it."
-                uplink_note = ((" The declared source uplink (%d Mbit/s) did NOT have clear headroom "
-                                "below this volume, so the loss can't be pinned on the target." % UPLINK_MBPS)
-                               if UPLINK_MBPS else
-                               " No source uplink is declared (HARNESS_ICMP_UPLINK_MBPS), so the uplink "
-                               "cannot be ruled out as the bottleneck.")
+                    delivered = ""
+                if uplink_bound:
+                    reason = ("the loss appeared at ~%s pps / ~%s Mbit/s, AT/ABOVE the declared tester "
+                              "uplink's usable headroom (%d Mbit/s) — that is the tester's OWN uplink "
+                              "saturating, not the target."
+                              % (_fmt(ambiguous["pps"]), _fmt(ambiguous["mbps"]), UPLINK_MBPS))
+                else:
+                    reason = ("the source could NOT put the target rate on the wire (achieved ~%s pps of "
+                              "the ~%s pps target) — a LOCAL CPU/NIC/raw-socket send bottleneck, so the "
+                              "target was never tested at that rate and the loss is the tester's OWN send "
+                              "ceiling, not a boundary." % (_fmt(ambiguous["pps"]), f"{ambiguous['target']:,}"))
                 out.append(
-                    "[INCONCLUSIVE] a loss knee appeared at ~%s pps / ~%s Mbit/s (target %s pps — loss "
-                    "%s%% vs %s%% baseline), but from a SINGLE source this CANNOT be attributed: an "
-                    "SD-WAN tuned to police at a LOW pps/bandwidth and the tester's OWN uplink/CPU "
-                    "ceiling look identical here (the source did not clearly reach a DoS-grade rate).%s%s "
-                    "To RESOLVE it (SD-WANs are tuned differently per site): declare the tester uplink "
-                    "with HARNESS_ICMP_UPLINK_MBPS=<Mbit/s> (then a knee with headroom below it scores "
-                    "BLOCKED), run --appliance dual-path, read the appliance log for a DENY, or flood "
-                    "from a host with a known-fat uplink / more sources (fleet.py)."
-                    % (_fmt(ambiguous["pps"]), _fmt(ambiguous["mbps"]), f"{ambiguous['target']:,}",
-                       _fmt(ambiguous["loss"], 1), _fmt(base_loss, 1), delivered, uplink_note)
+                    "[INCONCLUSIVE] a loss knee appeared (loss %s%% vs %s%% baseline), but %s%s To RESOLVE "
+                    "it: flood from a host with a faster NIC / real raw sockets, drive MULTIPLE sources "
+                    "(fleet.py), %s or test through --appliance dual-path / read the appliance log."
+                    % (_fmt(ambiguous["loss"], 1), _fmt(base_loss, 1), reason, delivered,
+                       ("lower HARNESS_ICMP_UPLINK_MBPS if it is set too high," if uplink_bound
+                        else "raise the ramp so the source reaches the target rate,"))
                     + _lowconf(base_loss))
             elif MIN_MBPS and max_mbps < MIN_MBPS:
                 # Delivered with no policing knee, but below DoS-grade volume. DECISIVE: the
