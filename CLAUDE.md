@@ -120,24 +120,27 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     absolute — the floor stops LAN queueing being a false BLOCKED) → BLOCKED
     (policed). `syn_flood` also flags DoS impact if real connects fail during the
     flood. Decisive in both a bare lab (SUCCESS) and behind a policing SD-WAN (BLOCKED).
-    **Loss-knee attribution — did the host PUT THE RATE ON THE WIRE? (v1.9.88):** the
-    discriminator is whether hping3 actually TRANSMITTED ~the offered rate (it sends blind,
-    so a boundary rate-limit shows as high loss while the "packets transmitted" count stays
-    full). If the source **reached** the rate (achieved ≥ `SATURATION_FRAC`×target) and the
-    replies were lost, the packets left this NIC and were dropped **downstream** → **BLOCKED**
-    by DEFAULT — even at a LOW volume (the field's 2,100-pps / ~24 Mbit/s DENY now reads
-    BLOCKED with no tuning; a single host doesn't saturate a remote target at these rates, so
-    a drop is the boundary). Also BLOCKED: near-TOTAL loss (`BLOCKED-DOS-DETECTED`, ≥
-    `HARNESS_*_TOTAL_LOSS_PCT`) and RTT shaping. **INCONCLUSIVE** only when the host could NOT
-    transmit the rate (achieved ≪ target = a LOCAL CPU/NIC/raw-socket send bottleneck) **or**
-    a thin tester **declares** its uplink (`HARNESS_ICMP_UPLINK_MBPS` / `HARNESS_SYN_UPLINK_MBPS`)
-    and the loss-onset bandwidth is at/above that uplink's usable headroom (its OWN uplink
-    saturating). A low-volume BLOCKED (< `HARNESS_*_MIN_MBPS`, default 50) carries an
-    ASSUMES-uplink caveat so a thin-link tester knows to declare its uplink to flip it to
-    INCONCLUSIVE. **History:** v1.9.81 added a MIN_MBPS floor that DEMOTED sub-DoS knees to
-    PASS → that buried a real DENY as SUCCESS (the field bug); v1.9.87 made them INCONCLUSIVE;
-    v1.9.88 made them BLOCKED-by-default via the reached/transmit test (floor is now only a
-    caveat trigger). Both twins share `_knee_verdict`/`knee_is_control` (control/inconclusive/None).
+    **Loss-knee attribution — DECISIVE, no default INCONCLUSIVE (v1.9.89):** a delivery
+    collapse on a high-rate flood (loss jump ≥ `RATE_LIMIT_DELTA` over a WORKING baseline, or
+    RTT shaping) is scored **BLOCKED** by DEFAULT — `BLOCKED-DOS-DETECTED` for a near-TOTAL
+    drop (≥ `HARNESS_*_TOTAL_LOSS_PCT`), else `BLOCKED-RATELIMIT` — at ANY volume and whether
+    or not the source reached the full target rate (hping3 sends blind, and a single host over
+    the internet doesn't saturate a remote target at these rates → a drop is the boundary; the
+    field's 2,100-pps / ~24 Mbit/s DENY now reads BLOCKED with no tuning). The **only** opt-out
+    is a thin-link tester **declaring** its uplink (`HARNESS_ICMP_UPLINK_MBPS` /
+    `HARNESS_SYN_UPLINK_MBPS`): a knee whose bandwidth is at/above that uplink's usable headroom
+    is its OWN uplink saturating → INCONCLUSIVE (a TOTAL loss stays BLOCKED regardless). A
+    low-volume BLOCKED (< `HARNESS_*_MIN_MBPS`, default 50, no uplink declared) carries an
+    ASSUMES-uplink caveat pointing at that knob. **Two false-SUCCESS gaps also closed:** the
+    pure-Python **datagram fallback** (used when hping3's raw socket is unavailable) now scores
+    `BLOCKED-DOS-DETECTED` on a near-TOTAL during-flood loss (a kernel ICMP-reply rate-limit
+    throttles to a RATE, it never drops ALL replies; partial datagram reply-loss stays a
+    non-attributable PASS+caveat); and an hping3 ramp that yields **no parseable stats on any
+    step** (timed out / output wiped by a mid-send ban) falls through to that fallback instead
+    of a false PASS. **History:** v1.9.81 MIN_MBPS floor demoted sub-DoS knees to PASS (buried
+    the DENY); v1.9.87 → INCONCLUSIVE; v1.9.88 → BLOCKED for a *reached* knee (non-reached
+    stayed INCONCLUSIVE, fallback still always PASSed); **v1.9.89 → decisive BLOCKED for ANY
+    knee + fallback/parse gaps closed.** Both twins share `_knee_verdict`/`knee_is_control`.
     **`icmp_flood` attribution (v1.9.66):** `BLOCKED-RATELIMIT` comes ONLY from the
     `hping3` raw-socket rate ramp (which finds the real send-rate knee) or `--appliance`
     dual-path. The pure-stdlib **datagram fallback** (no raw socket — e.g. WSL1) measures

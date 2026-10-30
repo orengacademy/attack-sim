@@ -148,11 +148,11 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         out = self._run_syn(0.0, 10.0, 40.0, 11.0, uplink=5)
         self.assertIn("[INCONCLUSIVE]", out)
         self.assertFalse(core._match(out, m.META["blocked_regex"]))
-        # host could NOT transmit the rate (sent=5000 over 5s => ~1000 pps << 5000) -> local
-        # send bottleneck -> INCONCLUSIVE
+        # host could NOT transmit the rate (sent=5000 over 5s => ~1000 pps << 5000) -> STILL
+        # BLOCKED by default (decisive), with a threshold-at/below note
         out = self._run_syn(0.0, 10.0, 40.0, 11.0, sent=5000)
-        self.assertIn("[INCONCLUSIVE]", out)
-        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        self.assertIn("BLOCKED-RATELIMIT", out)
+        self.assertIn("threshold is at/below", out)
         # RTT-inflation BLOCKED (delta small, RTT ballooned past floor) — active shaping
         out = self._run_syn(0.0, 10.0, 5.0, 10.0 * INFL + FLOOR)
         self.assertIn("BLOCKED-RATELIMIT", out)
@@ -287,20 +287,19 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
                          "a knee at/above the declared thin uplink is self-congestion, not BLOCKED")
         self.assertFalse(core._match(out, m.META["success_regex"]))
 
-    def test_inconclusive_knee_reports_clean_rate_distinctly(self):
-        # An ambiguous loss knee AFTER a clean step is INCONCLUSIVE, and its message must
-        # report the delivered-CLEAN rate (earlier lower-target step) as a DISTINCT figure
-        # from the knee rate — never conflating a running max with the knee snapshot (the
-        # old "delivered up to ~X ... loss appeared at ~X" self-contradiction).
+    def test_not_reached_knee_is_blocked_with_threshold_note(self):
+        # A clean low step then a higher step the source could NOT fully transmit (achieved
+        # ~2000 pps of a 5000 target) that was dropped -> DECISIVE BLOCKED by default (no more
+        # inconclusive), and the message must say the threshold is at/below the rate the host
+        # DID push (don't claim the full target rate).
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
 
         def _hp(t, pps, sz, sec):
-            if pps <= 1000:    # low step delivers CLEAN: apps=1000 pps, 0% loss
+            if pps <= 1000:    # low step delivers CLEAN
                 return (0.0, 1.0, 1000 * sec,
                         f"{1000*sec} packets transmitted, {1000*sec} received, 0% packet loss")
-            # higher step: source pushes only ~2000 pps of the 5000 target (< 80%) at 45%
-            # loss -> ambiguous (achieved-short, sub-DoS) -> INCONCLUSIVE
+            # higher step: host transmits only ~2000 pps of the 5000 target, 45% dropped
             return (45.0, 2.0, 2000 * sec,
                     f"{2000*sec} packets transmitted, {int(2000*sec*0.55)} received, 45% packet loss")
         m._hping_flood_at = _hp
@@ -310,15 +309,11 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertTrue(core._match(out, m.META["blocked_regex"]),
+                        "a not-reached loss knee is still BLOCKED by default (decisive)")
         self.assertFalse(core._match(out, m.META["success_regex"]))
-        self.assertFalse(core._match(out, m.META["blocked_regex"]))
-        # the DELIVERED-CLEAN rate is the earlier 1,000 pps step ...
-        self.assertIn("delivered clean (up to ~1,000 pps", out)
-        # ... DISTINCT from the knee rate (~2,000 pps) where the loss appeared
-        self.assertIn("~2,000 pps", out)
-        # regression guard: the delivered figure must NOT be the lossy knee rate (old bug)
-        self.assertNotIn("delivered clean (up to ~2,000 pps", out)
+        self.assertIn("threshold is at/below", out)
+        self.assertIn("short of the ~5,000 pps target", out)
 
     def test_total_loss_is_dos_detected_blocked(self):
         # The "DOS detected" case: a WORKING baseline then ~100% loss of the flood at a

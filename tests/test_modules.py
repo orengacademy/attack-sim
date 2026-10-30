@@ -411,33 +411,34 @@ class TestIcmpRateReport(unittest.TestCase):
         self.assertFalse(self.icmp._is_knee(1.0, 40.0, 1.0, 10.0))   # 4x, under the 6x/150ms floor
 
     def test_knee_verdict_attribution(self):
-        # The discriminator is whether the host PUT THE OFFERED RATE ON THE WIRE. If it did
-        # (achieved ~ target) and the replies were lost, the packets left this NIC and were
-        # dropped downstream -> "control" (BLOCKED) BY DEFAULT, even at a LOW volume (the
-        # field's 2,100-pps / ~24 Mbit/s DENY). If the host could NOT transmit the rate
-        # (achieved << target) -> local send bottleneck -> "inconclusive".
+        # DECISIVE: a delivery collapse on a high-rate flood is the boundary -> "control"
+        # (BLOCKED) BY DEFAULT, at any volume and whether or not the source reached the full
+        # target rate (a single host doesn't saturate a remote target, so a drop is downstream).
+        # The ONLY opt-out is a DECLARED uplink that is itself saturated -> "inconclusive".
         kv = self.icmp._knee_verdict
-        # reached a LOW target at a LOW volume -> still control (host transmitted it)
+        # reached a LOW target at a LOW volume -> control (the field 2,100-pps DENY)
         self.assertEqual(kv(85.0, 2.0, 0.0, 1.0, apps=2100.0, pps=2500, ambps=24.0), "control")
         self.assertEqual(kv(35.0, 8.0, 1.0, 7.0, apps=900.0, pps=1000, ambps=10.0), "control")
         # reached at a high volume -> control
         self.assertEqual(kv(90.0, 8.0, 1.0, 7.0, apps=55000.0, pps=60000, ambps=620.0), "control")
-        # host could NOT transmit the rate (achieved << target) -> local send limit -> inconclusive
-        self.assertEqual(kv(36.0, 6.4, 0.0, 0.8, apps=32872.0, pps=60000, ambps=376.0), "inconclusive")
-        self.assertEqual(kv(45.0, 2.0, 0.0, 67.0, apps=711.0, pps=1000, ambps=8.0), "inconclusive")
-        # RTT shaping is credited even when not reached (active shaping is attributable)
+        # NOT reached (achieved << target) -> STILL control by default (no more inconclusive)
+        self.assertEqual(kv(36.0, 6.4, 0.0, 0.8, apps=32872.0, pps=60000, ambps=376.0), "control")
+        self.assertEqual(kv(45.0, 2.0, 0.0, 67.0, apps=711.0, pps=1000, ambps=8.0), "control")
+        # RTT shaping -> control
         self.assertEqual(kv(1.0, 900.0, 1.0, 8.0, apps=900.0, pps=1000, ambps=10.0), "control")
         # TOTAL loss = an anti-DoS blackhole/ban -> control regardless of rate/volume
         self.assertEqual(kv(100.0, 0.0, 0.0, 67.0, apps=711.0, pps=1000, ambps=8.0), "control")
-        # DECLARED uplink saturation: loss AT/ABOVE the uplink's usable headroom is the
-        # tester's OWN uplink, not the target -> inconclusive; a FAT declared uplink leaves
-        # headroom so the same knee stays control.
+        # DECLARED uplink saturation (opt-in): loss AT/ABOVE the uplink's usable headroom is the
+        # tester's OWN uplink -> inconclusive; a FAT declared uplink leaves headroom -> control.
         old = self.icmp.UPLINK_MBPS
         try:
             self.icmp.UPLINK_MBPS = 30      # ~24 Mbit/s >= 0.8*30 -> uplink-bound
             self.assertEqual(kv(85.0, 2.0, 0.0, 1.0, apps=2100.0, pps=2500, ambps=24.0), "inconclusive")
             self.icmp.UPLINK_MBPS = 1000    # headroom -> downstream -> control
             self.assertEqual(kv(85.0, 2.0, 0.0, 1.0, apps=2100.0, pps=2500, ambps=24.0), "control")
+            # ...but a near-TOTAL loss is a blackhole -> control even with a saturated uplink
+            self.icmp.UPLINK_MBPS = 30
+            self.assertEqual(kv(100.0, 2.0, 0.0, 1.0, apps=2100.0, pps=2500, ambps=24.0), "control")
         finally:
             self.icmp.UPLINK_MBPS = old
         # no knee at all
