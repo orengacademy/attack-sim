@@ -571,15 +571,22 @@ def run(target, ctx):
         max_pps = max_mbps = 0.0        # highest rate the source PUSHED (any step)
         clean_pps = clean_mbps = 0.0    # highest rate actually DELIVERED clean (no knee)
         parsed_any = False     # did ANY ramp step yield a parseable delivery stat?
+        egress_denied = None    # a higher step was EPERM-blocked at the SENDER after a clean step
         for pps in RAMP_PPS:
             loss, rtt, snt, raw = _hping_flood_at(target, pps, FLOOD_SIZE, STEP_SECONDS)
-            # hping3's RAW socket can be unavailable (no cap_net_raw / no usable sudo, or a
-            # platform like WSL1 that doesn't support raw sockets even as root). Rather than
-            # give up (FLOOD-PRIV-ERROR), fall back to the Python DATAGRAM-ICMP flood below —
-            # the same socket type `ping` uses, which works wherever ping does (the baseline
-            # above proves it). Checked regardless of loss% (unprivileged hping3 still prints
-            # a "100% packet loss" line that would otherwise read as a false BLOCKED).
+            # "operation not permitted" / "raw socket" in hping3's output is AMBIGUOUS:
+            #   * at the FIRST step (no clean step yet) it is a genuine raw-socket PRIVILEGE
+            #     failure (no cap_net_raw / WSL1) -> fall back to the Python datagram flood.
+            #   * AFTER a clean step already used the raw socket fine, a later EPERM is NOT a
+            #     privilege problem — the kernel/egress refused to SEND the flood at this rate
+            #     (a LOCAL egress firewall, a host-based SD-WAN agent, or in-path enforcement
+            #     that NACKs with EPERM, e.g. iptables OUTPUT -j DROP). That is the control
+            #     DENYING the flood -> BLOCKED, not a tooling failure / false PASS.
             if any(mk in raw.lower() for mk in _PRIV_ERR_MARKERS):
+                if parsed_any:
+                    egress_denied = {"pps": clean_pps or None, "mbps": clean_mbps or None,
+                                     "target": pps}
+                    break
                 out.append("note: hping3 can't open a raw socket here (no cap_net_raw / WSL1) — "
                            "falling back to the Python datagram-ICMP flood (the path `ping` uses).")
                 hping_privfail = True
@@ -612,7 +619,22 @@ def run(target, ctx):
                 clean_mbps = max(clean_mbps, ambps or 0.0)
 
         if not hping_privfail:
-            if knee and knee["loss"] is not None and knee["loss"] >= TOTAL_LOSS_PCT:
+            if egress_denied:
+                # A clean lower step used the raw socket fine, then a higher step was refused
+                # with EPERM at the SENDER = the egress/host-based control DENIED the flood
+                # above the clean rate. Not a privilege failure (the socket worked) and not a
+                # false PASS — a control held.
+                out.append(
+                    "BLOCKED-EGRESS-DENIED: the ICMP flood was delivered up to ~%s pps / ~%s Mbit/s, "
+                    "then the egress REFUSED to send it at ~%s pps (EPERM at the sender — a local "
+                    "egress firewall, a host-based SD-WAN agent, or in-path enforcement dropping the "
+                    "flood, e.g. an OUTPUT -j DROP policer). The raw socket worked at the lower rate, "
+                    "so this is the control denying the high-rate flood, NOT a privilege/tooling "
+                    "failure. The threshold is at/below ~%s pps."
+                    % (_fmt(egress_denied["pps"]), _fmt(egress_denied["mbps"]),
+                       f"{egress_denied['target']:,}", f"{egress_denied['target']:,}")
+                    + _lowconf(base_loss) + _ratelimit_caveat())
+            elif knee and knee["loss"] is not None and knee["loss"] >= TOTAL_LOSS_PCT:
                 # TOTAL loss: the whole flood was dropped in transit while ordinary pings
                 # worked — an anti-DoS / blackhole DETECTED the flood and dropped (or banned)
                 # it. Not self-congestion (a saturated uplink still delivers some packets).
