@@ -277,7 +277,9 @@ def run(target, ctx):
     reached_rate = bool(achieved_pps is not None and achieved_pps >= SATURATION_FRAC * TARGET_PPS)
     low_vol = bool(MIN_MBPS and achieved_mbps is not None and achieved_mbps < MIN_MBPS
                    and not UPLINK_MBPS)
-    knee_is_control = total_loss or (not uplink_saturated and reached_rate)
+    # DECISIVE (mirror icmp_flood): a SYN-loss delta is the boundary by DEFAULT; the ONLY
+    # opt-out is a DECLARED uplink that is itself saturated. No default INCONCLUSIVE.
+    knee_is_control = total_loss or not uplink_saturated
     if achieved_pps is not None:
         achieved_str = f"~{achieved_pps:,.0f} pps / ~{achieved_mbps:,.0f} Mbit/s"
     else:
@@ -285,33 +287,31 @@ def run(target, ctx):
 
     # 2) boundary rate-limited the high-rate SYN stream (differential loss).
     if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and knee_is_control:
-        rate_note = (f"at {achieved_str} sent " if achieved_pps is not None else "")
+        if reached_rate:
+            rate_note = (f"at {achieved_str} sent — the host transmitted this rate and the SYN-ACKs "
+                         "were dropped downstream")
+        else:
+            rate_note = (f"at {achieved_str} sent (short of the ~{TARGET_PPS:,} pps target) — even "
+                         "what the host DID send was dropped; the threshold is at/below this rate")
         assume_note = (("  [ASSUMES the tester uplink exceeds this ~%s Mbit/s — the host put this rate "
                         "on the wire and the SYN-ACKs were dropped downstream. If THIS host's uplink is "
                         "near this bandwidth the loss could be your OWN uplink; set HARNESS_SYN_UPLINK_MBPS"
-                        "=<your uplink Mbit/s> to confirm.]" % f"{achieved_mbps:,.0f}") if low_vol else "")
+                        "=<your uplink Mbit/s> to flip it to INCONCLUSIVE.]"
+                        % f"{achieved_mbps:,.0f}") if low_vol else "")
         out.append(
             f"BLOCKED-RATELIMIT: normal-rate SYNs lost {base_loss:.1f}% but the high-rate "
-            f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) {rate_note}— the host transmitted "
-            "this rate and the SYN-ACKs were dropped downstream (SYN-flood protection — control "
-            "held). [CONFIDENCE: single-source — confirm via the appliance log or --appliance "
+            f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) {rate_note} (SYN-flood protection — "
+            "control held). [CONFIDENCE: single-source — confirm via the appliance log or --appliance "
             "dual-path that the SD-WAN (not the target's own backlog/SYN-cookie handling) policed "
             "it.]" + assume_note)
     elif base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
-        if uplink_saturated:
-            uplink_note = (f"the loss appeared at {achieved_str}, AT/ABOVE the declared uplink's "
-                           f"usable headroom ({UPLINK_MBPS} Mbit/s) — the tester's OWN uplink "
-                           "saturating, not the target")
-        else:
-            uplink_note = (f"the host could NOT transmit the target rate (achieved {achieved_str} of "
-                           f"~{TARGET_PPS:,} pps) — a LOCAL send bottleneck, so the target was never "
-                           "tested at that rate")
+        # Only reachable when a DECLARED uplink is itself saturated (the opt-in escape hatch).
         out.append(
-            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts but {uplink_note}. "
-            "Resolve it (SD-WANs are tuned differently per site): declare HARNESS_SYN_UPLINK_MBPS="
-            "<Mbit/s> (a knee with headroom below it then scores BLOCKED), run --appliance dual-path, "
-            "read the appliance log, or flood from a host with a known-fat uplink / more sources "
-            "(fleet.py).")
+            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts at {achieved_str}, AT/ABOVE the "
+            f"declared uplink's usable headroom ({UPLINK_MBPS} Mbit/s) — the tester's OWN uplink "
+            "saturating, not the target. To get a target verdict: flood from a host with a fatter "
+            "uplink / more sources (fleet.py), lower HARNESS_SYN_UPLINK_MBPS if set too low, or run "
+            "--appliance dual-path.")
     elif base_ok and inflated:
         out.append(
             f"BLOCKED-RATELIMIT: the SYN flood was answered but RTT inflated to "
