@@ -121,6 +121,21 @@ try:
 except (TypeError, ValueError):
     SATURATION_FRAC = 0.80
 TARGET_PPS = 1_000_000 // max(1, FLOOD_INTERVAL_US)   # hping3 -i uX => ~this many pps
+# DoS-grade volume floor + operator-declared source uplink (mirror icmp_flood — SD-WANs are
+# tuned DIFFERENTLY per site). A reached-rate loss knee is only a confident TARGET control at
+# a DoS-grade volume; a LOW-volume knee is ambiguous (a low-threshold policer vs the source's
+# own uplink/CPU, indistinguishable from one host) -> INCONCLUSIVE, UNLESS the declared uplink
+# has clear headroom below it (then the loss is downstream -> BLOCKED). A SYN is ~40 B on the
+# wire (IPv4 20 + TCP 20, no payload).
+try:
+    MIN_MBPS = max(0, int(os.environ.get("HARNESS_SYN_MIN_MBPS") or 50))
+except (TypeError, ValueError):
+    MIN_MBPS = 50
+try:
+    UPLINK_MBPS = max(0, int(os.environ.get("HARNESS_SYN_UPLINK_MBPS") or 0))
+except (TypeError, ValueError):
+    UPLINK_MBPS = 0
+SYN_WIRE_BYTES = 40
 
 
 def _hping_syn(target, port, count, interval_us, cap_seconds):
@@ -253,17 +268,24 @@ def run(target, ctx):
         TOTAL_LOSS_PCT = 99.0
     total_loss = flood_loss is not None and flood_loss >= TOTAL_LOSS_PCT
 
+    # Bandwidth attribution (mirror icmp_flood): a loss-delta knee is a confident TARGET
+    # control only if the whole flood was blackholed (total_loss), OR a declared uplink has
+    # clear HEADROOM below the loss-onset bandwidth (loss can't be the uplink -> downstream),
+    # OR the source provably REACHED a DoS-grade send-rate. Everything else is the ambiguous
+    # low-volume case (a low-threshold policer vs the source's own uplink/CPU) -> INCONCLUSIVE.
+    achieved_mbps = (achieved_pps * SYN_WIRE_BYTES * 8 / 1e6) if achieved_pps else None
+    dos_grade = (not MIN_MBPS) or (achieved_mbps is not None and achieved_mbps >= MIN_MBPS)
+    uplink_headroom = bool(UPLINK_MBPS and achieved_mbps is not None
+                           and achieved_mbps < SATURATION_FRAC * UPLINK_MBPS)
+    knee_is_control = total_loss or uplink_headroom or (reached_rate and dos_grade)
+    if achieved_pps is not None:
+        achieved_str = f"~{achieved_pps:,.0f} pps / ~{achieved_mbps:,.0f} Mbit/s"
+    else:
+        achieved_str = "an unparsed send-rate"
+
     # 2) boundary rate-limited the high-rate SYN stream (differential loss).
-    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and not reached_rate and not total_loss:
-        out.append(
-            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts, but the source only sent "
-            f"~{achieved_pps:,.0f} pps of the ~{TARGET_PPS:,} pps target — it saturated its OWN "
-            "uplink/CPU, so the lost responses are self-congestion, NOT a boundary rate-limit "
-            "(can't credit a control the source never pushed). Flood from a host with a fatter "
-            "uplink / real raw sockets, or drive MULTIPLE sources (fleet.py).")
-    elif base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
-        rate_note = (f"at ~{achieved_pps:,.0f} pps sent (~{SATURATION_FRAC:.0%}+ of target) "
-                     if achieved_pps is not None else "")
+    if base_ok and delta is not None and delta >= RATE_LIMIT_DELTA and knee_is_control:
+        rate_note = (f"at {achieved_str} sent " if achieved_pps is not None else "")
         out.append(
             f"BLOCKED-RATELIMIT: normal-rate SYNs lost {base_loss:.1f}% but the high-rate "
             f"flood lost {flood_loss:.1f}% (+{delta:.0f} pts) {rate_note}— the boundary "
@@ -271,6 +293,21 @@ def run(target, ctx):
             "protection — control held). [CONFIDENCE: single-source — confirm via the appliance "
             "log or --appliance dual-path that the SD-WAN (not the target's own backlog/SYN-cookie "
             "handling) policed it.]")
+    elif base_ok and delta is not None and delta >= RATE_LIMIT_DELTA:
+        uplink_note = ((f" The declared source uplink ({UPLINK_MBPS} Mbit/s) had no clear headroom "
+                        "below this volume, so the loss can't be pinned on the target.")
+                       if UPLINK_MBPS else
+                       " No source uplink is declared (HARNESS_SYN_UPLINK_MBPS), so the uplink "
+                       "can't be ruled out as the bottleneck.")
+        out.append(
+            f"[INCONCLUSIVE] flood SYN-loss rose +{delta:.0f} pts at {achieved_str} (target "
+            f"~{TARGET_PPS:,} pps), but from a SINGLE source this can't be attributed: an SD-WAN "
+            "tuned to police at a LOW pps/bandwidth and the tester's OWN uplink/CPU ceiling look "
+            f"identical here (the source did not clearly reach a DoS-grade rate).{uplink_note} "
+            "Resolve it (SD-WANs are tuned differently per site): declare HARNESS_SYN_UPLINK_MBPS="
+            "<Mbit/s> (a knee with headroom below it then scores BLOCKED), run --appliance dual-path, "
+            "read the appliance log, or flood from a host with a known-fat uplink / more sources "
+            "(fleet.py).")
     elif base_ok and inflated:
         out.append(
             f"BLOCKED-RATELIMIT: the SYN flood was answered but RTT inflated to "

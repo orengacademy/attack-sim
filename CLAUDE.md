@@ -120,6 +120,18 @@ Each `modules/<name>.py` exposes a `META` dict and `run(target, ctx) -> str`
     absolute — the floor stops LAN queueing being a false BLOCKED) → BLOCKED
     (policed). `syn_flood` also flags DoS impact if real connects fail during the
     flood. Decisive in both a bare lab (SUCCESS) and behind a policing SD-WAN (BLOCKED).
+    **Loss-knee attribution — SD-WANs are tuned DIFFERENTLY per site (v1.9.87):** a
+    loss knee is a confident **BLOCKED** only when it's a near-TOTAL drop (blackhole/ban,
+    `BLOCKED-DOS-DETECTED`, ≥ `HARNESS_*_TOTAL_LOSS_PCT`), RTT-shaped, or the source
+    provably **reached a DoS-grade volume** (≥ `HARNESS_*_MIN_MBPS`, default 50). A loss
+    knee at a **LOW** volume the source did not provably reach is **INCONCLUSIVE**, not a
+    PASS — from a single host a low-threshold policer (e.g. an SD-WAN that DENYs a
+    2,100-pps flood at ~24 Mbit/s) and the tester's **own uplink/CPU** ceiling are
+    indistinguishable. The field false-PASS was exactly this: the sub-DoS demotion scored
+    a real DENY as SUCCESS. To get a definitive verdict per site, **declare the tester
+    uplink** with `HARNESS_ICMP_UPLINK_MBPS` / `HARNESS_SYN_UPLINK_MBPS` — then a knee at a
+    bandwidth with clear headroom below the uplink can't be the uplink and scores BLOCKED.
+    Both DoS twins share this attribution (`_knee_verdict` returns control/inconclusive/None).
     **`icmp_flood` attribution (v1.9.66):** `BLOCKED-RATELIMIT` comes ONLY from the
     `hping3` raw-socket rate ramp (which finds the real send-rate knee) or `--appliance`
     dual-path. The pure-stdlib **datagram fallback** (no raw socket — e.g. WSL1) measures

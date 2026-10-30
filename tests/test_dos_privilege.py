@@ -102,45 +102,58 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertFalse(core._match(out, m.META["blocked_regex"]))
         self.assertIn("kernel", out.lower())       # the reply-throttle caveat is present
 
-    def _run_syn(self, base_loss, base_rtt, flood_loss, flood_rtt):
+    def _run_syn(self, base_loss, base_rtt, flood_loss, flood_rtt, sent=100000, elapsed=5.0, uplink=0):
         """Drive syn_flood's verdict branches with mocked helpers (no hping3/network).
-        shutil.which / time.sleep / subprocess.Popen are SHARED stdlib modules, so they are
-        patched with mock.patch.object (auto-restored) — NEVER assigned directly, or they'd
-        leak into other tests (that bug shipped once in v1.9.63)."""
+        shutil.which / time.sleep / time.time / subprocess.Popen are SHARED stdlib modules, so
+        they are patched with mock.patch.object (auto-restored) — NEVER assigned directly, or
+        they'd leak into other tests (that bug shipped once in v1.9.63). `sent`/`elapsed` make
+        the ACHIEVED send-rate (and thus bandwidth) deterministic; `uplink` sets the declared
+        source uplink (HARNESS_SYN_UPLINK_MBPS) so the attribution branches can be exercised."""
         from unittest import mock
         m = _load_module("syn_flood")
+        m.UPLINK_MBPS = uplink
         # module-local helpers: safe to set on the freshly re-exec'd module object
         m._connect_ok = lambda t, p, **k: True              # service up; connects stay up
         m._hping_syn = lambda *a, **k: (base_loss, base_rtt, "baseline txt")
         m._parse_loss = lambda out: flood_loss
         m._parse_rtt_avg = lambda out: flood_rtt
+        m._parse_sent = lambda out: sent
+        times = [1000.0, 1000.0 + elapsed]                  # t0, then t0+elapsed thereafter
+        clock = lambda: times.pop(0) if len(times) > 1 else times[0]
 
         class _P:
-            def communicate(self, timeout=None): return ("15 packets ... 100% packet loss", None)
+            def communicate(self, timeout=None): return (f"{sent} packets transmitted", None)
             def kill(self): pass
         with mock.patch.object(m.shutil, "which", lambda x: "/usr/bin/" + x), \
              mock.patch.object(m.time, "sleep", lambda *a, **k: None), \
+             mock.patch.object(m.time, "time", clock), \
              mock.patch.object(m.subprocess, "Popen", lambda *a, **k: _P()):
             return m.run("203.0.113.9", _Ctx())
 
     def test_syn_flood_verdict_branches_render(self):
-        # REGRESSION: syn_flood's BLOCKED/PASS verdict strings must RENDER (same shape that
-        # crashed in icmp_flood). Exercise all three: loss-delta BLOCKED, RTT-inflation
-        # BLOCKED, and clean PASS.
+        # REGRESSION + attribution parity with icmp_flood: a sub-DoS loss knee from one
+        # source is INCONCLUSIVE (ambiguous: low policer vs own uplink); a DECLARED uplink
+        # with headroom, a TOTAL loss, or RTT shaping makes it a confident BLOCKED; a clean
+        # low-loss flood is PASS. (sent=100k over 5s => ~20k pps / ~6.4 Mbit/s.)
         m = _load_module("syn_flood")
         INFL, FLOOR = m.RTT_INFLATION, m.RTT_ABS_FLOOR
-        # loss-delta BLOCKED (delta >= threshold, RTT flat)
+        # loss-delta at a LOW volume, no declared uplink -> INCONCLUSIVE (not a false BLOCKED)
         out = self._run_syn(0.0, 10.0, 40.0, 11.0)
+        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        self.assertFalse(core._match(out, m.META["success_regex"]))
+        # SAME knee, but a declared uplink (1000 Mbit/s) has headroom below ~6.4 Mbit/s -> BLOCKED
+        out = self._run_syn(0.0, 10.0, 40.0, 11.0, uplink=1000)
         self.assertIn("BLOCKED-RATELIMIT", out)
         self.assertTrue(core._match(out, m.META["blocked_regex"]))
-        # RTT-inflation BLOCKED (delta small, RTT ballooned past floor)
+        # RTT-inflation BLOCKED (delta small, RTT ballooned past floor) — active shaping
         out = self._run_syn(0.0, 10.0, 5.0, 10.0 * INFL + FLOOR)
         self.assertIn("BLOCKED-RATELIMIT", out)
         # clean PASS (flood delivered, low loss)
         out = self._run_syn(0.0, 10.0, 0.0, 10.0)
         self.assertTrue(core._match(out, m.META["success_regex"]))
-        # TOTAL loss with a working baseline = anti-DoS blackhole -> BLOCKED, never a
-        # self-congestion INCONCLUSIVE (mirrors icmp_flood's total-loss override).
+        # TOTAL loss with a working baseline = anti-DoS blackhole -> BLOCKED regardless of
+        # volume/uplink (mirrors icmp_flood's total-loss override).
         out = self._run_syn(0.0, 10.0, 100.0, 0.0)
         self.assertIn("BLOCKED-RATELIMIT", out)
         self.assertFalse(core._match(out, m.META["success_regex"]))
@@ -220,12 +233,14 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
         self.assertTrue(core._match(out, m.META["blocked_regex"]),
                         "a real DoS-grade policed flood should still score BLOCKED")
 
-    def test_real_policing_sub_dos_volume_is_pass(self):
-        # The batch-vs-solo flip fix: a PARTIAL loss knee at a trivial volume (< MIN_MBPS)
-        # is the source hitting its OWN uplink ceiling, not a boundary control — it must
-        # read PASS, never the vantage-dependent false BLOCKED. Here 45% loss appears at
-        # target 1000 pps (~11 Mbit/s over 4s), far below the 50 Mbit/s DoS floor. (Partial,
-        # NOT total — a near-total loss is the blackhole case covered below.)
+    def test_sub_dos_volume_loss_knee_is_inconclusive(self):
+        # The FIELD false-PASS: a differently-tuned SD-WAN DENIED a 2,100-pps flood at a
+        # LOW volume (~24 Mbit/s), but the script scored PASS because the loss was below
+        # the 50 Mbit/s DoS floor ("self-congestion"). From ONE source a low-threshold
+        # policer and the tester's own uplink/CPU are INDISTINGUISHABLE, so a partial loss
+        # knee at a sub-DoS volume must be INCONCLUSIVE — NOT a false PASS (buries a real
+        # DENY) and NOT a false BLOCKED (credits an unproven control). Here 45% loss at
+        # target 1000 pps (~11 Mbit/s over 4s), below the DoS floor, no declared uplink.
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
         m._hping_flood_at = lambda t, pps, sz, sec: (
@@ -237,16 +252,39 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertTrue(core._match(out, m.META["success_regex"]),
-                        "a partial sub-DoS-volume loss knee is self-congestion -> PASS, not BLOCKED")
-        self.assertFalse(core._match(out, m.META["blocked_regex"]))
+        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertFalse(core._match(out, m.META["success_regex"]),
+                         "a sub-DoS loss knee must NOT be a confident PASS (the field false-PASS)")
+        self.assertFalse(core._match(out, m.META["blocked_regex"]),
+                         "...and must NOT be a false BLOCKED either (unproven control)")
 
-    def test_saturated_pass_does_not_claim_delivery_at_loss_rate(self):
-        # INCONSISTENCY FIX: when a LATER ramp step self-congests (saturated), the PASS
-        # verdict reported max_pps as "delivered up to the most this source could push" —
-        # but max_pps INCLUDED the lossy knee step, so it claimed the flood was delivered
-        # at the very rate it simultaneously said the loss appeared at (a self-contradiction
-        # in one sentence). The delivered-clean ceiling must be a DISTINCT, lower number.
+    def test_declared_uplink_resolves_low_knee_to_blocked(self):
+        # SAME low-volume loss knee as above, but the operator DECLARES the tester uplink
+        # (HARNESS_ICMP_UPLINK_MBPS) and the loss appeared at ~11 Mbit/s — far below it, so
+        # the uplink has clear headroom and the loss MUST be downstream = the target policed
+        # it = BLOCKED. This is how an operator pins a low-threshold SD-WAN per site.
+        import os as _os
+        m = _load_module("icmp_flood")
+        m.UPLINK_MBPS = 1000       # declare a fat uplink (as HARNESS_ICMP_UPLINK_MBPS would)
+        m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
+        m._hping_flood_at = lambda t, pps, sz, sec: (
+            95.0, 2.0, pps * sec,
+            f"{pps*sec} packets transmitted, {int(pps*sec*0.05)} received, 95% packet loss")
+        real_which = m.shutil.which
+        m.shutil.which = lambda x: "/usr/bin/hping3" if x == "hping3" else real_which(x)
+        try:
+            out = m.run("203.0.113.9", _Ctx())
+        finally:
+            m.shutil.which = real_which
+        self.assertTrue(core._match(out, m.META["blocked_regex"]),
+                        "a declared-uplink knee with headroom below it is the target policing -> BLOCKED")
+        self.assertFalse(core._match(out, m.META["success_regex"]))
+
+    def test_inconclusive_knee_reports_clean_rate_distinctly(self):
+        # An ambiguous loss knee AFTER a clean step is INCONCLUSIVE, and its message must
+        # report the delivered-CLEAN rate (earlier lower-target step) as a DISTINCT figure
+        # from the knee rate — never conflating a running max with the knee snapshot (the
+        # old "delivered up to ~X ... loss appeared at ~X" self-contradiction).
         m = _load_module("icmp_flood")
         m._baseline = lambda target: (0.0, 1.0, "15 packets transmitted, 15 received, 0% packet loss")
 
@@ -255,7 +293,7 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
                 return (0.0, 1.0, 1000 * sec,
                         f"{1000*sec} packets transmitted, {1000*sec} received, 0% packet loss")
             # higher step: source pushes only ~2000 pps of the 5000 target (< 80%) at 45%
-            # loss -> self-congestion (saturated), NOT a control
+            # loss -> ambiguous (achieved-short, sub-DoS) -> INCONCLUSIVE
             return (45.0, 2.0, 2000 * sec,
                     f"{2000*sec} packets transmitted, {int(2000*sec*0.55)} received, 45% packet loss")
         m._hping_flood_at = _hp
@@ -265,12 +303,12 @@ class TestIcmpFloodPrivilege(unittest.TestCase):
             out = m.run("203.0.113.9", _Ctx())
         finally:
             m.shutil.which = real_which
-        self.assertTrue(core._match(out, m.META["success_regex"]),
-                        "a self-congestion knee after a clean step is PASS")
+        self.assertIn("[INCONCLUSIVE]", out)
+        self.assertFalse(core._match(out, m.META["success_regex"]))
         self.assertFalse(core._match(out, m.META["blocked_regex"]))
         # the DELIVERED-CLEAN rate is the earlier 1,000 pps step ...
         self.assertIn("delivered clean (up to ~1,000 pps", out)
-        # ... DISTINCT from the self-congestion ceiling (~2,000 pps) where the loss appeared
+        # ... DISTINCT from the knee rate (~2,000 pps) where the loss appeared
         self.assertIn("~2,000 pps", out)
         # regression guard: the delivered figure must NOT be the lossy knee rate (old bug)
         self.assertNotIn("delivered clean (up to ~2,000 pps", out)
